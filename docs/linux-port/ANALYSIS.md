@@ -60,6 +60,13 @@ CUDA if `nvcc`, else **Vulkan if `glslc`** (present here), else CPU; `-DGGML_BAC
   `mmproj-embeddinggemma-2-Q8_0.gguf` (554,821,024 B), sha256-pinned. F16 unusable (activations overflow). Linux
   lookup: `$DIGUP_MODELS` exclusively, else `~/.local/share/digup/Models`, else the HF cache snapshot.
   `digup download-model` fetches with resume + sha256. Not yet in this machine's HF cache.
+- **No-logits patch, verified by the llama.cpp session (2026-10-14):** gemma-embedding2 has no LM head (`model.output`
+  is the 512→768 projection; graph sets only `t_embd`), so no vocab-sized GPU buffer. The only waste at b11461 is the
+  host logits buffer (`has_logits = true` hardcoded, llama-context.cpp:2136 @4d756bc7): 262144 × n_outputs × 4 B =
+  2 GiB at n_ubatch 2048, 512 MiB for the 512-token query encoder. DigUp's patch removes it. **From b11584 (#30255)
+  upstream does `has_logits = !embeddings || graph_has_logits` → retire the patch when bumping the pin ≥ b11584.**
+  Caution: `build-llama.sh` applies the patch only if `git apply --check` passes, so after a bump it is skipped
+  silently — check the RSS/allocation instead of assuming.
 - `worker/` (Python) is the **MLX** bf16 reference worker — Apple Silicon only, irrelevant for Linux.
 
 ## 3. Engine (DigUpKit) on Linux: capability matrix
