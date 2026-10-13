@@ -141,9 +141,32 @@ function toggleWeaker() {
   render();
 }
 
+/// Opens it at the page, moment or line when its app can be told it (the query says what to search for on a page).
 function openSelected() {
   const hit = selectedHit();
-  if (hit) invoke("open_path", { path: hit.path }).catch(failed);
+  if (hit) invoke("open_hit", { hit, query: state.text }).catch(failed);
+}
+
+/// What ↩ does with a result: "Open at p. 3" or "Open at 0:06" only when its default app can go there, else "Open".
+/// The shell's answer comes a moment later (it looks the app up), so this says "Open" until then and redraws.
+const openTitles = new Map();
+function openTitle(hit) {
+  if (!hit) return "Open";
+  const key = `${hit.path}|${hit.segment}|${hit.loc}`;
+  if (!openTitles.has(key)) {
+    openTitles.set(key, "Open");
+    invoke("open_title", { hit })
+      .then((title) => {
+        openTitles.set(key, title);
+        const now = selectedHit();
+        if (title === "Open" || !now || `${now.path}|${now.segment}|${now.loc}` !== key) return;
+        renderFooter();
+        const button = $preview.querySelector("button.open");
+        if (button) button.textContent = title;
+      })
+      .catch(() => {});
+  }
+  return openTitles.get(key);
 }
 
 function revealSelected() {
@@ -327,7 +350,7 @@ function facts(hit) {
     box.append(words);
   }
   const buttons = element("div", "buttons");
-  const open = element("button", "", "Open");
+  const open = element("button", "open", openTitle(hit));
   open.onclick = openSelected;
   const reveal = element("button", "", `Show in ${FILE_MANAGER}`);
   reveal.onclick = revealSelected;
@@ -348,7 +371,7 @@ function renderFooter() {
   // Results while indexing are partial: say so where they're counted.
   if (state.indexing && !state.error) summary += ` · still indexing (${state.indexing.done} of ${state.indexing.total})`;
   $summary.textContent = summary;
-  $keys.textContent = `↩ Open   ${MOD}↩ Show in ${FILE_MANAGER}`;
+  $keys.textContent = `↩ ${openTitle(selectedHit())}   ${MOD}↩ Show in ${FILE_MANAGER}`;
 }
 
 function message(title, text) {
@@ -540,6 +563,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 tauri.event.listen("panel-shown", () => {
+  openTitles.clear();   // a default app may have changed since
   // Like Spotlight: the last query, selected.
   $query.focus();
   $query.select();

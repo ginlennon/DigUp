@@ -5,6 +5,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod helper;
+mod opener;
 mod options;
 mod settings;
 mod watcher;
@@ -46,6 +47,8 @@ struct Shell {
     /// Debug runs with setup: the panel's query waits until the first index is in.
     debug_query_sent: AtomicBool,
     logs: PathBuf,
+    /// The files' default apps, for opening at a page or moment.
+    apps: opener::Apps,
 }
 
 impl Shell {
@@ -191,6 +194,41 @@ fn open_path(app: AppHandle, path: String) -> Result<(), String> {
     app.opener().open_path(path, None::<&str>).map_err(|error| error.to_string())
 }
 
+/// Opens a result at its page, moment or line when its default app can be told it (opener.rs), else the plain way.
+#[tauri::command]
+async fn open_hit(app: AppHandle, shell: State<'_, Arc<Shell>>, hit: opener::Hit, query: String) -> Result<(), String> {
+    hide_panel(app.clone());
+    let shell = shell.inner().clone();
+    let path = hit.path.clone();
+    let opened = tauri::async_runtime::spawn_blocking(move || {
+        let plan = opener::plan(&hit, &query, shell.apps.for_file(&hit.path).as_ref());
+        if cfg!(debug_assertions) {
+            println!("open: {} → {plan:?}", hit.path);
+        }
+        plan != opener::Plan::Plain && opener::run(&plan).map_err(|error| eprintln!("digup-shell: {error}")).is_ok()
+    })
+    .await
+    .unwrap_or(false);
+    if opened {
+        return Ok(());
+    }
+    app.opener().open_path(path, None::<&str>).map_err(|error| error.to_string())
+}
+
+/// What ↩ does with a result, for the panel's footer and Open button: "Open at p. 3", "Open at 0:06", else "Open".
+#[tauri::command]
+async fn open_title(shell: State<'_, Arc<Shell>>, hit: opener::Hit) -> Result<String, String> {
+    if hit.place().is_none() {
+        return Ok("Open".into());
+    }
+    let shell = shell.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        opener::plan(&hit, "", shell.apps.for_file(&hit.path).as_ref()).title()
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
 /// Shows a result in the file manager, selected.
 #[tauri::command]
 fn reveal(app: AppHandle, path: String) -> Result<(), String> {
@@ -254,8 +292,8 @@ fn main() {
         )
         .setup(move |app| setup(app, options))
         .invoke_handler(tauri::generate_handler![
-            ask, estimate, setup_info, pick_folders, finish_setup, open_path, reveal, hide_panel, panel_height,
-            debug_query, debug_report
+            ask, estimate, setup_info, pick_folders, finish_setup, open_path, open_hit, open_title, reveal, hide_panel,
+            panel_height, debug_query, debug_report
         ])
         .build(tauri::generate_context!())
         .expect("DigUp couldn't start");
@@ -328,6 +366,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         reloaded: Mutex::new(Instant::now()),
         debug_query_sent: AtomicBool::new(false),
         logs,
+        apps: opener::Apps::new(),
     });
     app.manage(shell.clone());
 
