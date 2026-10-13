@@ -1,3 +1,143 @@
+<!-- ===== Linux fork section (ginlennon/DigUp-Linux). Upstream's README follows unchanged below the line. ===== -->
+
+# DigUp for Linux (tested on Ubuntu 24.04): an unofficial port
+
+This fork of [ARahim3/DigUp](https://github.com/ARahim3/DigUp) brings DigUp to **Linux**: Ubuntu 24.04 on GNOME and
+Wayland, with the embedding model running on an **AMD iGPU through llama.cpp's Vulkan backend**. It builds on the
+Linux groundwork upstream added in October 2026 (a portable engine and a Tauri shell) and finishes it into an app you
+can use day to day. It's a work in progress: a developer build that you build from source, not a package yet.
+
+Same model, same vectors as the Mac app. The reference-vector test that guards every upstream llama.cpp update
+passes here on both the CPU and the Vulkan GPU, so an index means the same thing on both systems.
+
+## Status (2026-10-14)
+
+| Part | State on Linux |
+|---|---|
+| Engine and `digup` CLI (crawl, read, index, hybrid search) | ✅ builds with Swift 6.4.1; 96/96 tests pass |
+| Embedder (EmbeddingGemma 2 on llama.cpp b11461) | ✅ Vulkan (AMD/Intel GPUs), CPU fallback (`DIGUP_GPU=0`); CUDA builds where `nvcc` is found |
+| Pictures (JPEG, PNG, HEIC, AVIF, WebP, TIFF …), PDFs, docs (txt, md, rtf, docx, odt, html), audio, video | ✅ (stb, PDFium, a pinned ffmpeg 8.1) |
+| Text in screenshots and scanned PDFs (OCR, for exact words) | ✅ tesseract (English + German here; more with language packs) |
+| Desktop app: tray, setup, search panel, open, show in Files | ✅ Tauri shell; the hotkey is a GNOME custom shortcut (Ctrl+Alt+Space) |
+| Open PDFs at the page (Evince, Okular), videos and recordings at the moment (Totem, VLC, mpv); settings window, pause, GPU switch, start at login | ✅ new, being tried out |
+| Packages (.deb / AppImage), updates | ⏳ not yet |
+| RAW photos, legacy .doc, SVG | ⏳ not yet |
+
+## Tested on
+
+| | |
+|---|---|
+| OS | Ubuntu 24.04.5 LTS, GNOME Shell 46 on Wayland, kernel 6.17 (OEM) |
+| CPU | AMD Ryzen AI 7 PRO 350 (8 cores / 16 threads) |
+| GPU | AMD Radeon 860M iGPU (RDNA 3.5, gfx1152), Mesa 25.2.8 RADV, Vulkan 1.4 |
+| Memory | 54 GB (the iGPU shares it) |
+| Toolchain | Swift 6.4.1 (swiftly), Rust 1.99, CMake 3.28, GCC 13.3 |
+
+## Benchmarks
+
+**Indexing speed, CPU vs Vulkan.** 116 generated files (`scripts/linux/make-bench-corpus.sh`), each folder
+indexed into a fresh index (`scripts/linux/bench-embed.sh`), model load included. CPU = 8 threads (DigUp's default).
+
+| Folder | Files | CPU | Vulkan (860M) | Speed-up |
+|---|---|---|---|---|
+| Audio (2 min each) | 6 | 42.2 s | 19.2 s | 2.2× |
+| Text notes (~2,500 words) | 30 | 113.2 s | 40.8 s | 2.8× |
+| PDFs (114 pages) | 6 | 85.1 s | 27.5 s | 3.1× |
+| Photos | 40 | 52.5 s | 22.8 s | 2.3× |
+| Screenshots | 30 | 94.8 s | 33.4 s | 2.8× |
+| Video (1 min each) | 4 | 60.9 s | 21.1 s | 2.9× |
+| **Total** | **116** | **448.7 s** | **164.8 s** | **2.7×** |
+
+The GPU peaked at about 1.45 GB of (shared) memory, and every llama.cpp context stays at 2,048 tokens or less. In
+real use, a first pass over 482 files in Documents, Pictures and Desktop took about 10 minutes on the 860M.
+
+**Search quality.** `digup eval` on the Linux testbed (`scripts/linux/make-testbed.sh`: the eval files re-created
+with free Wikimedia Commons photos and piper voices instead of Apple's sample pictures and voices, so the numbers are
+comparable to the Mac's, not identical):
+
+| Eval | Queries | R@1 | R@5 | MRR |
+|---|---|---|---|---|
+| synthetic (images, audio, video moments, PDF pages, screenshots, long files, exact strings) | 37 | 0.97 | 1.00 | 0.99 |
+| multilingual (Bengali, Arabic, English, and across them) | 48 | 0.94 | 0.98 | 0.95 |
+| code | 41 | 1.00 | 1.00 | 1.00 |
+
+Details: [docs/linux-port/VULKAN_RESULTS.md](docs/linux-port/VULKAN_RESULTS.md),
+[docs/linux-port/EVAL_RESULTS.md](docs/linux-port/EVAL_RESULTS.md).
+
+## Set it up
+
+**Guided:** `scripts/linux/setup.sh` walks through every step below. It checks what's already there, shows each
+command before it runs it, and asks first (`--dry-run` only prints the plan). Nothing is installed without a yes.
+
+**Supported:** Ubuntu 24.04 (other Debian/Ubuntu-based systems will likely work with the same packages). Other
+distributions aren't supported by the scripts: the package list below is the map, and the rest of the steps are
+the same everywhere.
+
+**By hand**, on Ubuntu 24.04:
+
+1. System packages (the only step that needs `sudo`):
+   ```sh
+   sudo apt install build-essential cmake ninja-build pkg-config git curl ca-certificates xz-utils bc \
+     libz3-dev gnupg2 \
+     libvulkan-dev glslc spirv-headers mesa-vulkan-drivers vulkan-tools \
+     libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libsoup-3.0-dev \
+     libssl-dev patchelf \
+     tesseract-ocr            # plus tesseract-ocr-<lang> for more OCR languages, e.g. tesseract-ocr-fra
+   ```
+   (The Vulkan line is for AMD and Intel GPUs. With an NVIDIA GPU and the CUDA toolkit installed, `nvcc` on PATH makes
+   the build use CUDA instead. Without a GPU, DigUp runs on the CPU.)
+2. Toolchains, in your home folder, no `sudo`:
+   - **uv** (Python 3.13 for the eval testbed generator): `curl -LsSf https://astral.sh/uv/install.sh | sh`
+   - **Swift 6.4.1** via [swiftly](https://swift.org/install/linux/) (don't `apt install swift`, that's OpenStack's):
+     ```sh
+     curl -O "https://download.swift.org/swiftly/linux/swiftly-$(uname -m).tar.gz" && tar zxf swiftly-*.tar.gz
+     ./swiftly init --quiet-shell-followup && . ~/.local/share/swiftly/env.sh && swiftly install --use 6.4.1
+     ```
+   - **Rust** via [rustup](https://rustup.rs): `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --profile minimal`
+3. Build (a few minutes; all of it lands in `Vendor/`, `.build/` and `shell/src-tauri/target/`):
+   ```sh
+   git clone https://github.com/ginlennon/DigUp-Linux && cd DigUp-Linux
+   scripts/fetch-vendor.sh               # SQLite (FTS5), stb, miniz, PDFium
+   scripts/linux/fetch-ffmpeg.sh         # a pinned static ffmpeg 8.1 (LGPL): Ubuntu's 6.1 can't read HEIC
+   scripts/build-llama.sh                # llama.cpp b11461: Vulkan if glslc is there, CUDA if nvcc, else CPU
+   swift build -c release --product digup && git checkout -- Package.resolved
+   (cd shell/src-tauri && cargo build)
+   .build/release/digup download-model   # the model, 865 MB, once (to ~/.local/share/digup/Models)
+   ```
+   (`swift build` on Linux drops `Package.resolved`, whose only pin is the Mac app's updater; the checkout puts it back.)
+4. Run it and add the hotkey:
+   ```sh
+   scripts/linux/gnome-shortcut.sh       # Ctrl+Alt+Space opens the panel (GNOME custom shortcut)
+   scripts/linux/dev-run-shell.sh        # first launch: pick folders, indexing starts
+   ```
+
+Optional check that your GPU makes the same vectors as the Mac:
+`DIGUP_BACKENDS=$PWD/Vendor/llama/lib swift test --filter ReferenceVectorTests`.
+
+## How it differs from the Mac app
+
+- **The hotkey.** Wayland doesn't let apps grab keys globally, and GNOME 46 has no shortcut portal yet, so the hotkey
+  is a GNOME custom shortcut that runs the shell again; the running one shows its panel. On other desktops, bind
+  `scripts/linux/dev-run-shell.sh` to a key in their keyboard settings.
+- **The tray** needs an AppIndicator host. Ubuntu's GNOME has one built in; plain GNOME needs the AppIndicator
+  extension.
+- **OCR** is tesseract, not Apple's Vision: fine on clean screenshots, weaker on blurry text, and only in the
+  languages whose packs are installed.
+- **What it skips** besides upstream's rules: Trash, caches (`~/.cache`, `CACHEDIR.TAG` folders), `~/snap`,
+  Flatpak data, and network or FUSE mounts reached from a chosen folder.
+- Where things live: index `~/.local/share/digup/index`, model `~/.local/share/digup/Models`, settings
+  `~/.config/com.abdurrahim.DigUp/settings.json`. Remove those to remove all of DigUp's data.
+
+## For contributors
+
+The port's design notes, plan and logs: [LINUX_PORT.md](LINUX_PORT.md) (goals and decisions),
+[PLANS/LINUX_PORT_PLAN.md](PLANS/LINUX_PORT_PLAN.md), [docs/linux-port/](docs/linux-port/) (analysis, research,
+results), [SETUP.md](SETUP.md), [scripts/linux/README.md](scripts/linux/README.md). Linux code lives in
+`Sources/DigUpKit/Platform/Portable/`, `#if os(Linux)` branches, `shell/` and `scripts/linux/`, so upstream's changes
+keep merging. DigUp itself is by Abdur Rahim ([ARahim3](https://github.com/ARahim3)), MIT; this fork keeps its licence.
+
+---
+
 <p align="center"><img src="docs/logo.png" width="96" alt=""></p>
 
 <h1 align="center">DigUp</h1>
