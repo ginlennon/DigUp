@@ -45,7 +45,105 @@ extension Rules {
     /// Only macOS marks screenshots; elsewhere their names tell (`screenshotPrefixes` covers Snipping Tool, Win+PrtScn,
     /// GNOME and KDE: they all start with "Screenshot").
     static func hasScreenshotMarker(_ url: URL) -> Bool { false }
+
+    #if os(Linux)
+    /// Linux's own folders that aren't yours to search, as ~/Library is on a Mac: the trash (~/.local/share/Trash, and
+    /// .Trash-1000 at the top of a drive), caches (~/.cache, and any folder a CACHEDIR.TAG marks: Cargo's target/,
+    /// ccache, borg), snaps' and Flatpaks' data (~/snap, ~/.var/app), and other machines' and FUSE file systems mounted
+    /// here (`Mounts`). Hidden folders are skipped by the walk anyway; these are named too, for a hidden folder chosen
+    /// as the root (~/.local).
+    static func linuxSkipReason(forFolder url: URL, home: String) -> String? {
+        let path = url.path, name = url.lastPathComponent
+        if path == home + "/.local/share/Trash" || name == ".Trash" || name.hasPrefix(".Trash-") { return "trash" }
+        if path == home + "/.cache" { return "cache folder" }
+        if path == home + "/snap" || path == home + "/.var/app" { return "app data (snap, Flatpak)" }
+        if let reason = Mounts.skipped()[path] { return reason }
+        if hasCacheTag(path) { return "cache folder" }
+        return nil
+    }
+
+    /// A CACHEDIR.TAG that starts as the standard says (https://bford.info/cachedir/): the folder is a cache.
+    static func hasCacheTag(_ folder: String) -> Bool {
+        guard let handle = FileHandle(forReadingAtPath: folder + "/CACHEDIR.TAG") else { return false }
+        defer { try? handle.close() }
+        let signature = "Signature: 8a477f597d28d172789f06886806bc55"
+        return (try? handle.read(upToCount: signature.utf8.count)) == Data(signature.utf8)
+    }
+    #endif
 }
+
+#if os(Linux)
+/// The mounts the crawl doesn't go into: shares on other machines (NFS, SMB), FUSE file systems (sshfs, rclone, GNOME's
+/// gvfs and the portal's document store under /run/user, which reach other machines or show files from elsewhere
+/// again), the kernel's own (/proc, /sys) and snaps' read-only images. Only where the walk would go into one: a folder
+/// chosen on such a mount is read. FUSE file systems that are local disks (NTFS and exFAT drives, mergerfs pools,
+/// encrypted folders) are read like any other.
+enum Mounts {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var cache: (table: [String: String], read: Date)?
+
+    /// Mount point → why it's skipped, from /proc/self/mountinfo, read again when older than 10 s (a share mounted
+    /// while the helper runs is skipped from the next sync on).
+    static func skipped() -> [String: String] {
+        lock.withLock {
+            if let cache, Date().timeIntervalSince(cache.read) < 10 { return cache.table }
+            let text = (try? String(contentsOfFile: "/proc/self/mountinfo", encoding: .utf8)) ?? ""
+            let table = parse(text)
+            cache = (table, Date())
+            return table
+        }
+    }
+
+    /// Mount point → why it's skipped, for the mounts of a mountinfo text that are (`reason`).
+    static func parse(_ mountinfo: String) -> [String: String] {
+        var table: [String: String] = [:]
+        for line in mountinfo.split(separator: "\n") {
+            // "36 35 98:0 /mnt1 /mnt/parent rw,noatime master:1 - ext3 /dev/root rw": the mount point is the fifth
+            // field, the type the first after "-".
+            let fields = line.split(separator: " ", omittingEmptySubsequences: false)
+            guard fields.count > 6, let dash = fields[6...].firstIndex(of: "-"), dash + 1 < fields.count,
+                  let reason = reason(String(fields[dash + 1]))
+            else { continue }
+            table[unescaped(String(fields[4]))] = reason
+        }
+        return table
+    }
+
+    /// Why a file system of `type` isn't walked into, or nil when it is.
+    static func reason(_ type: String) -> String? {
+        let network: Set<String> = ["nfs", "nfs4", "cifs", "smb3", "smbfs", "ncpfs", "afs", "ceph", "glusterfs",
+                                    "davfs", "9p", "sshfs"]
+        let local: Set<String> = ["fuse.ntfs-3g", "fuse.ntfs", "fuse.exfat", "fuse.mergerfs", "fuse.gocryptfs",
+                                  "fuse.encfs", "fuse.cryfs", "fuse.securefs", "fuse.bindfs"]
+        let system: Set<String> = ["proc", "sysfs", "devtmpfs", "devpts", "cgroup", "cgroup2", "securityfs", "debugfs",
+                                   "tracefs", "pstore", "bpf", "configfs", "fusectl", "mqueue", "hugetlbfs", "autofs",
+                                   "efivarfs", "binfmt_misc", "nsfs", "squashfs"]
+        if network.contains(type) { return "network share" }
+        if (type == "fuse" || type.hasPrefix("fuse.")) && !local.contains(type) { return "FUSE mount" }
+        if system.contains(type) { return "system mount" }
+        return nil
+    }
+
+    /// mountinfo writes a space in a path as \040, a tab \011, a line break \012 and a backslash \134.
+    static func unescaped(_ path: String) -> String {
+        guard path.contains("\\") else { return path }
+        var bytes: [UInt8] = []
+        let utf8 = Array(path.utf8)
+        var i = 0
+        while i < utf8.count {
+            if utf8[i] == UInt8(ascii: "\\"), i + 3 < utf8.count,
+               let value = UInt8(String(decoding: utf8[(i + 1)...(i + 3)], as: UTF8.self), radix: 8) {
+                bytes.append(value)
+                i += 4
+            } else {
+                bytes.append(utf8[i])
+                i += 1
+            }
+        }
+        return String(decoding: bytes, as: UTF8.self)
+    }
+}
+#endif
 
 enum FileSystem {
     /// What the crawl asks of each URL.

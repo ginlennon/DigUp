@@ -161,4 +161,73 @@ import Testing
         #expect(walked("/Users/me/Documentsx/a.pdf", root: "/Users/me/Documentsx"))
         #expect(!walked("/Users/me/Documentsx/a.pdf", root: "/Users/me/Documents"))
     }
+
+    #if os(Linux)
+    @Test func hiddenFilesTrashAndCachesAreNotCrawled() throws {
+        func write(_ path: String, _ text: String = "notes about the trip") throws {
+            let url = folder.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(text.utf8).write(to: url)
+        }
+        try write("visible/trip.txt")
+        try write("visible/.draft.txt")                        // hidden file
+        try write(".hidden/trip.txt")                          // hidden folder
+        try write(".Trash-1000/files/trip.txt")                // a drive's trash
+        try write("target/CACHEDIR.TAG", "Signature: 8a477f597d28d172789f06886806bc55\n# a cache\n")
+        try write("target/debug/trip.txt")
+        try write("notes/CACHEDIR.TAG", "not the signature")   // only the standard's tag counts
+        try write("notes/plan.txt")
+        let report = Crawler.crawl([folder], options: IndexOptions())
+        #expect(Set(report.candidates.map { String($0.path.dropFirst(folder.path.count + 1)) })
+            == ["visible/trip.txt", "notes/plan.txt"])
+        #expect(report.skippedFolders["cache folder"] == 1)
+        // A cache chosen as the root is read.
+        #expect(Crawler.crawl([folder.appendingPathComponent("target")], options: IndexOptions()).candidates.count == 1)
+    }
+
+    @Test func linuxFoldersThatAreNotYoursAreNotWalked() {
+        let home = "/home/me"
+        func walked(_ path: String, root: String = home) -> Bool {
+            Rules.isWalked(path, root: root, home: home, excluded: [])
+        }
+        #expect(walked("/home/me/Documents/trip.pdf"))
+        #expect(!walked("/home/me/snap/firefox/common/notes.txt"))
+        #expect(!walked("/home/me/.local/share/Trash/files/trip.pdf"))
+        // Named too, for a hidden folder chosen as the root.
+        #expect(walked("/home/me/.local/share/notes/trip.md", root: "/home/me/.local"))
+        #expect(!walked("/home/me/.local/share/Trash/files/trip.pdf", root: "/home/me/.local"))
+        #expect(!walked("/home/me/.var/app/org.gimp.GIMP/cache/x.png", root: "/home/me/.var"))
+        #expect(Rules.skipReason(forFolder: URL(fileURLWithPath: "/home/me/.cache"), home: home, excluded: [])
+            == "cache folder")
+        #expect(!walked("/media/me/USB/.Trash-1000/files/trip.pdf", root: "/media/me/USB"))
+        #expect(walked("/home/me/snap/firefox/common/notes.txt", root: "/home/me/snap"))   // chosen: read
+    }
+
+    @Test func mountsOfOtherMachinesAreNotWalkedInto() {
+        let mountinfo = """
+            22 1 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw,errors=remount-ro
+            25 22 0:22 / /proc rw,nosuid,nodev,noexec,relatime shared:12 - proc proc rw
+            40 30 0:38 / /run/user/1000/doc rw,nosuid,nodev,relatime shared:500 - fuse.portal portal rw,user_id=1000
+            41 30 0:39 / /run/user/1000/gvfs rw,nosuid,nodev,relatime shared:510 - fuse.gvfsd-fuse gvfsd-fuse rw
+            42 22 0:40 / /mnt/nas\\040share rw,relatime shared:2 - cifs //nas/share rw,vers=3.1.1
+            43 22 8:17 / /media/me/Drive rw,relatime shared:3 - fuseblk /dev/sdb1 rw,user_id=0
+            44 22 0:41 / /home/me/remote rw,relatime shared:4 - fuse.sshfs me@host: rw,user_id=1000
+            45 22 0:42 / /home/me/Vault rw,relatime shared:5 - fuse.gocryptfs /home/me/.vault rw
+            46 22 0:43 / /home/me/Drive rw,relatime shared:6 - fuse.rclone gdrive: rw
+            47 22 7:3 / /snap/core22/2437 ro,nodev,relatime shared:7 - squashfs /dev/loop3 ro
+            """
+        #expect(Mounts.parse(mountinfo) == [
+            "/proc": "system mount", "/run/user/1000/doc": "FUSE mount", "/run/user/1000/gvfs": "FUSE mount",
+            "/mnt/nas share": "network share", "/home/me/remote": "FUSE mount", "/home/me/Drive": "FUSE mount",
+            "/snap/core22/2437": "system mount",
+        ])
+        // This machine's own: each is skipped where the walk would go into it, and read when it's the chosen folder.
+        for (point, reason) in Mounts.skipped() where point.split(separator: "/").count > 1 {
+            #expect(Rules.skipReason(forFolder: URL(fileURLWithPath: point), home: "/home/me", excluded: []) == reason)
+            let parent = (point as NSString).deletingLastPathComponent
+            #expect(!Rules.isWalked(point + "/notes.txt", root: parent, home: "/home/me", excluded: []))
+            #expect(Rules.isWalked(point + "/notes.txt", root: point, home: "/home/me", excluded: []))
+        }
+    }
+    #endif
 }

@@ -144,6 +144,9 @@ public enum Rules {
         if skippedFolderNames.contains(name) { return "developer folder" }
         if name.hasSuffix(".noindex") { return ".noindex folder" }
         if url.path == home + "/Library" { return "~/Library" }
+        #if os(Linux)
+        if let reason = linuxSkipReason(forFolder: url, home: home) { return reason }
+        #endif
         if excluded.contains(where: { url.path == $0 || url.path.hasPrefix($0 + "/") }) { return "excluded folder" }
         return nil
     }
