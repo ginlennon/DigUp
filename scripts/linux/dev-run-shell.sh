@@ -16,6 +16,5 @@ SHELL_BIN="$REPO/shell/src-tauri/target/debug/digup-shell"
 [[ -x "$SHELL_BIN" ]] || { echo "build it first: (cd shell/src-tauri && cargo build)"; exit 1; }
 [[ -x "$REPO/.build/release/digup" ]] || { echo "build the helper first: swift build -c release --product digup"; exit 1; }
 export DIGUP_BACKENDS="${DIGUP_BACKENDS:-$REPO/Vendor/llama/lib}"
-[[ -x "$REPO/Vendor/ffmpeg/ffmpeg" ]] && export DIGUP_FFMPEG="${DIGUP_FFMPEG:-$REPO/Vendor/ffmpeg/ffmpeg}"
 export DIGUP_SHELL_LAUNCHER="$REPO/scripts/linux/dev-run-shell.sh"
 exec "$SHELL_BIN" --helper "$REPO/.build/release/digup" --hotkey "Control+Alt+Space" "$@"

@@ -141,7 +141,7 @@ Tiers: **MVP** = needed for a usable first Linux release; **v2** = after MVP; **
 
 ---
 
-# Part B — Staged implementation (each stage ends with a check and a WORKLOG entry)
+# Part B — Staged implementation (each stage ends with a check and its results written down)
 
 Coding is delegated to Opus subagents with self-contained prompts and reviewed in the main loop; commits stay small
 and Linux-scoped.

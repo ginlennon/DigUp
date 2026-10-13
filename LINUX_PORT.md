@@ -2,8 +2,9 @@
 
 This fork ports DigUp (semantic search over your own files with EmbeddingGemma 2 on llama.cpp) to **Ubuntu 24.04 on
 GNOME/Wayland**, with the embedder running on an **AMD iGPU through llama.cpp's Vulkan backend**. The upstream
-`README.md` stays the product README (kept untouched so upstream merges stay clean); this file is the port's "why".
-Rarely changes. Status lives in `CATCH_UP_CURRENT.md` / `WORKLOG/`, the plan in `PLANS/LINUX_PORT_PLAN.md`, the
+`README.md` carries a Linux-fork section at its top (user request, 2026-10-14) and upstream's text unchanged below
+it, so a merge conflicts only there; this file is the port's "why".
+Rarely changes. Status is in the README's Linux section, the plan in `PLANS/LINUX_PORT_PLAN.md`, the
 evidence in `docs/linux-port/`.
 
 ## Goal
