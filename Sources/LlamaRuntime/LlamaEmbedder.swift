@@ -1,6 +1,9 @@
 import CLlama
 import DigUpKit
 import Foundation
+#if os(Windows)
+import WinSDK
+#endif
 
 /// EmbeddingGemma 2 on llama.cpp (Metal), in this process: the image and audio encoders (mtmd) feed the text model, and
 /// its mean-pooled, L2-normalized output is the vector.
@@ -49,11 +52,12 @@ public final class LlamaEmbedder: Embedder {
         let started = Date()
         LlamaLog.shared.send(to: log)
         _ = Self.backend
+        LlamaLog.shared.line("devices: \(Self.devices)")
         guard textOnly || models.media != nil else {
             throw WorkerError.notFound("\(LlamaModels.mediaFile) (images and audio) isn't downloaded yet")
         }
         var modelParams = llama_model_default_params()
-        modelParams.n_gpu_layers = 999
+        modelParams.n_gpu_layers = Self.useGPU ? 999 : 0
         guard let model = llama_model_load_from_file(models.text.path, modelParams) else {
             throw WorkerError.failed("can't load \(models.text.path)")
         }
@@ -79,7 +83,7 @@ public final class LlamaEmbedder: Embedder {
         var media: OpaquePointer?
         if let mediaFile = models.media, !textOnly {
             var mediaParams = mtmd_context_params_default()
-            mediaParams.use_gpu = true
+            mediaParams.use_gpu = Self.useGPU
             mediaParams.print_timings = false
             mediaParams.warmup = true
             mediaParams.image_min_tokens = 1      // never rescale: images arrive at their final size (ImageSizing)
@@ -323,7 +327,34 @@ public final class LlamaEmbedder: Embedder {
         llama_backend_init()
     }()
 
-    #if !os(macOS)
+    /// What the model runs on, as llama.cpp picks it: the GPUs (else the integrated ones) when it may use them, and the
+    /// CPU. It loads the backends, not the model, so `digup status` can say it.
+    public static var devices: String {
+        _ = backend
+        let all = (0..<ggml_backend_dev_count()).compactMap { ggml_backend_dev_get($0) }
+        let gpus = all.filter { ggml_backend_dev_type($0) == GGML_BACKEND_DEVICE_TYPE_GPU }
+        let integrated = all.filter { ggml_backend_dev_type($0) == GGML_BACKEND_DEVICE_TYPE_IGPU }
+        let used = useGPU ? (gpus.isEmpty ? integrated : gpus) : []
+        #if os(macOS)
+        let cpu = "CPU"
+        #else
+        let cpu = "CPU (\(threads) threads)"
+        #endif
+        return (used.map {
+            "\(String(cString: ggml_backend_dev_name($0))) (\(String(cString: ggml_backend_dev_description($0))))"
+        } + [cpu]).joined(separator: ", ")
+    }
+
+    #if os(macOS)
+    static let useGPU = true
+    #else
+    /// Whether the model may run on a GPU: yes unless `DIGUP_GPU` is 0, off or cpu, which the shell sets after a GPU
+    /// failure (or when told not to use it). Then the GPU's backend isn't even loaded, as a broken driver can fail there.
+    static let useGPU: Bool = {
+        let chosen = ProcessInfo.processInfo.environment["DIGUP_GPU"]?.lowercased() ?? ""
+        return !["0", "off", "cpu"].contains(chosen)
+    }()
+
     /// The threads llama.cpp computes on (what runs on the CPU: all of it on a machine without a GPU): every logical
     /// processor up to 8, where llama.cpp's default is 4; `DIGUP_THREADS` says otherwise. 43 photos, 2026-10-12: an
     /// i5-8350U laptop (4 cores, 8 threads) 227 s on 4 threads, 174 s on 8; a Core Ultra 9 285K (8 + 16
@@ -335,19 +366,53 @@ public final class LlamaEmbedder: Embedder {
 
     /// On Linux and Windows ggml's backends are shared libraries (GGML_BACKEND_DL, scripts/build-llama.sh): the CPU
     /// variants always, CUDA or Vulkan when the machine has them. They're looked for in $DIGUP_BACKENDS, then beside this
-    /// executable, then wherever ggml itself looks; whatever loads and works is what the model runs on.
+    /// executable, then wherever ggml itself looks; whatever loads and works is what the model runs on. Without the GPU
+    /// (`useGPU`) only the CPU's is loaded.
     private static func loadBackends() {
         let environment = ProcessInfo.processInfo.environment
         var folders: [String] = []
         if let chosen = environment["DIGUP_BACKENDS"], !chosen.isEmpty { folders.append(chosen) }
         if let executable = Bundle.main.executableURL { folders.append(executable.deletingLastPathComponent().path) }
+        if !useGPU { folders.append(FileManager.default.currentDirectoryPath) }   // the rest of where ggml looks
         for folder in folders where ggml_backend_dev_count() == 0 {
-            ggml_backend_load_all_from_path(folder)
+            if useGPU { ggml_backend_load_all_from_path(folder) } else { loadCPUBackend(from: folder) }
         }
-        if ggml_backend_dev_count() == 0 { ggml_backend_load_all() }
+        if ggml_backend_dev_count() == 0 && useGPU { ggml_backend_load_all() }
         LlamaLog.shared.line("backends: " + (0..<ggml_backend_reg_count()).map {
             String(cString: ggml_backend_reg_name(ggml_backend_reg_get($0)))
         }.joined(separator: ", "))
+    }
+
+    /// The best of the folder's CPU variants (haswell, zen4, …) for this processor, chosen as ggml chooses it when it
+    /// loads everything: each says how well it fits (`ggml_backend_score`, 0 if it can't run here), the highest wins.
+    /// ggml keeps that choice to itself (`ggml_backend_load_best` isn't in its headers), so it's done again here.
+    private static func loadCPUBackend(from folder: String) {
+        #if os(Windows)
+        let (prefix, suffix, separator) = ("ggml-cpu", ".dll", "\\")
+        #else
+        let (prefix, suffix, separator) = ("libggml-cpu", ".so", "/")
+        #endif
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder)) ?? []
+        let variants = names.filter { $0.hasPrefix(prefix + "-") && $0.hasSuffix(suffix) }
+            .map { folder + separator + $0 }.map { (path: $0, score: score($0)) }
+        if let best = variants.max(by: { $0.score < $1.score }), best.score > 0 {
+            _ = ggml_backend_load(best.path)
+        } else if names.contains(prefix + suffix) {   // a build with just one CPU backend
+            _ = ggml_backend_load(folder + separator + prefix + suffix)
+        }
+    }
+
+    private static func score(_ path: String) -> Int32 {
+        #if os(Windows)
+        guard let library = path.withCString(encodedAs: UTF16.self, { LoadLibraryW($0) }) else { return 0 }
+        defer { FreeLibrary(library) }
+        guard let symbol = GetProcAddress(library, "ggml_backend_score") else { return 0 }
+        #else
+        guard let library = dlopen(path, RTLD_NOW | RTLD_LOCAL) else { return 0 }
+        defer { dlclose(library) }
+        guard let symbol = dlsym(library, "ggml_backend_score") else { return 0 }
+        #endif
+        return unsafeBitCast(symbol, to: (@convention(c) () -> Int32).self)()
     }
     #endif
 }

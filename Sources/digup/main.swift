@@ -48,7 +48,8 @@ let usage = """
 
     The model: EmbeddingGemma 2 on llama.cpp, from $DIGUP_MODELS (only there, when set), else
     ~/Library/Application Support/DigUp/Models or the Hugging Face cache. DIGUP_WORKER_DIR=worker uses the
-    mlx-vlm reference worker instead (evals).
+    mlx-vlm reference worker instead (evals). On Linux and Windows it runs on the GPU when one loads (backends from
+    $DIGUP_BACKENDS, else beside digup); DIGUP_GPU=0 keeps it on the CPU, on DIGUP_THREADS threads (default up to 8).
     """
 
 struct CLIError: Error, CustomStringConvertible {
@@ -403,6 +404,7 @@ func status(_ args: Arguments) throws {
     }
     if let fingerprint = try store.meta("fingerprint") { print("built with: \(fingerprint)") }
     print("this digup: llama.cpp \(LlamaEmbedder.buildTag), vectors \(LlamaEmbedder.vectorVersion)")
+    if embedderSource() != nil { print("compute: \(LlamaEmbedder.devices)") }   // the backends, not the model
     print("size: \(ByteCountFormatter.string(fromByteCount: IndexStore.size(of: store.file), countStyle: .file))")
 }
 
