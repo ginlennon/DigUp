@@ -386,7 +386,8 @@ public final class IndexStore {
     /// Files read once more because DigUp reads them better now, each kind once per index (the schema stays as it was,
     /// so an older DigUp still opens the index): PDFs with pages read as pictures, whose words come from OCR now
     /// (`meta` "scans_ocr"), and pictures that couldn't be read at all, like SVGs, which AppKit draws now
-    /// ("pictures_drawn"). Only where this machine does either. Returns how many files.
+    /// ("pictures_drawn"). Only where this machine does either. Elsewhere also what ffmpeg and ffprobe couldn't read,
+    /// whenever they change ("media_tools"). Returns how many files.
     @discardableResult
     public func readAgainOnce() throws -> Int {
         var files = Set<Int64>(), flags: [String] = []
@@ -399,10 +400,24 @@ public final class IndexStore {
                          [.text(ExtractError.tooSmall(0, 0).description)]) { files.insert($0.int(0)) }
             flags.append("pictures_drawn")
         }
-        guard !flags.isEmpty else { return 0 }
+        var values: [(String, String)] = flags.map { ($0, "1") }
+        #if !canImport(AVFoundation)
+        // Without AVFoundation, ffmpeg and ffprobe read audio, video and some pictures. What failed for want of them
+        // (or of a newer ffmpeg, for HEIC), and what an older DigUp took for silent while ffprobe was missing, is read
+        // again whenever they change: installed, updated, or moved.
+        if try meta("media_tools") != FFmpeg.tools {
+            try db.query("""
+                SELECT id FROM files WHERE (state = 'failed' AND (detail LIKE ? OR detail LIKE ? OR detail LIKE ?))
+                    OR (state = 'skipped' AND detail IN ('silent or shorter than 2 s', 'no frames or sound'))
+                """, [.text("%ffmpeg isn't installed%"), .text("%ffprobe isn't installed%"),
+                      .text("%this ffmpeg can't read%")]) { files.insert($0.int(0)) }
+            values.append(("media_tools", FFmpeg.tools))
+        }
+        #endif
+        guard !values.isEmpty else { return 0 }
         try db.transaction {
             for file in files { try requeue(file) }
-            for flag in flags { try setMeta(flag, "1") }
+            for (key, value) in values { try setMeta(key, value) }
         }
         return files.count
     }

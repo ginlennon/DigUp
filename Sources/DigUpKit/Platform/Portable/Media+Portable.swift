@@ -29,7 +29,7 @@ enum FFmpeg {
     /// Runs a tool and hands its standard output to `read` as it comes (a long decode never sits in memory whole).
     /// Throws when the tool is missing or fails.
     static func run(_ tool: String?, _ arguments: [String], read: (Data) throws -> Void) throws {
-        guard let tool else { throw ExtractError.unreadable("ffmpeg isn't installed (audio and video need it)") }
+        guard let tool else { throw ExtractError.unreadable(missing("ffmpeg")) }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: tool)
         process.arguments = arguments
@@ -67,13 +67,28 @@ extension MediaInfo {
         return seconds.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
     }
 
-    /// Which kinds of streams the file has.
-    static func streams(of url: URL) -> (audio: Bool, video: Bool) {
-        guard let text = try? FFmpeg.output(FFmpeg.ffprobe, ["-v", "error", "-show_entries", "stream=codec_type", "-of",
-                                                             "default=noprint_wrappers=1:nokey=1", url.path])
-        else { return (false, false) }
+    /// Which kinds of streams the file has. Throws when ffprobe isn't installed or can't read the file: either way
+    /// nothing is known about it, and taking that for "no sound" would file a talk away as silent, never to be read
+    /// again. Failed, it's read once more when the tools change (`IndexStore.readAgainOnce`).
+    static func streams(of url: URL, probe: String? = FFmpeg.ffprobe) throws -> (audio: Bool, video: Bool) {
+        guard let probe else { throw ExtractError.unreadable(FFmpeg.missing("ffprobe")) }
+        let text = try FFmpeg.output(probe, ["-v", "error", "-show_entries", "stream=codec_type", "-of",
+                                             "default=noprint_wrappers=1:nokey=1", url.path])
         return (text.contains("audio"), text.contains("video"))
     }
+}
+
+extension FFmpeg {
+    /// A file's note when a tool isn't there ("… isn't installed", which `IndexStore.readAgainOnce` looks for).
+    static func missing(_ tool: String) -> String { "\(tool) isn't installed (audio and video need it)" }
+
+    /// Which ffmpeg and ffprobe these are (where, how big, how new): when that changes, what they couldn't read is read
+    /// once more.
+    static let tools: String = [ffmpeg, ffprobe].map { tool in
+        guard let tool, let info = FileSystem.info(of: URL(fileURLWithPath: tool).resolvingSymlinksInPath().path)
+        else { return "none" }
+        return "\(tool) \(info.size) \(Int(info.mtime))"
+    }.joined(separator: " | ")
 }
 
 extension Estimator {
@@ -88,7 +103,7 @@ extension AudioExtractor {
     /// ≤ 30 s. Streams: memory stays at one window, even for a 3-hour podcast.
     static func windows(of url: URL, window: Double, hop: Double, minimum: Double = 2, to folder: URL) async throws
         -> (pieces: [MediaPiece], duration: Double) {
-        guard MediaInfo.streams(of: url).audio else { return ([], 0) }
+        guard try MediaInfo.streams(of: url).audio else { return ([], 0) }
         let duration = MediaInfo.duration(of: url) ?? 0
         let windowSamples = Int(window * sampleRate), hopSamples = Int(hop * sampleRate)
         var buffer: [Int16] = []
@@ -134,7 +149,7 @@ extension VideoExtractor {
     /// previous kept one (8×8 average hash within 4 bits) only extends it.
     static func keyframes(of url: URL, every interval: Double, maxPixel: Int, maxFrames: Int = 1200, to folder: URL)
         async throws -> (frames: [MediaPiece], duration: Double, hasAudio: Bool) {
-        let streams = MediaInfo.streams(of: url)
+        let streams = try MediaInfo.streams(of: url)
         let duration = MediaInfo.duration(of: url) ?? 0
         guard duration > 0, streams.video else { return ([], duration, streams.audio) }
         let step = max(interval, duration / Double(maxFrames))

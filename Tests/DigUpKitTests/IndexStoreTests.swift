@@ -157,6 +157,37 @@ import WinSDK
         #expect(try store.pendingCount() == 2)
         #expect(try store.prune(keepingUnder: chosen.map(\.path)) == 0)
     }
+
+    #if !canImport(AVFoundation)
+    @Test func aMissingFFprobeIsAFailureNotSilence() throws {
+        // Without ffprobe nothing is known about a file's streams, and the note says why.
+        let clip = folder.appendingPathComponent("talk.mp3")
+        try Data(count: 1000).write(to: clip)
+        do {
+            _ = try MediaInfo.streams(of: clip, probe: nil)
+            Issue.record("streams were known without ffprobe")
+        } catch {
+            #expect("\(error)" == "unreadable: ffprobe isn't installed (audio and video need it)")
+        }
+
+        // What failed for want of a tool, or was taken for silent by an older DigUp, is read again once the tools
+        // change; what ffmpeg itself couldn't read isn't.
+        let store = try IndexStore(directory: folder)
+        func add(_ name: String, _ state: String, _ detail: String) throws {
+            let id = try store.insert(Candidate(path: "/a/" + name, kind: .audio, size: 10, mtime: 1,
+                                                inode: UInt64(name.count), device: 1))
+            try store.finish(id, state: state, detail: detail)
+        }
+        try add("talk.mp3", "failed", "unreadable: ffprobe isn't installed (audio and video need it)")
+        try add("song.mp3", "skipped", "silent or shorter than 2 s")
+        try add("photo.heic", "failed", "unreadable: this ffmpeg can't read HEIC (8.1 can)")
+        try add("broken.mp3", "failed", "unreadable: ffmpeg failed (1)")
+        try store.setMeta("media_tools", "none | none")
+        #expect(try store.readAgainOnce() == 3)
+        #expect(try store.pendingCount() == 3)
+        #expect(try store.readAgainOnce() == 0)   // the same tools: nothing more
+    }
+    #endif
 }
 
 /// Sets an environment variable of this process, or removes it (nil).
