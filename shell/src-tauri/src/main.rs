@@ -4,6 +4,7 @@
 // folders. The Mac app (Sources/DigUpApp) is the reference for behavior.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod desktop;
 mod helper;
 mod opener;
 mod options;
@@ -42,6 +43,8 @@ struct Shell {
     watcher: Mutex<Option<FolderWatcher>>,
     /// The tray menu's first line: what's going on.
     status: Mutex<Option<MenuItem<Wry>>>,
+    /// The tray's Pause Indexing / Resume Indexing and Index Now, which follow the pause.
+    pause_item: Mutex<Option<(MenuItem<Wry>, MenuItem<Wry>)>>,
     /// When the search service last reloaded the index (while indexing, at most every few seconds).
     reloaded: Mutex<Instant>,
     /// Debug runs with setup: the panel's query waits until the first index is in.
@@ -69,15 +72,25 @@ impl Shell {
         self.options.hotkey.clone().unwrap_or(if chosen.is_empty() { DEFAULT_HOTKEY.to_string() } else { chosen })
     }
 
+    fn is_paused(&self) -> bool {
+        self.settings.lock().unwrap().paused
+    }
+
     /// A background helper (indexing, the download), below the person's own programs for the processor.
     fn launch(&self, args: Vec<String>, log: &str) -> Launch {
         Launch {
             program: self.options.helper.clone(),
             args,
-            env: self.options.models.iter().map(|models| ("DIGUP_MODELS".to_string(), models.display().to_string())).collect(),
+            env: helper_env(&self.options, &self.settings.lock().unwrap()),
             log: Some(self.logs.join(log)),
             background: true,
         }
+    }
+
+    /// `search-service` for the folders and settings as they are now.
+    fn search_launch(&self) -> Launch {
+        let settings = self.settings.lock().unwrap().clone();
+        search_launch(&self.options, &settings, self.folders(), &self.logs)
     }
 
     fn index_arguments(&self) -> Vec<String> {
@@ -101,6 +114,43 @@ impl Shell {
 
     fn model_ready(&self) -> bool {
         self.model_state.lock().unwrap()["state"] == "ready"
+    }
+
+    /// Saves the settings after `change`.
+    fn change_settings(&self, change: impl FnOnce(&mut Settings)) -> Result<(), String> {
+        let mut settings = self.settings.lock().unwrap();
+        change(&mut settings);
+        settings.save(&self.settings_path).map_err(|error| format!("can't save the settings: {error}"))
+    }
+}
+
+/// What every helper is started with: where the model is, and the CPU only when the GPU is switched off.
+fn helper_env(options: &Options, settings: &Settings) -> Vec<(String, String)> {
+    let mut env: Vec<(String, String)> =
+        options.models.iter().map(|models| ("DIGUP_MODELS".to_string(), models.display().to_string())).collect();
+    if !settings.gpu {
+        env.push(("DIGUP_GPU".to_string(), "0".to_string()));
+    }
+    env
+}
+
+/// `search-service` for these folders, with what's skipped in them. Not a background helper: it answers typing.
+fn search_launch(options: &Options, settings: &Settings, folders: Vec<String>, logs: &Path) -> Launch {
+    let mut args = vec!["search-service".to_string()];
+    args.extend(options.index.iter().flat_map(|index| ["--index".to_string(), index.display().to_string()]));
+    for folder in &settings.skipped {
+        args.extend(["--exclude".to_string(), folder.clone()]);
+    }
+    for extension in &settings.skip_types {
+        args.extend(["--exclude-ext".to_string(), extension.clone()]);
+    }
+    args.extend(folders);
+    Launch {
+        program: options.helper.clone(),
+        args,
+        env: helper_env(options, settings),
+        log: Some(logs.join("search.log")),
+        background: false,
     }
 }
 
@@ -162,9 +212,9 @@ fn setup_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Value {
 
 /// Folders chosen in the system's folder picker (none when it's cancelled).
 #[tauri::command]
-async fn pick_folders(app: AppHandle) -> Vec<String> {
+async fn pick_folders(app: AppHandle, title: Option<String>) -> Vec<String> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
-    app.dialog().file().set_title("Add Folders").pick_folders(move |folders| {
+    app.dialog().file().set_title(title.unwrap_or_else(|| "Add Folders".into())).pick_folders(move |folders| {
         let _ = sender.send(folders);
     });
     let picked = receiver.await.ok().flatten().unwrap_or_default();
@@ -184,6 +234,114 @@ fn finish_setup(app: AppHandle, shell: State<'_, Arc<Shell>>, folders: Vec<Strin
     if let Some(window) = app.get_webview_window("setup") {
         let _ = window.close();
     }
+    Ok(())
+}
+
+/// What the settings window shows: the folders and what's skipped, the pause, the GPU switch, the shortcut, starting
+/// at login, and where DigUp keeps things.
+#[tauri::command]
+async fn settings_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Result<Value, String> {
+    let settings = shell.settings.lock().unwrap().clone();
+    let gnome = desktop::is_gnome(std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref());
+    // gsettings is three small processes: not on the main thread.
+    let shortcut = match gnome {
+        true => tauri::async_runtime::spawn_blocking(desktop::gnome_shortcut).await.ok().flatten(),
+        false => None,
+    };
+    let path = |folder: Option<PathBuf>| folder.map(|folder| folder.display().to_string());
+    let status = shell.status.lock().unwrap().as_ref().and_then(|status| status.text().ok());
+    let launcher = desktop::launcher();
+    Ok(json!({
+        "status": status,
+        // The saved folders. Dev runs search the folders they're given (--roots) instead: the window says so, and
+        // what's changed is saved for later.
+        "folders": settings.folders,
+        "foldersFromLaunch": !shell.options.roots.is_empty(),
+        "skipped": settings.skipped,
+        "skipTypes": settings.skip_types,
+        "paused": settings.paused,
+        "gpu": settings.gpu,
+        "hotkey": shortcut_text(&shell.hotkey()),
+        "gnome": gnome,
+        "shortcut": shortcut,
+        // What our GNOME shortcut should run: when it runs something else (an older build), it can be set up again.
+        "shortcutCommand": desktop::shell_word(&launcher),
+        "startsAtLogin": desktop::starts_at_login(),
+        "version": app.package_info().version.to_string(),
+        "paths": {
+            "index": path(shell.options.index_folder()),
+            "models": path(shell.options.models_folder()),
+            "logs": shell.logs.display().to_string(),
+            "settings": shell.settings_path.display().to_string(),
+        },
+    }))
+}
+
+/// Settings' folders, skipped folders and skipped types: saved, and searching, watching and indexing follow them.
+/// (Off the main thread: an index helper indexing the old folders takes up to two seconds to stop.)
+#[tauri::command]
+async fn save_folders(app: AppHandle, shell: State<'_, Arc<Shell>>, folders: Vec<String>, skipped: Vec<String>,
+                      skip_types: String) -> Result<(), String> {
+    shell.change_settings(|settings| {
+        settings.folders = folders;
+        settings.skipped = skipped;
+        settings.skip_types = settings::extensions(&skip_types);
+    })?;
+    tauri::async_runtime::spawn_blocking(move || {
+        apply_folders(&app);
+        settings_changed(&app);
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+/// Pause Indexing / Resume Indexing (the tray's and Settings'): kept in the settings, so a pause outlasts a restart.
+#[tauri::command]
+async fn set_paused(app: AppHandle, paused: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || pause(&app, paused)).await.map_err(|error| error.to_string())?
+}
+
+/// The GPU switch: the helpers start over with it (DIGUP_GPU=0 when it's off), the search service at once.
+#[tauri::command]
+async fn set_gpu(app: AppHandle, shell: State<'_, Arc<Shell>>, gpu: bool) -> Result<(), String> {
+    shell.change_settings(|settings| settings.gpu = gpu)?;
+    let shell = shell.inner().clone();
+    shell.search.set_launch(shell.search_launch());
+    let stopping = shell.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        stopping.search.stop();
+        // A running index helper keeps the model where it loaded it: it stops, and starts again with the setting.
+        stopping.index.stop();
+        run_index(&app);
+        settings_changed(&app);
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    // Warm again, so the next search doesn't wait for the start.
+    let _ = shell.search.ask(json!({"op": "status"})).await;
+    Ok(())
+}
+
+/// Starting at login: the autostart entry is written or removed.
+#[tauri::command]
+fn set_starts_at_login(app: AppHandle, on: bool) -> Result<(), String> {
+    if !cfg!(target_os = "linux") {
+        return Err("starting at login is set up on Linux only so far".into());
+    }
+    let result = desktop::set_starts_at_login(on, &desktop::launcher());
+    settings_changed(&app);
+    result
+}
+
+/// Writes the GNOME shortcut for the hotkey (see desktop.rs), running this program.
+#[tauri::command]
+async fn set_up_shortcut(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Result<(), String> {
+    let hotkey = shell.hotkey();
+    let command = desktop::shell_word(&desktop::launcher());
+    tauri::async_runtime::spawn_blocking(move || desktop::set_up_gnome_shortcut(&hotkey, &command))
+        .await
+        .map_err(|error| error.to_string())??;
+    settings_changed(&app);
     Ok(())
 }
 
@@ -278,7 +436,12 @@ fn main() {
         }
     };
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _, _| show_panel(app)))
+        // A second launch shows the panel (the GNOME shortcut runs one), unless it's the login's (--background).
+        .plugin(tauri_plugin_single_instance::init(|app, args, _| {
+            if !args.iter().any(|arg| arg == "--background") {
+                show_panel(app);
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
@@ -293,7 +456,8 @@ fn main() {
         .setup(move |app| setup(app, options))
         .invoke_handler(tauri::generate_handler![
             ask, estimate, setup_info, pick_folders, finish_setup, open_path, open_hit, open_title, reveal, hide_panel,
-            panel_height, debug_query, debug_report
+            panel_height, settings_info, save_folders, set_paused, set_gpu, set_starts_at_login, set_up_shortcut,
+            debug_query, debug_report
         ])
         .build(tauri::generate_context!())
         .expect("DigUp couldn't start");
@@ -322,17 +486,8 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
     } else {
         options.roots.iter().map(|root| root.display().to_string()).collect()
     };
-    let mut search_args = vec!["search-service".to_string()];
-    search_args.extend(options.index.iter().flat_map(|index| ["--index".to_string(), index.display().to_string()]));
-    search_args.extend(roots);
     let search = SearchService::new(
-        Launch {
-            program: options.helper.clone(),
-            args: search_args,
-            env: options.models.iter().map(|models| ("DIGUP_MODELS".to_string(), models.display().to_string())).collect(),
-            log: Some(logs.join("search.log")),
-            background: false,   // it answers typing
-        },
+        search_launch(&options, &settings, roots, &logs),
         {
             let app = handle.clone();
             move |event| search_event(&app, event)
@@ -363,6 +518,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         model_state: Mutex::new(json!({"state": "checking"})),
         watcher: Mutex::new(None),
         status: Mutex::new(None),
+        pause_item: Mutex::new(None),
         reloaded: Mutex::new(Instant::now()),
         debug_query_sent: AtomicBool::new(false),
         logs,
@@ -416,6 +572,8 @@ fn apply_folders(app: &AppHandle) {
     for folder in &folders {
         let _ = app.asset_protocol_scope().allow_directory(folder, true);
     }
+    // The running search service is told; one started later (after it died, or for the GPU switch) starts with them.
+    shell.search.set_launch(shell.search_launch());
     let search = shell.clone();
     tauri::async_runtime::spawn(async move {
         let _ = search.search.ask(json!({"op": "folders", "roots": folders, "skipped": skipped, "types": types})).await;
@@ -436,18 +594,51 @@ fn watch_folders(app: &AppHandle) {
         move || run_index(&app)
     };
     *shell.watcher.lock().unwrap() = Some(FolderWatcher::start(&folders, shell.options.index_folder(), changed));
+    if shell.is_paused() {
+        set_status(app, "Paused");
+    }
     run_index(app);
 }
 
-/// Has the index helper sync and index, once there's a model and a folder.
+/// Has the index helper sync and index, once there's a model and a folder, unless indexing is paused.
 fn run_index(app: &AppHandle) {
     let shell = app.state::<Arc<Shell>>();
-    if !shell.is_set_up() || shell.folders().is_empty() || !shell.model_ready() {
+    if !shell.is_set_up() || shell.folders().is_empty() || !shell.model_ready() || shell.is_paused() {
         return;
     }
     if let Err(error) = shell.index.run(&shell.index_launch()) {
         set_status(app, &format!("Indexing couldn't start: {error}"));
     }
+}
+
+/// Pauses indexing (the index helper stops, and neither the watcher nor Index Now starts it) or resumes it. Blocks up
+/// to two seconds while the helper stops: not on the main thread.
+fn pause(app: &AppHandle, paused: bool) -> Result<(), String> {
+    let shell = app.state::<Arc<Shell>>().inner().clone();
+    shell.change_settings(|settings| settings.paused = paused)?;
+    show_pause(app, paused);
+    if paused {
+        shell.index.stop();
+        set_status(app, "Paused");
+    } else {
+        set_status(app, if shell.folders().is_empty() { "No folders chosen yet" } else { "Looking for changes…" });
+        run_index(app);
+    }
+    settings_changed(app);
+    Ok(())
+}
+
+/// The tray follows the pause: Pause Indexing or Resume Indexing, and Index Now only while it isn't paused.
+fn show_pause(app: &AppHandle, paused: bool) {
+    if let Some((pause, index)) = app.state::<Arc<Shell>>().pause_item.lock().unwrap().as_ref() {
+        let _ = pause.set_text(if paused { "Resume Indexing" } else { "Pause Indexing" });
+        let _ = index.set_enabled(!paused);
+    }
+}
+
+/// The settings window shows what changed (also from the tray).
+fn settings_changed(app: &AppHandle) {
+    let _ = app.emit_to("settings", "settings-changed", ());
 }
 
 fn stop_helpers(app: &AppHandle) {
@@ -537,6 +728,23 @@ fn show_setup(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// The settings window (the tray's Settings…).
+fn show_settings(app: &AppHandle) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window("settings") {
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
+        .title("DigUp Settings")
+        .inner_size(640.0, 680.0)
+        .min_inner_size(520.0, 420.0)
+        .maximizable(false)
+        .center()
+        .build()?;
+    Ok(())
+}
+
 /// "CommandOrControl+Shift+Space" as people read it here: "Ctrl+Shift+Space", or "⇧⌘Space" on a Mac.
 fn shortcut_text(accelerator: &str) -> String {
     let parts: Vec<&str> = accelerator.split('+').collect();
@@ -568,12 +776,17 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
     let status = MenuItem::with_id(app, "status", "Starting…", false, None::<&str>)?;
     let search = MenuItem::with_id(app, "search", "Search…", true, Some(shell.hotkey().as_str()))?;
     let folders = MenuItem::with_id(app, "folders", "Choose Folders…", true, None::<&str>)?;
-    let index = MenuItem::with_id(app, "index", "Index Now", true, None::<&str>)?;
+    let paused = shell.is_paused();
+    let index = MenuItem::with_id(app, "index", "Index Now", !paused, None::<&str>)?;
+    let pause_item =
+        MenuItem::with_id(app, "pause", if paused { "Resume Indexing" } else { "Pause Indexing" }, true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit DigUp", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(
         app,
-        &[&status, &separator, &search, &folders, &index, &PredefinedMenuItem::separator(app)?, &quit_item],
+        &[&status, &separator, &search, &folders, &index, &pause_item, &PredefinedMenuItem::separator(app)?,
+          &settings, &quit_item],
     )?;
     // A Mac's menu bar takes a template (it colors it); trays elsewhere show the app's own small icon.
     #[cfg(target_os = "macos")]
@@ -592,6 +805,17 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
                 let _ = show_setup(app);
             }
             "index" => run_index(app),
+            "pause" => {
+                let (app, paused) = (app.clone(), !app.state::<Arc<Shell>>().is_paused());
+                tauri::async_runtime::spawn_blocking(move || {
+                    if let Err(error) = pause(&app, paused) {
+                        set_status(&app, &error);
+                    }
+                });
+            }
+            "settings" => {
+                let _ = show_settings(app);
+            }
             "quit" => quit(app),
             _ => {}
         })
@@ -605,6 +829,7 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
         })
         .build(app)?;
     *shell.status.lock().unwrap() = Some(status);
+    *shell.pause_item.lock().unwrap() = Some((pause_item, index));
     Ok(())
 }
 
@@ -634,17 +859,20 @@ fn index_event(app: &AppHandle, event: Value) {
         println!("index: {event}");
     }
     let count = |key: &str| event[key].as_u64().unwrap_or(0);
+    // Paused: a stopping helper's last lines don't take the tray's "Paused" away.
+    let paused = app.state::<Arc<Shell>>().is_paused();
+    let say = |text: &str| if !paused { set_status(app, text) };
     match event["event"].as_str().unwrap_or_default() {
         "file" => {
-            set_status(app, &format!("Indexing {} of {}", count("done"), count("total")));
+            say(&format!("Indexing {} of {}", count("done"), count("total")));
             reload(app, false);
         }
         "rest" => {
-            set_status(app, &format!("Reading the rest of {} long files", count("files")));
+            say(&format!("Reading the rest of {} long files", count("files")));
             reload(app, false);
         }
         "idle" => {
-            set_status(app, &format!("Up to date · {} files", count("searchable")));
+            say(&format!("Up to date · {} files", count("searchable")));
             reload(app, true);
             // A debug run through setup searches once the first index is in.
             let shell = app.state::<Arc<Shell>>();
@@ -654,8 +882,8 @@ fn index_event(app: &AppHandle, event: Value) {
                 }
             }
         }
-        "waiting" => set_status(app, "Waiting for the model"),
-        "error" => set_status(app, &format!("Indexing: {}", event["message"].as_str().unwrap_or("error"))),
+        "waiting" => say("Waiting for the model"),
+        "error" => say(&format!("Indexing: {}", event["message"].as_str().unwrap_or("error"))),
         "exit" => reload(app, true),
         _ => {}
     }
@@ -690,6 +918,8 @@ fn model_event(app: &AppHandle, event: Value) {
     if ready {
         if shell.folders().is_empty() {
             set_status(app, "No folders chosen yet");
+        } else if shell.is_paused() {
+            set_status(app, "Paused");
         }
         run_index(app);
     }
@@ -711,4 +941,35 @@ fn reload(app: &AppHandle, now: bool) {
             println!("search: reload {reply:?}");
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shortcuts_as_people_read_them() {
+        if cfg!(target_os = "linux") {
+            assert_eq!(shortcut_text(DEFAULT_HOTKEY), "Ctrl+Alt+Space");
+        }
+        if !cfg!(target_os = "macos") {
+            assert_eq!(shortcut_text("CommandOrControl+Shift+Space"), "Ctrl+Shift+Space");
+        }
+    }
+
+    #[test]
+    fn helpers_use_the_cpu_when_told() {
+        let options = Options {
+            helper: "digup".into(), index: None, models: None, roots: Vec::new(), hotkey: None, settings: None,
+            offered: None, debug_setup: false, debug_query: None, debug_quit: false, debug_show: false,
+            background: false,
+        };
+        assert!(helper_env(&options, &Settings::default()).is_empty());
+        let cpu = Settings { gpu: false, ..Settings::default() };
+        assert_eq!(helper_env(&options, &cpu), [("DIGUP_GPU".to_string(), "0".to_string())]);
+        let launch = search_launch(&options, &Settings { skipped: vec!["/a/b".into()], ..cpu }, vec!["/a".into()],
+                                   Path::new("/logs"));
+        assert_eq!(launch.args, ["search-service", "--exclude", "/a/b", "/a"]);
+        assert!(!launch.background);
+    }
 }

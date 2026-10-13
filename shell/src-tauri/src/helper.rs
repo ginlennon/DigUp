@@ -79,7 +79,8 @@ fn stop(mut child: Child, mut stdin: ChildStdin, farewell: &str) {
 
 /// `digup search-service`: started on the first request, and again after it died.
 pub struct SearchService {
-    launch: Launch,
+    /// How the next one starts (the folders and the GPU switch change it).
+    launch: Mutex<Launch>,
     running: Mutex<Option<Searching>>,
     next_id: AtomicU64,
     on_event: EventSink,
@@ -94,7 +95,18 @@ struct Searching {
 
 impl SearchService {
     pub fn new(launch: Launch, on_event: impl Fn(Value) + Send + Sync + 'static) -> SearchService {
-        SearchService { launch, running: Mutex::new(None), next_id: AtomicU64::new(1), on_event: Arc::new(on_event) }
+        SearchService {
+            launch: Mutex::new(launch),
+            running: Mutex::new(None),
+            next_id: AtomicU64::new(1),
+            on_event: Arc::new(on_event),
+        }
+    }
+
+    /// How it starts from now on: the running one keeps going (it's told new folders over its stdin); one that dies,
+    /// or is stopped to take a new environment, starts this way.
+    pub fn set_launch(&self, launch: Launch) {
+        *self.launch.lock().unwrap() = launch;
     }
 
     /// Sends a request and waits for its reply.
@@ -131,7 +143,8 @@ impl SearchService {
     }
 
     fn start(&self) -> Result<Searching, String> {
-        let (child, stdin, stdout) = self.launch.spawn()?;
+        let launch = self.launch.lock().unwrap().clone();
+        let (child, stdin, stdout) = launch.spawn()?;
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>> = Arc::default();
         let (replies, on_event) = (pending.clone(), self.on_event.clone());
         std::thread::spawn(move || {

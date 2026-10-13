@@ -1,10 +1,14 @@
-//! What the shell is told at launch. The folders and the hotkey come from the command line until onboarding and the
-//! settings window exist.
+//! What the shell is told at launch: where the helper, the index and the model are, and, in dev runs, folders and a
+//! hotkey that stand in for the settings'.
 
 use std::path::PathBuf;
 
-/// The panel's hotkey unless told otherwise: ⇧⌘Space on a Mac (the Mac app's), Ctrl+Shift+Space elsewhere.
+/// The panel's hotkey unless told otherwise: ⇧⌘Space on a Mac (the Mac app's), Ctrl+Shift+Space on Windows,
+/// Ctrl+Alt+Space on Linux (GNOME's Shift+Super+Space switches input sources, and Ctrl+Shift+Space is taken in apps).
+#[cfg(not(target_os = "linux"))]
 pub const DEFAULT_HOTKEY: &str = "CommandOrControl+Shift+Space";
+#[cfg(target_os = "linux")]
+pub const DEFAULT_HOTKEY: &str = "Control+Alt+Space";
 
 pub struct Options {
     /// DigUp's helper, `digup` (default: beside this program, where the installers put it).
@@ -31,6 +35,9 @@ pub struct Options {
     pub debug_quit: bool,
     /// Debug runs: show the panel at launch and keep it up when it loses focus.
     pub debug_show: bool,
+    /// Started at login (the autostart entry): just the tray. A second launch with it (DigUp is running already)
+    /// doesn't show the panel either.
+    pub background: bool,
 }
 
 impl Options {
@@ -47,6 +54,7 @@ impl Options {
             debug_query: None,
             debug_quit: false,
             debug_show: false,
+            background: false,
         };
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
@@ -64,6 +72,7 @@ impl Options {
                 "--debug-query" => options.debug_query = Some(value()?),
                 "--debug-quit" => options.debug_quit = true,
                 "--debug-show" => options.debug_show = true,
+                "--background" => options.background = true,
                 _ => return Err(format!("unknown argument {arg}")),
             }
         }
@@ -81,13 +90,27 @@ impl Options {
         if self.index.is_some() {
             return self.index.clone();
         }
-        if cfg!(windows) {
-            return std::env::var_os("LOCALAPPDATA").map(|local| PathBuf::from(local).join("DigUp").join("index"));
-        }
-        let data = std::env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()).map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")));
-        data.map(|data| data.join("digup").join("index"))
+        helper_folder().map(|folder| folder.join("index"))
     }
+
+    /// Where the model files are: the folder given, else the helper's default (AppPaths in the engine).
+    pub fn models_folder(&self) -> Option<PathBuf> {
+        if self.models.is_some() {
+            return self.models.clone();
+        }
+        helper_folder().map(|folder| folder.join("Models"))
+    }
+}
+
+/// The helper's own folder (`AppPaths.applicationSupport`): %LOCALAPPDATA%\DigUp on Windows, $XDG_DATA_HOME/digup
+/// (~/.local/share/digup) on Linux.
+fn helper_folder() -> Option<PathBuf> {
+    if cfg!(windows) {
+        return std::env::var_os("LOCALAPPDATA").map(|local| PathBuf::from(local).join("DigUp"));
+    }
+    let data = std::env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()).map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")));
+    data.map(|data| data.join("digup"))
 }
 
 /// The helper beside this program, or in its `helper` folder (a test build keeps the helper and its libraries there:

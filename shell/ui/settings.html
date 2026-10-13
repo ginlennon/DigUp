@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>DigUp Settings</title>
+  <link rel="stylesheet" href="settings.css">
+</head>
+<body>
+  <main>
+    <section>
+      <h3>Folders to search</h3>
+      <div class="card" id="folders"></div>
+      <button class="link" id="add-folders">Add Folders…</button>
+      <p class="note warn" id="from-launch" hidden>This dev run searches the folders it was started with (--roots):
+        what you change here is saved for later runs.</p>
+    </section>
+
+    <section>
+      <h3>Skip these folders</h3>
+      <div class="card" id="skipped"></div>
+      <button class="link" id="add-skipped">Skip a Folder…</button>
+    </section>
+
+    <section>
+      <h3>Skip these file types</h3>
+      <div class="card">
+        <div class="row">
+          <input id="types" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. heic, txt"
+                 aria-label="File extensions to skip">
+        </div>
+      </div>
+      <p class="note">Extensions, separated by commas. DigUp reads pictures, PDFs, documents (txt, md, rtf, docx, odt,
+        html), audio and video. Keys, certificates and password files are never read, nor are hidden folders like
+        ~/.ssh.</p>
+    </section>
+
+    <section>
+      <h3>Indexing</h3>
+      <div class="card">
+        <div class="row">
+          <div class="label"><b id="pause-title">Indexing</b><span id="status"></span></div>
+          <button id="pause">Pause Indexing</button>
+        </div>
+        <label class="row">
+          <div class="label"><b>Use the GPU</b>
+            <span>The AI model runs on the graphics chip (Vulkan) where it can. Off, indexing and search use the
+              processor only: slower, but it leaves the GPU alone.</span></div>
+          <input type="checkbox" class="switch" id="gpu">
+        </label>
+      </div>
+    </section>
+
+    <section>
+      <h3>Search shortcut</h3>
+      <div class="card">
+        <div class="row">
+          <div class="label"><b>Opens the search panel from any app</b><span id="shortcut-text"></span></div>
+          <span class="keys" id="keys"></span>
+        </div>
+        <div class="row" id="gnome" hidden>
+          <div class="label"><b id="gnome-title"></b><span id="gnome-text"></span></div>
+          <button id="set-up-shortcut">Set Up the Shortcut</button>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h3>Start at login</h3>
+      <div class="card">
+        <label class="row">
+          <div class="label"><b>Open DigUp when you log in</b>
+            <span>So the shortcut always works. DigUp starts in the tray.</span></div>
+          <input type="checkbox" class="switch" id="login">
+        </label>
+      </div>
+    </section>
+
+    <section>
+      <h3>About</h3>
+      <div class="card">
+        <div class="row"><span class="key-name">Version</span><span class="value" id="version"></span></div>
+        <div class="row"><span class="key-name">Index</span><span class="value path" id="path-index"></span></div>
+        <div class="row"><span class="key-name">Model</span><span class="value path" id="path-models"></span></div>
+        <div class="row"><span class="key-name">Logs</span><span class="value path" id="path-logs"></span></div>
+        <div class="row"><span class="key-name">Settings</span><span class="value path" id="path-settings"></span></div>
+      </div>
+      <p class="note">DigUp reads the folders you choose and keeps what it learns in its index, on this computer. It
+        goes online only to download its model, once. EmbeddingGemma 2 by Google (Apache 2.0), run by llama.cpp
+        (MIT).</p>
+    </section>
+  </main>
+  <footer id="problem" hidden></footer>
+  <script src="settings.js"></script>
+</body>
+</html>

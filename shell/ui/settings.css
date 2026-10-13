@@ -1,0 +1,107 @@
+/* The settings window (the tray's Settings…). The Mac app's Settings (Sources/DigUpApp/SettingsWindow.swift) is the
+   reference: grouped sections of rows; the colors are setup's. */
+
+:root {
+  --amber: #f2a22a;
+  --ember: #d97b1a;
+  --moss: #356652;
+  --surface: #f4f4f6;
+  --card: #ffffff;
+  --text: #1d1d1f;
+  --secondary: #6e6e73;
+  --tertiary: #a1a1a6;
+  --line: rgba(0, 0, 0, 0.09);
+  --off: rgba(0, 0, 0, 0.16);
+  --danger: #c4372b;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", system-ui, Ubuntu, Cantarell,
+    "Noto Sans", sans-serif;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #1f1f21;
+    --card: #2a2a2d;
+    --text: #f2f2f7;
+    --secondary: #a1a1a6;
+    --tertiary: #6e6e73;
+    --line: rgba(255, 255, 255, 0.1);
+    --off: rgba(255, 255, 255, 0.2);
+    --danger: #ff6b5e;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body { margin: 0; height: 100%; background: var(--surface); }
+
+body { display: flex; flex-direction: column; user-select: none; -webkit-user-select: none; cursor: default; }
+
+main { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 28px 24px; }
+
+section { margin-top: 18px; }
+
+h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--secondary); margin: 0 0 8px 2px; }
+
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+
+.row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; min-height: 44px; }
+.row + .row { border-top: 1px solid var(--line); }
+label.row { cursor: default; }
+
+.label { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.label b { font-weight: 500; }
+.label span { font-size: 11px; color: var(--secondary); line-height: 1.4; }
+
+.empty { color: var(--secondary); }
+
+.folder .text { flex: 1; min-width: 0; }
+.folder .name { font-weight: 600; }
+.folder .path, .value.path {
+  font-size: 11px; color: var(--secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.key-name { width: 72px; flex: none; color: var(--secondary); }
+.value { flex: 1; min-width: 0; user-select: text; -webkit-user-select: text; cursor: text; }
+
+input[type="text"] {
+  flex: 1; font: inherit; color: var(--text); background: transparent; border: 0; outline: none; padding: 2px 0;
+}
+
+button {
+  font: inherit; font-size: 13px; color: var(--text); background: var(--card); border: 1px solid var(--line);
+  border-radius: 7px; padding: 5px 14px; flex: none;
+}
+button:disabled { opacity: 0.45; }
+button.remove { padding: 3px 10px; font-size: 12px; color: var(--secondary); }
+button.remove.confirm { color: white; background: var(--danger); border-color: transparent; }
+button.link { background: none; border: 0; color: var(--ember); padding: 8px 2px 0; }
+
+/* A switch, from a checkbox. */
+.switch {
+  appearance: none; -webkit-appearance: none; flex: none; width: 34px; height: 20px; margin: 0; border-radius: 10px;
+  background: var(--off); position: relative; transition: background 0.15s;
+}
+.switch::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+  background: white; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25); transition: transform 0.15s;
+}
+.switch:checked { background: var(--moss); }
+.switch:checked::after { transform: translateX(14px); }
+.switch:disabled { opacity: 0.45; }
+
+.keys { display: flex; gap: 4px; flex: none; }
+.key {
+  min-width: 30px; padding: 3px 8px; text-align: center; font-size: 12px; font-weight: 500;
+  background: var(--surface); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px;
+}
+
+.note { font-size: 11px; color: var(--secondary); margin: 8px 2px 0; line-height: 1.45; }
+.note.warn { color: var(--ember); }
+
+footer {
+  flex: none; padding: 8px 20px; border-top: 1px solid var(--line); font-size: 12px; color: var(--danger);
+}
+footer[hidden] { display: none; }
