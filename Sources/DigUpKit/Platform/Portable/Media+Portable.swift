@@ -1,5 +1,5 @@
-// Audio and video without AVFoundation (Linux, Windows): ffmpeg decodes, ffprobe measures. They're looked for beside
-// the helper, in $DIGUP_FFMPEG, then on PATH.
+// Audio and video without AVFoundation (Linux, Windows): ffmpeg decodes, ffprobe measures. They're looked for in
+// $DIGUP_FFMPEG, beside the helper, in a dev build's Vendor/ffmpeg, then on PATH.
 #if !canImport(AVFoundation)
 import Foundation
 
@@ -11,7 +11,14 @@ enum FFmpeg {
         let environment = ProcessInfo.processInfo.environment
         var folders: [String] = []
         if let chosen = environment["DIGUP_FFMPEG"], !chosen.isEmpty { folders.append(chosen) }
-        if let executable = Bundle.main.executableURL { folders.append(executable.deletingLastPathComponent().path) }
+        if let executable = Bundle.main.executableURL {
+            folders.append(executable.deletingLastPathComponent().path)
+            // A dev build (or the tests) runs from the checkout's .build/: scripts/linux/fetch-ffmpeg.sh puts a newer
+            // ffmpeg than the distribution's in Vendor/ffmpeg, as Package.swift finds Vendor's libraries.
+            if let build = executable.path.range(of: "/.build/") {
+                folders.append(executable.path[..<build.lowerBound] + "/Vendor/ffmpeg")
+            }
+        }
         for folder in folders {
             let candidate = folder + "/" + FileSystem.program(name)
             if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }

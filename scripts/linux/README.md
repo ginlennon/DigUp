@@ -1,5 +1,16 @@
 # Linux scripts
 
+## A newer ffmpeg: `fetch-ffmpeg.sh`
+
+```sh
+scripts/linux/fetch-ffmpeg.sh       # → Vendor/ffmpeg/{ffmpeg,ffprobe,LICENSE.txt}, ~280 MB unpacked
+```
+
+Ubuntu 24.04's ffmpeg 6.1 reads no HEIC and leaves WebP and TIFF pictures unturned; DigUp needs 8.1. The script puts
+BtbN/FFmpeg-Builds' static **LGPL** build of 8.1.3 (the last autobuild of September 2026, kept by BtbN for two years;
+x86_64 and arm64, pinned by sha256) in `Vendor/ffmpeg/`. Dev builds and the tests find it there by themselves (they run
+from the checkout's `.build/`); an installed `digup` looks in `$DIGUP_FFMPEG` (a folder), beside itself, then on PATH.
+
 ## The eval testbed: `make-testbed.sh`
 
 ```sh
