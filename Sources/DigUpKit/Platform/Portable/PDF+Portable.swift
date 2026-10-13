@@ -1,5 +1,5 @@
 // PDFs without PDFKit (Linux, Windows): PDFium, Chromium's PDF library, prebuilt (Vendor/pdfium, scripts/fetch-vendor.sh).
-// No OCR here, so a text layer that lost letters stays as it is.
+// Scans are read by OCR where tesseract is installed (`OCR`), as on a Mac.
 #if !canImport(PDFKit)
 import CPDFium
 import Foundation
@@ -86,7 +86,8 @@ enum PDFium {
 
 extension PDFExtractor {
     /// Reads the pages in `range(pageCount)` (0-based). Pages with real text become text; scans, slides and pages whose
-    /// text layer came out in glyph order are rendered.
+    /// text layer came out in glyph order are rendered. As on a Mac (Platform/Apple), a scan's words come from OCR, and
+    /// a text layer that lost letters (Arabic ligatures) is replaced by OCR's reading when tesseract reads Arabic.
     static func pages(of url: URL, range: (Int) -> Range<Int>, minText: Int, renderPixels: Int, to folder: URL)
         throws -> (pages: [Page], total: Int, title: String?) {
         try PDFium.withDocument(url) { document in
@@ -98,21 +99,49 @@ extension PDFExtractor {
                 var text = PDFium.text(of: page).trimmingCharacters(in: .whitespacesAndNewlines)
                 var garbled: String?
                 switch PageTextProblem.check(text) {
-                case .lostLetters, nil:
+                case .lostLetters:
+                    // OCR's reading replaces the text layer only when it's real Arabic; otherwise the layer stays.
+                    if OCR.readsArabic, let image = PDFium.render(page, pixels: ocrPixels(page)) {
+                        let read = OCR.text(in: image, folder: folder).trimmingCharacters(in: .whitespacesAndNewlines)
+                        if read.count >= minText, PageTextProblem.check(read) == nil,
+                           read.unicodeScalars.contains(where: { Script.arabic.contains($0.value) }) {
+                            pages.append(Page(number: index + 1, text: read, imagePath: nil, ocr: true))
+                            continue
+                        }
+                    }
                     if text.count >= minText {
                         pages.append(Page(number: index + 1, text: text, imagePath: nil))
                         continue
                     }
                 case .glyphOrder:
                     (text, garbled) = ("", text)
+                case nil:
+                    if text.count >= minText {
+                        pages.append(Page(number: index + 1, text: text, imagePath: nil))
+                        continue
+                    }
                 }
                 guard let image = PDFium.render(page, pixels: renderPixels) else { continue }
                 let out = folder.appendingPathComponent(UUID().uuidString + ".png")
                 try image.write(to: out, png: true)
-                pages.append(Page(number: index + 1, text: text, imagePath: out.path, garbled: garbled))
+                // A scan, or a page that's mostly a picture: its words come from OCR, for keyword search only, and its
+                // meaning stays the picture's vector. Not for a text layer in glyph order (Bengali), as on a Mac.
+                var ocr = false
+                if garbled == nil, OCR.isAvailable, let large = PDFium.render(page, pixels: ocrPixels(page)) {
+                    let read = OCR.text(in: large, folder: folder).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if read.count > text.count { (text, ocr) = (read, true) }
+                }
+                pages.append(Page(number: index + 1, text: text, imagePath: out.path, ocr: ocr, garbled: garbled))
             }
             return (pages, total, PDFium.meta(document, "Title"))
         }
+    }
+
+    /// The size a page is rendered at for OCR: 300 dpi, which tesseract reads best (the model's 1400 pixels are 127 dpi
+    /// on a letter page, and small print comes out wrong), at most 3300 pixels on the long side (a letter page).
+    static func ocrPixels(_ page: FPDF_PAGE) -> Int {
+        let points = max(Double(FPDF_GetPageWidthF(page)), Double(FPDF_GetPageHeightF(page)))
+        return min(3300, max(1400, Int(points / 72 * 300)))
     }
 }
 

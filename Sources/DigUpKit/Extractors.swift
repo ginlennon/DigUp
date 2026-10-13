@@ -30,7 +30,7 @@ enum ImageExtractor {
     }
 }
 
-/// Text recognition in screenshots, for keyword search only: Apple Vision on macOS, nothing elsewhere yet.
+/// Text recognition in screenshots and scans, for keyword search only: Apple Vision on macOS, tesseract elsewhere.
 enum OCR {}
 
 /// PDF pages as text, or as pictures when they have little text (scans, slides): PDFKit on macOS, PDFium elsewhere.

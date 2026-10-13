@@ -253,8 +253,8 @@ import Testing
         #expect(abs((hits.first?.cosine ?? 0) - 1) < 0.002)   // float16 rounding only
     }
 
-    #if canImport(Vision)
-    @Test func aScannedPagesWordsAreFoundByKeywordSearch() throws {
+    #if canImport(Vision) || !canImport(ImageIO)
+    @Test(.enabled(if: OCR.isAvailable)) func aScannedPagesWordsAreFoundByKeywordSearch() throws {
         // A page that's only a picture of its text, as a scanner or a phone makes it: no text layer at all.
         try FileManager.default.createDirectory(at: files, withIntermediateDirectories: true)
         try ScannedPDF.write("Invoice QXTEST87231. Payment due Friday.", to: files.appendingPathComponent("scan.pdf"))
@@ -269,6 +269,30 @@ import Testing
 
         // An index made before scans had words reads them once more, and only once.
         try store.setMeta("scans_ocr", nil)
+        #expect(try store.readAgainOnce() == 1)
+        #expect(try store.pendingCount() == 1)
+        #expect(try store.readAgainOnce() == 0)
+    }
+    #endif
+
+    #if !canImport(ImageIO)
+    @Test(.enabled(if: OCR.isAvailable)) func aScreenshotsWordsAreFoundByKeywordSearch() throws {
+        // A screenshot's words are read by tesseract, for keyword search; its meaning stays the picture's.
+        try FileManager.default.createDirectory(at: files, withIntermediateDirectories: true)
+        let page = folder.appendingPathComponent("page.pdf"), drawn = folder.appendingPathComponent("page.jpg")
+        try TextPDF.write(["Error QXSHOT40917: the payment was declined."], to: page)
+        try PDFExtractor.renderPage(1, of: page, pixels: 1650, to: drawn)
+        let shot = try #require(RGBImage.load(drawn.path))
+        try shot.write(to: files.appendingPathComponent("Screenshot from 2026-10-14 09-41-00.png"), png: true)
+        let store = try store()
+        let indexer = try indexer(store, FakeEmbedder())
+        _ = try indexer.sync([files])
+        _ = try indexer.run()
+        #expect(try found(store, "qxshot40917").count == 1)
+
+        // One read before tesseract was there has no words, and is read once more.
+        try store.db.run("UPDATE files SET info = json_set(info, '$.ocr_chars', '0') WHERE kind = 'screenshot'")
+        try store.setMeta("screenshots_ocr", nil)
         #expect(try store.readAgainOnce() == 1)
         #expect(try store.pendingCount() == 1)
         #expect(try store.readAgainOnce() == 0)

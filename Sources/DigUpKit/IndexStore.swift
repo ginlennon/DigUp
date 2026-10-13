@@ -386,8 +386,9 @@ public final class IndexStore {
     /// Files read once more because DigUp reads them better now, each kind once per index (the schema stays as it was,
     /// so an older DigUp still opens the index): PDFs with pages read as pictures, whose words come from OCR now
     /// (`meta` "scans_ocr"), and pictures that couldn't be read at all, like SVGs, which AppKit draws now
-    /// ("pictures_drawn"). Only where this machine does either. Elsewhere also what ffmpeg and ffprobe couldn't read,
-    /// whenever they change ("media_tools"). Returns how many files.
+    /// ("pictures_drawn"). Only where this machine does either. Without Apple's frameworks also screenshots read before
+    /// tesseract was there ("screenshots_ocr"), and what ffmpeg and ffprobe couldn't read, whenever they change
+    /// ("media_tools"). Returns how many files.
     @discardableResult
     public func readAgainOnce() throws -> Int {
         var files = Set<Int64>(), flags: [String] = []
@@ -400,6 +401,17 @@ public final class IndexStore {
                          [.text(ExtractError.tooSmall(0, 0).description)]) { files.insert($0.int(0)) }
             flags.append("pictures_drawn")
         }
+        #if !canImport(ImageIO)
+        // Without Vision, OCR is tesseract, which may come later than the index: screenshots read without it have no
+        // words, and are read again once it's there.
+        if OCR.isAvailable, try meta("screenshots_ocr") == nil {
+            try db.query("""
+                SELECT id FROM files WHERE kind = 'screenshot' AND state = 'done'
+                    AND json_extract(info, '$.ocr_chars') = '0'
+                """) { files.insert($0.int(0)) }
+            flags.append("screenshots_ocr")
+        }
+        #endif
         var values: [(String, String)] = flags.map { ($0, "1") }
         #if !canImport(AVFoundation)
         // Without AVFoundation, ffmpeg and ffprobe read audio, video and some pictures. What failed for want of them

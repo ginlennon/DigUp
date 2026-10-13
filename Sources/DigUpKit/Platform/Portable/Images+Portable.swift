@@ -63,18 +63,17 @@ extension ImageExtractor {
         return image
     }
 
+    /// The whole picture, turned the way the camera held it (for OCR, which reads it at full size).
+    static func fullImage(_ url: URL) throws -> RGBImage {
+        if let image = RGBImage.load(url.path) { return image.oriented(EXIF.read(url)?.orientation ?? 1) }
+        return try decodeWithFFmpeg(url)
+    }
+
     /// Why a picture of a kind neither stb nor ffmpeg decodes isn't readable, for the file's note.
     static func notReadYet(_ ext: String) -> String? {
         let raw: Set<String> = ["cr2", "nef", "arw", "dng", "raf", "orf", "rw2"]
         return raw.contains(ext) ? "RAW pictures (\(ext.uppercased())) aren't read on this system yet" : nil
     }
-}
-
-extension OCR {
-    static let isAvailable = false
-
-    /// No text recognition here yet: screenshots have their picture vector and their name.
-    static func text(ofImageAt url: URL) -> String { "" }
 }
 
 /// Packed 8-bit RGB in memory: what stb decodes to and encodes from.

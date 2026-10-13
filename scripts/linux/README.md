@@ -11,6 +11,15 @@ BtbN/FFmpeg-Builds' static **LGPL** build of 8.1.3 (the last autobuild of Septem
 x86_64 and arm64, pinned by sha256) in `Vendor/ffmpeg/`. Dev builds and the tests find it there by themselves (they run
 from the checkout's `.build/`); an installed `digup` looks in `$DIGUP_FFMPEG` (a folder), beside itself, then on PATH.
 
+## OCR: tesseract
+
+Screenshots and scanned PDF pages get their words (for keyword search) from `tesseract`, run like ffmpeg: from
+`$DIGUP_TESSERACT` (the program or its folder), beside `digup`, or on PATH (`sudo apt install tesseract-ocr`). It reads
+in the installed languages named by `DIGUP_OCR_LANGS` (`eng+deu`), else in up to three of the system's language,
+English, German, French, Spanish, Italian, Portuguese and Arabic that are installed (`tesseract --list-langs`; more:
+`sudo apt install tesseract-ocr-fra`…; each language makes it slower). ~0.2–0.7 s per 1440×900 screenshot with eng+deu
+(2026-10-14), pages at 300 dpi. An index made before tesseract was there reads its screenshots and scans once more.
+
 ## The eval testbed: `make-testbed.sh`
 
 ```sh
@@ -56,9 +65,9 @@ Swift sources), and the logbook and team notes use the same seeded generator, so
   (`Rules.screenshotPrefixes`: "Screenshot", "Screen Shot", "CleanShot", "SCR-"), so those eight are indexed as
   **pictures** (photo budget, 1024 px instead of 1536 px, no "screenshot" kind boost). Only the two trap copies named
   `Screenshot 2026-…` are screenshots, and the one in `MyProject/` is what keeps it indexed inside a code project.
-  The testbed keeps the eval paths, so it can't rename them. There's also no OCR on Linux yet
-  (`Images+Portable.swift`), so the exact queries on screenshots (`card_declined`, `INV-2041`, `K7Q2LM`,
-  `externally-managed-environment`, the Bengali and Arabic screenshot queries) can only match through the picture.
+  The testbed keeps the eval paths, so it can't rename them. OCR is tesseract (see above): the exact queries on
+  screenshots (`card_declined`, `INV-2041`, `K7Q2LM`, `externally-managed-environment`) match its words; the Bengali
+  and Arabic screenshot queries need `tesseract-ocr-ben` / `-ara` installed (Bengali also named in `DIGUP_OCR_LANGS`).
 - **PDF text layers.** fpdf2 makes them; DigUp reads them with PDFium. Arabic reads back exactly; Bengali reads
   garbled where a cluster takes several glyphs (a vowel sign drawn before its consonant, conjuncts), which is how macOS
   reads its WebKit-made Bengali PDFs too. Most whole words survive (`ধানমন্ডি` is found).

@@ -76,4 +76,46 @@ enum ScannedPDF {
         pdf.closePDF()
     }
 }
+#elseif !canImport(ImageIO)
+@testable import DigUpKit
+
+/// A PDF whose one page is a picture of `text` and nothing else, as a scanner makes it (Linux, Windows: PDFium draws
+/// `text` as `TextPDF` writes it, at 150 dpi, and the picture is all the new page holds).
+enum ScannedPDF {
+    static func write(_ text: String, to url: URL) throws {
+        let folder = url.deletingLastPathComponent()
+        let page = folder.appendingPathComponent(UUID().uuidString + ".pdf")
+        let drawn = folder.appendingPathComponent(UUID().uuidString + ".jpg")
+        defer {
+            try? FileManager.default.removeItem(at: page)
+            try? FileManager.default.removeItem(at: drawn)
+        }
+        try TextPDF.write([text], to: page)
+        try PDFExtractor.renderPage(1, of: page, pixels: 1650, to: drawn)   // US Letter at 150 dpi: 1275×1650
+        guard let image = RGBImage.load(drawn.path) else { throw CocoaError(.fileWriteUnknown) }
+        let gray = (0..<(image.width * image.height)).map { image.pixels[$0 * 3] }
+        var out = Data("%PDF-1.4\n".utf8)
+        var offsets: [Int] = []
+        func object(_ body: String, stream: Data? = nil) {
+            offsets.append(out.count)
+            out += Data("\(offsets.count) 0 obj\n\(body)\n".utf8)
+            if let stream { out += Data("stream\n".utf8) + stream + Data("\nendstream\n".utf8) }
+            out += Data("endobj\n".utf8)
+        }
+        let draw = Data("q 612 0 0 792 0 0 cm /Scan Do Q".utf8)
+        object("<< /Type /Catalog /Pages 2 0 R >>")
+        object("<< /Type /Pages /Kids [3 0 R] /Count 1 >>")
+        object("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /XObject << /Scan 4 0 R >> >> "
+               + "/Contents 5 0 R >>")
+        object("<< /Type /XObject /Subtype /Image /Width \(image.width) /Height \(image.height) /ColorSpace /DeviceGray "
+               + "/BitsPerComponent 8 /Length \(gray.count) >>", stream: Data(gray))
+        object("<< /Length \(draw.count) >>", stream: draw)
+        let table = out.count
+        var tail = "xref\n0 \(offsets.count + 1)\n0000000000 65535 f \n"
+        for offset in offsets { tail += String(format: "%010d 00000 n \n", offset) }
+        tail += "trailer\n<< /Size \(offsets.count + 1) /Root 1 0 R >>\nstartxref\n\(table)\n%%EOF\n"
+        out += Data(tail.utf8)
+        try out.write(to: url)
+    }
+}
 #endif
