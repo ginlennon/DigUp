@@ -1,0 +1,355 @@
+{
+ "_about": "Freely licensed stand-ins for macOS's sample pictures (/Library/User Pictures), from Wikimedia Commons. scripts/linux/testbed/fetch_pictures.py downloads each original, checks its sha256 and writes it into the testbed at most 768 px on its long side. The pictures are never committed.",
+ "pictures": {
+  "Animals-Cat.jpg": {
+   "title": "File:Tabby cat with blue eyes-3336579.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Tabby_cat_with_blue_eyes-3336579.jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/c/c7/Tabby_cat_with_blue_eyes-3336579.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC0",
+   "license_url": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+   "author": "AdinaVoicu",
+   "bytes": 2114775,
+   "sha256": "f91f1e37a23344251f40a7731b28b6612fef6cc37a2f1e7f97d5f6610063248c"
+  },
+  "Animals-Dog.jpg": {
+   "title": "File:Liver yellow dog in the water looking at viewer at golden hour in Don Det Laos.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Liver_yellow_dog_in_the_water_looking_at_viewer_at_golden_hour_in_Don_Det_Laos.jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/3/37/Liver_yellow_dog_in_the_water_looking_at_viewer_at_golden_hour_in_Don_Det_Laos.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY-SA 4.0",
+   "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+   "author": "Basile Morin",
+   "bytes": 5781420,
+   "sha256": "a6fe14e362eeb8a43678d0f1e0cde574997cdc9d96ed25a737ae6fde3eea30f6"
+  },
+  "Animals-Eagle.jpg": {
+   "title": "File:Weisskopf Seeadler haliaeetus leucocephalus 8 amk.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Weisskopf_Seeadler_haliaeetus_leucocephalus_8_amk.jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/d/d4/Weisskopf_Seeadler_haliaeetus_leucocephalus_8_amk.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY-SA 3.0",
+   "license_url": "https://creativecommons.org/licenses/by-sa/3.0",
+   "author": "AngMoKio",
+   "bytes": 1906504,
+   "sha256": "93933a49354b1fc09828707851e49574d27338b09bd05b1f627788ea484fcd0f"
+  },
+  "Animals-Owl.jpg": {
+   "title": "File:Eurasian eagle-owl (44088).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Eurasian_eagle-owl_(44088).jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/3/31/Eurasian_eagle-owl_%2844088%29.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY-SA 4.0",
+   "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+   "author": "Rhododendrites",
+   "bytes": 7623759,
+   "sha256": "e4f9d06e854632899755bf3e3dfe562c089ef152989cd54337ef60ed368b4285"
+  },
+  "Animals-Parrot.jpg": {
+   "title": "File:Ara ararauna qtl3.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Ara_ararauna_qtl3.jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/6/60/Ara_ararauna_qtl3.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY-SA 3.0",
+   "license_url": "https://creativecommons.org/licenses/by-sa/3.0",
+   "author": "Quartl",
+   "bytes": 6069475,
+   "sha256": "e159fb28aa9478283b5214690911f9e5f63509f0654f42f3a66d428f9eb293e3"
+  },
+  "Animals-Penguin.jpg": {
+   "title": "File:A chinstrap penguin (Pygoscelis antarcticus) on Deception Island in Antarctica.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:A_chinstrap_penguin_(Pygoscelis_antarcticus)_on_Deception_Island_in_Antarctica.jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/0/09/A_chinstrap_penguin_%28Pygoscelis_antarcticus%29_on_Deception_Island_in_Antarctica.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY 2.0",
+   "license_url": "https://creativecommons.org/licenses/by/2.0",
+   "author": "Christopher Michel",
+   "bytes": 1604457,
+   "sha256": "4c534f7c8599193f6a5dbd1372256a4dd83740e85af240afc0f04e6488b5ccbb"
+  },
+  "Animals-Zebra.jpg": {
+   "title": "File:Zebra Head Right Luangwa Zambia Jul23 A7C 05917.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Zebra_Head_Right_Luangwa_Zambia_Jul23_A7C_05917.jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/f/f2/Zebra_Head_Right_Luangwa_Zambia_Jul23_A7C_05917.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY-SA 4.0",
+   "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+   "author": "This Photo was taken by Timothy A. Gonsalves. Feel free to use my photos, but please mention me as the author. I would much appreciate if you send me an email tagooty@yahoo.com or write on my talk page, for my information. Please contact me before commercial use. Please do not upload an edited image here without consulting me. I would like to make corrections only at my own source to ensure that the changes improve the image and are preserved.Otherwise you may upload an edited image with a new name. Please use one of the templates derivative or extract.",
+   "bytes": 2346488,
+   "sha256": "f2fb924f5b57cf616ffdafe4e3e0ba5e80f458e1d832dc3fbac9b215aa873393"
+  },
+  "Flowers-Dahlia.jpg": {
+   "title": "File:Red dahlia 1.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Red_dahlia_1.jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/5/55/Red_dahlia_1.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY-SA 4.0",
+   "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+   "author": "Photograph by Mike Peel (www.mikepeel.net).",
+   "bytes": 5718303,
+   "sha256": "b1fe2951ccf6bc70649e5f4dacc2a56631845b53741708d266f9c2e5d83662b7"
+  },
+  "Flowers-Dandelion.jpg": {
+   "title": "File:Crepidinae sp. (Slovenia).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Crepidinae_sp._(Slovenia).jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/b/b8/Crepidinae_sp._%28Slovenia%29.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY-SA 4.0",
+   "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+   "author": "Petar Milošević",
+   "bytes": 1938341,
+   "sha256": "b296ebe88f8974b2c0fcca137b143b12d2f51c51bf54f2a63df8a5065f382115"
+  },
+  "Flowers-Lotus.jpg": {
+   "title": "File:Lotus flower (978659).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Lotus_flower_(978659).jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/f/f5/Lotus_flower_%28978659%29.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC0",
+   "license_url": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+   "author": "Hong Zhang (jennyzhh2008)",
+   "bytes": 530534,
+   "sha256": "9544c185fc50135b9036f9ed2ba0fe66d560d0829d1077338f287f5321aaeab8"
+  },
+  "Flowers-Poppy.jpg": {
+   "title": "File:Dülmen, Fröbelstraße, Mohn am Feldrand -- 2021 -- 9174.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:D%C3%BClmen,_Fr%C3%B6belstra%C3%9Fe,_Mohn_am_Feldrand_--_2021_--_9174.jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/5/5a/D%C3%BClmen%2C_Fr%C3%B6belstra%C3%9Fe%2C_Mohn_am_Feldrand_--_2021_--_9174.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY-SA 4.0",
+   "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+   "author": "Dietmar Rabich",
+   "bytes": 9562742,
+   "sha256": "891cc3626c44b782f107881afb3dae321fc0b4e07071094bbb3a3af5c51d43d3"
+  },
+  "Flowers-Red Rose.jpg": {
+   "title": "File:Red rose with black background.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Red_rose_with_black_background.jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/d/d7/Red_rose_with_black_background.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY-SA 4.0",
+   "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+   "author": "Laitche",
+   "bytes": 1962219,
+   "sha256": "9208e159f82d0284dec477de3e4a86b33a1cb73b2ef5b0f7d914ca71fce19266"
+  },
+  "Flowers-Sunflower.jpg": {
+   "title": "File:Sunflower and a bee.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Sunflower_and_a_bee.jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/5/50/Sunflower_and_a_bee.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY-SA 4.0",
+   "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+   "author": "Tomascastelazo",
+   "bytes": 5915172,
+   "sha256": "42145c8146abdaeae68ee342eab8e11a1c1133b65c68c0d9382d879c5dc00d07"
+  },
+  "Flowers-Yellow Daisy.jpg": {
+   "title": "File:Rudbeckia-443.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Rudbeckia-443.jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/e/ef/Rudbeckia-443.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY-SA 3.0",
+   "license_url": "https://creativecommons.org/licenses/by-sa/3.0",
+   "author": "Danny S.",
+   "bytes": 2303421,
+   "sha256": "2ceac468ccf0d0d2ecd5a7a4a7bba8d213b8cfc903b5958a9e3187a5089d6467"
+  },
+  "Fun-Gingerbread Man.jpg": {
+   "title": "File:Gingy Cookie.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Gingy_Cookie.jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/3/31/Gingy_Cookie.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY-SA 3.0",
+   "license_url": "https://creativecommons.org/licenses/by-sa/3.0",
+   "author": "Jorge Barrios",
+   "bytes": 2793400,
+   "sha256": "85447354a77076031c9b5160de86e6bc6a33463e3b4b57fcba5ba2e8df93192e"
+  },
+  "Fun-Medal.jpg": {
+   "title": "File:MET 06 446 F.jpeg",
+   "page": "https://commons.wikimedia.org/wiki/File:MET_06_446_F.jpeg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/5/53/MET_06_446_F.jpeg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC0",
+   "license_url": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+   "author": "unknown",
+   "bytes": 126445,
+   "sha256": "72abdf9a20de08b2ad8c6f20d6932ab957499d33f5c066d31f8ca65e37a8a7fd"
+  },
+  "Instruments-Drum.jpg": {
+   "title": "File:2009-03-26 Dr Feelgood, Spirit of 66, Verviers, Belgium IMG 7412.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:2009-03-26_Dr_Feelgood,_Spirit_of_66,_Verviers,_Belgium_IMG_7412.jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/d/dc/2009-03-26_Dr_Feelgood%2C_Spirit_of_66%2C_Verviers%2C_Belgium_IMG_7412.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY-SA 3.0 de",
+   "license_url": "https://creativecommons.org/licenses/by-sa/3.0/de/deed.en",
+   "author": "Eckhard Henkel",
+   "bytes": 2410592,
+   "sha256": "e6e028f60a27d991532376964620ba657987fab09ce06211824f163ea0e770d9"
+  },
+  "Instruments-Guitar.jpg": {
+   "title": "File:Gitara klasyczna C30M firmy Yamaha.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Gitara_klasyczna_C30M_firmy_Yamaha.jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/c/c0/Gitara_klasyczna_C30M_firmy_Yamaha.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY-SA 4.0",
+   "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+   "author": "http://muzyczny.pl",
+   "bytes": 1204867,
+   "sha256": "4e0a65a2c502d492fc75fc499f6e14cc2772862f40918e303c5ceeaac89fdc1c"
+  },
+  "Instruments-Piano.jpg": {
+   "title": "File:Steinway & Sons concert grand piano, model D-274, manufactured at Steinway's factory in Hamburg, Germany.png",
+   "page": "https://commons.wikimedia.org/wiki/File:Steinway_%26_Sons_concert_grand_piano,_model_D-274,_manufactured_at_Steinway%27s_factory_in_Hamburg,_Germany.png",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/8/8d/Steinway_%26_Sons_concert_grand_piano%2C_model_D-274%2C_manufactured_at_Steinway%27s_factory_in_Hamburg%2C_Germany.png?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY-SA 3.0",
+   "license_url": "https://creativecommons.org/licenses/by-sa/3.0",
+   "author": "Steinway & Sons, 10 Rondenbarg, Hamburg D-22525, Germany, eu.steinway.com.Steinway & Sons, 1 Steinway Place, Long Island City, New York 11105, The United States, www.steinway.com.",
+   "bytes": 1346625,
+   "sha256": "c54dfce47a796d340a8533671c82eb92df047b3c5e2f00769dd217caaa2f6739"
+  },
+  "Instruments-Turntable.jpg": {
+   "title": "File:2016 Gramofon Daniel 2.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:2016_Gramofon_Daniel_2.jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/1/10/2016_Gramofon_Daniel_2.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY-SA 4.0",
+   "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+   "author": "Jacek Halicki",
+   "bytes": 4018278,
+   "sha256": "fd07fd6417fdf66a806146b7177a6db0c91ee2e41fb4751be860535d73fa1d97"
+  },
+  "Instruments-Violin.jpg": {
+   "title": "File:Lady Blunt top.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Lady_Blunt_top.jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/2/2e/Lady_Blunt_top.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY-SA 3.0",
+   "license_url": "https://creativecommons.org/licenses/by-sa/3.0",
+   "author": "Tarisio Auctions. Violachick68 at English Wikipedia",
+   "bytes": 1711736,
+   "sha256": "2a69d1067c0fd3f5a2703293ba1c84700bf4b1cbf68018d025da080e5812951f"
+  },
+  "Nature-Cactus.jpg": {
+   "title": "File:Carnegiea gigantea or Sahuaro or Saguaro.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Carnegiea_gigantea_or_Sahuaro_or_Saguaro.jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/4/42/Carnegiea_gigantea_or_Sahuaro_or_Saguaro.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY-SA 4.0",
+   "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+   "author": "Tomascastelazo",
+   "bytes": 9090615,
+   "sha256": "e60fdba988dd2a9d639ed1229b708837300be285f133b0e3b06dfb62d2e17caa"
+  },
+  "Nature-Earth.jpg": {
+   "title": "File:Earth Eastern Hemisphere.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Earth_Eastern_Hemisphere.jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/6/6f/Earth_Eastern_Hemisphere.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "Public domain",
+   "license_url": "",
+   "author": "NASA",
+   "bytes": 536295,
+   "sha256": "3b47b77b49ccd18ecf0aa58610a2047cc68a2e06a1de2e224295a1346aa2dc95"
+  },
+  "Nature-Leaf.jpg": {
+   "title": "File:Taro leaf underside, backlit by sun - edit.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Taro_leaf_underside,_backlit_by_sun_-_edit.jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/c/c7/Taro_leaf_underside%2C_backlit_by_sun_-_edit.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY-SA 3.0",
+   "license_url": "https://creativecommons.org/licenses/by-sa/3.0",
+   "author": "Taro_leaf_underside,_backlit_by_sun.jpg: Avenue Derivative work: Avenue (talk)",
+   "bytes": 2251541,
+   "sha256": "9be320518ac0c2aaeaf57d4ebe15d21cc63bacd4fc176fae3f6e14ead71e90ec"
+  },
+  "Nature-Lightning.jpg": {
+   "title": "File:004 2018 05 14 Extremes Wetter.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:004_2018_05_14_Extremes_Wetter.jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/0/09/004_2018_05_14_Extremes_Wetter.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY-SA 4.0",
+   "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+   "author": "Friedrich Haag",
+   "bytes": 3893232,
+   "sha256": "edc6a13d9222ccf857eb7e49414a99d1a1f44294e712b34b1726d12b372a848f"
+  },
+  "Nature-Snowflake.jpg": {
+   "title": "File:Snowflake macro photography 1 (cropped).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Snowflake_macro_photography_1_(cropped).jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/2/28/Snowflake_macro_photography_1_%28cropped%29.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY-SA 4.0",
+   "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+   "author": "Alexey Kljatov",
+   "bytes": 1213959,
+   "sha256": "a36b0488814db8e58a0e8f884e9fa6d00bbde770db3dc6faf79319c1a7262758"
+  },
+  "Nature-Zen.jpg": {
+   "title": "File:A Tower of Stones by the Sea.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:A_Tower_of_Stones_by_the_Sea.jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/f/fa/A_Tower_of_Stones_by_the_Sea.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY-SA 4.0",
+   "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+   "author": "Derk29",
+   "bytes": 2810123,
+   "sha256": "526ea12f972dfd3cfd887425f93a2cd62e63253be2c6255d506a91748a30f05b"
+  },
+  "Sports-8-Ball.jpg": {
+   "title": "File:Break! (15955696631).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Break!_(15955696631).jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/d/d5/Break%21_%2815955696631%29.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY 2.0",
+   "license_url": "https://creativecommons.org/licenses/by/2.0",
+   "author": "cogdogblog",
+   "bytes": 4327080,
+   "sha256": "b2002f5af5fb7942b2b375876c7d40ab8ca8b189427c524e7837da5e00265095"
+  },
+  "Sports-Basketball.jpg": {
+   "title": "File:A person holding basket ball in his hand.JPG",
+   "page": "https://commons.wikimedia.org/wiki/File:A_person_holding_basket_ball_in_his_hand.JPG",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/6/61/A_person_holding_basket_ball_in_his_hand.JPG?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY-SA 3.0",
+   "license_url": "https://creativecommons.org/licenses/by-sa/3.0",
+   "author": "Aathavan jaffna",
+   "bytes": 1949920,
+   "sha256": "e2e55b35402e3f3f52a7fb4681cec55f1569d5a23e5be09e756c3de170169259"
+  },
+  "Sports-Football.jpg": {
+   "title": "File:Washington Redskins Football (1991.88.1).jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Washington_Redskins_Football_(1991.88.1).jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/d/d8/Washington_Redskins_Football_%281991.88.1%29.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "Public domain",
+   "license_url": "",
+   "author": "unknown",
+   "bytes": 3901204,
+   "sha256": "60da7ff38b2a458d3b6310963ea98b0a1ff6a0fcd8070cf9f90a8cc3e28f9fae"
+  },
+  "Sports-Golf.jpg": {
+   "title": "File:Golf on the tee.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Golf_on_the_tee.jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/5/51/Golf_on_the_tee.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC0",
+   "license_url": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+   "author": "Kenny",
+   "bytes": 104910,
+   "sha256": "d4a8441d72419fb45d48b518cb2cd69e564dba6e1ab1d3995f26610aa190c79c"
+  },
+  "Sports-Hockey.jpg": {
+   "title": "File:Ice hockey puck - 2.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Ice_hockey_puck_-_2.jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/1/1f/Ice_hockey_puck_-_2.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY-SA 2.0",
+   "license_url": "https://creativecommons.org/licenses/by-sa/2.0",
+   "author": "Matt Boulton derivative work: MrPanyGoff",
+   "bytes": 1897161,
+   "sha256": "249e971dbd3a8e2e1e7baafc7b67fab8421907eaa7143cd84394881c3a63b026"
+  },
+  "Sports-Soccer.jpg": {
+   "title": "File:Life omg omg.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Life_omg_omg.jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/7/77/Life_omg_omg.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY-SA 4.0",
+   "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+   "author": "Futbollifemrave",
+   "bytes": 394122,
+   "sha256": "7f5da9d1ea975d7a8576d98b5ad9f45ded00ceb4fca90fb3bd35f1d4067b4d55"
+  },
+  "Sports-Target.jpg": {
+   "title": "File:Changlimithang Archery Ground, Thimphu 08.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:Changlimithang_Archery_Ground,_Thimphu_08.jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/0/00/Changlimithang_Archery_Ground%2C_Thimphu_08.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC BY-SA 4.0",
+   "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+   "author": "Bernard Gagnon",
+   "bytes": 5190828,
+   "sha256": "bd63d85b83fa3e5600bea536543a44e897d313c0d761d979a0ca8b718c6ae577"
+  },
+  "Sports-Tennis.jpg": {
+   "title": "File:A type of tennis ball.jpg",
+   "page": "https://commons.wikimedia.org/wiki/File:A_type_of_tennis_ball.jpg",
+   "url": "https://upload.wikimedia.org/wikipedia/commons/9/96/A_type_of_tennis_ball.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+   "license": "CC0",
+   "license_url": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+   "author": "Bertoka",
+   "bytes": 1417203,
+   "sha256": "1da273f9d1b8b82e7439d3b48163758c39c0ade0411609e452ee72b276710855"
+  }
+ }
+}

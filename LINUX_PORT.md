@@ -30,6 +30,8 @@ the Mac app (same model, same vectors), and indexing that uses the Radeon iGPU w
   conflicting community PR #6 (ideas may be harvested from it, e.g. LibreOffice for decks).
 - **Do not port the SwiftUI app.** `Sources/DigUpApp` (macOS-only, ~9.7 k lines) is the *behaviour spec*; the Tauri
   shell re-creates what matters, and features are explicitly tiered keep / re-create / strip (PLANS §A4).
+- **One codebase with upstream for now** (user, 2026-10-14): Mac code stays in the tree, never built on Linux. Later
+  options kept open: a Linux-only packaging/branch ("middle way") or a hard Linux fork that deletes the Mac parts.
 - **Embedder = LlamaRuntime in-process** with llama.cpp b11461 built `GGML_VULKAN` + CPU variants as runtime-loaded
   backend modules (upstream's design). No separate llama-server: DigUp needs mtmd image/audio embedding and its own
   prompts in-process. The reference-vector test is the correctness gate for every backend and every llama.cpp bump.
