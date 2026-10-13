@@ -42,9 +42,40 @@ extension Rules {
         return .ignore
     }
 
-    /// Only macOS marks screenshots; elsewhere their names tell (`screenshotPrefixes` covers Snipping Tool, Win+PrtScn,
-    /// GNOME and KDE: they all start with "Screenshot").
+    #if os(Linux)
+    /// Linux doesn't mark screenshots either, but its tools name them in the system's language, and GNOME keeps them in
+    /// ~/Pictures/Screenshots (that name translated too). So a name that starts like one, whatever its case ("Screenshot
+    /// from 2026-10-14 09-41-00.png", Spectacle's "Screenshot_20261014_094100.png", "Bildschirmfoto vom …"), or a
+    /// picture in a folder named so, is a screenshot.
+    static func hasScreenshotMarker(_ url: URL) -> Bool {
+        let name = url.lastPathComponent.precomposedStringWithCanonicalMapping.lowercased()
+            .replacingOccurrences(of: "\u{2019}", with: "'")
+        if screenshotNames.contains(where: name.hasPrefix) { return true }
+        let folder = url.deletingLastPathComponent().lastPathComponent.precomposedStringWithCanonicalMapping
+            .lowercased().replacingOccurrences(of: "\u{2019}", with: "'")
+        return screenshotFolders.contains(folder)
+    }
+
+    /// The start of a screenshot's name, lowercased: `screenshotPrefixes`, and GNOME's and KDE's in other languages.
+    static let screenshotNames = [
+        "screenshot", "screen shot", "cleanshot", "scr-", "bildschirmfoto", "capture d'écran", "captura de pantalla",
+        "captura desde", "captura de tela", "captura de ecrã", "schermata", "schermafbeelding", "schermafdruk",
+        "zrzut ekranu", "snímek obrazovky", "képernyőkép", "skärmbild", "skærmbillede", "skjermbilde", "kuvakaappaus",
+        "ekran görüntüsü", "снимок экрана", "знімок екрана", "στιγμιότυπο οθόνης", "スクリーンショット", "截图", "截圖",
+        "스크린샷",
+    ]
+
+    /// GNOME's screenshots folder in some languages, lowercased.
+    static let screenshotFolders: Set<String> = [
+        "screenshots", "bildschirmfotos", "captures d'écran", "capturas de pantalla", "capturas de tela",
+        "capturas de ecrã", "schermate", "schermafbeeldingen", "zrzuty ekranu", "snímky obrazovky", "skärmbilder",
+        "skærmbilleder", "kuvakaappaukset", "снимки экрана",
+    ]
+    #else
+    /// Only macOS marks screenshots; elsewhere their names tell (`screenshotPrefixes` covers Snipping Tool and
+    /// Win+PrtScn: they start with "Screenshot").
     static func hasScreenshotMarker(_ url: URL) -> Bool { false }
+    #endif
 
     #if os(Linux)
     /// Linux's own folders that aren't yours to search, as ~/Library is on a Mac: the trash (~/.local/share/Trash, and

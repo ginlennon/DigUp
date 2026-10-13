@@ -203,6 +203,24 @@ import Testing
         #expect(walked("/home/me/snap/firefox/common/notes.txt", root: "/home/me/snap"))   // chosen: read
     }
 
+    @Test func screenshotsAreKnownByTheirNameOrFolder() {
+        func shot(_ path: String) -> Bool { Rules.isScreenshot(URL(fileURLWithPath: path)) }
+        #expect(shot("/home/me/Pictures/Screenshots/Screenshot From 2026-10-14 09-41-00.png"))   // GNOME
+        #expect(shot("/home/me/Pictures/Screenshot_20261014_094100.png"))                        // KDE Spectacle
+        #expect(shot("/home/me/Downloads/screenshot-error.png"))
+        #expect(shot("/home/me/Bilder/Bildschirmfoto vom 2026-10-14 09-41-00.png"))
+        #expect(shot("/home/me/Images/Capture d\u{2019}écran du 2026-10-14 09-41-00.png"))
+        #expect(shot("/home/me/Images/Capture d'e\u{301}cran du 2026-10-14 09-41-00.png"))         // decomposed é
+        #expect(shot("/home/me/Imágenes/Captura de pantalla de 2026-10-14 09-41-00.png"))
+        // GNOME's folder, whatever the picture is called (the testbed's synthetic/screenshots/shot_*.png).
+        #expect(shot("/home/me/Pictures/Screenshots/shot_payment_error.png"))
+        #expect(shot("/home/me/Bilder/Bildschirmfotos/Fehler.png"))
+        #expect(!shot("/home/me/Pictures/Screenshots/2025/holiday.png"))
+        #expect(!shot("/home/me/Pictures/holiday.png"))
+        #expect(Rules.classify(folder.appendingPathComponent("screenshots/shot_weather.png"), values: nil,
+                               options: IndexOptions()) == .index(.screenshot))
+    }
+
     @Test func mountsOfOtherMachinesAreNotWalkedInto() {
         let mountinfo = """
             22 1 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw,errors=remount-ro

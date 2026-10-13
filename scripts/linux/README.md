@@ -46,7 +46,7 @@ First run downloads ~110 MB of pictures (Wikimedia Commons) and ~200 MB of Piper
 | `say -v Samantha` / `Piya` / `Majed` | Piper (CPU): `en_US-lessac-medium`, `bn_BD-google-medium`, `ar_JO-kareem-medium` |
 | `make_screenshots.swift`, `make_docs.swift`, `make_long.swift`, `make_lang.swift` (AppKit, CoreText, WebKit) | `make_screenshots.py`, `make_docs.py`, `make_long.py`, `make_lang.py` (Pillow with HarfBuzz via raqm, fpdf2 with HarfBuzz, python-docx, a Cocoa-style RTF writer): same names, same text, same formats (PDF, PNG, txt, md, rtf, docx) |
 | `cp -c` (APFS clone) | `cp --reflink=auto` |
-| the `kMDItemIsScreenCapture` attribute | nothing (see below) |
+| the `kMDItemIsScreenCapture` attribute | names and the `screenshots/` folder (see below) |
 | `/System/Library/Sounds` effects (`sfx_*.wav`) | left out: no eval asks for them |
 | `real/` always (Spotlight sample, clones) | opt-in `--with-real`: reflinks where the file system has them (Btrfs, XFS), else copies (stops above 5 GB), or hard links with `--hardlinks` (no space, but a hard link *is* your file). Originals are only read. |
 | `code/` by `scripts/testbed/make_code.py` | the same script, run with the uv Python |
@@ -59,15 +59,15 @@ Swift sources), and the logbook and team notes use the same seeded generator, so
 - **Pictures and voices differ.** The photos show the same subjects (a zebra, a bald eagle, the Earth from space…), but
   they're other photos, and the speech is another voice. Image, video and audio queries can rank differently. The
   distractor pictures (cat, dog, dahlia, piano, sports balls…) are a best guess at the macOS set; there's no baseball.
-- **Screenshots aren't screenshots on Linux.** macOS knows `synthetic/screenshots/shot_*.png` and
-  `lang/*/wallet_failed_bn.png`, `payment_error_ar.png` as screenshots by their Spotlight attribute. DigUp's Linux build
-  (`Platform/Portable/Files+Portable.swift`: `hasScreenshotMarker` is `false`) knows them by name only
-  (`Rules.screenshotPrefixes`: "Screenshot", "Screen Shot", "CleanShot", "SCR-"), so those eight are indexed as
-  **pictures** (photo budget, 1024 px instead of 1536 px, no "screenshot" kind boost). Only the two trap copies named
-  `Screenshot 2026-…` are screenshots, and the one in `MyProject/` is what keeps it indexed inside a code project.
-  The testbed keeps the eval paths, so it can't rename them. OCR is tesseract (see above): the exact queries on
-  screenshots (`card_declined`, `INV-2041`, `K7Q2LM`, `externally-managed-environment`) match its words; the Bengali
-  and Arabic screenshot queries need `tesseract-ocr-ben` / `-ara` installed (Bengali also named in `DIGUP_OCR_LANGS`).
+- **Most screenshots are screenshots on Linux too, by name or folder.** macOS knows `synthetic/screenshots/shot_*.png`
+  and `lang/*/wallet_failed_bn.png`, `payment_error_ar.png` as screenshots by their Spotlight attribute. Linux has no
+  marker; DigUp's Linux build (`Platform/Portable/Files+Portable.swift`: `hasScreenshotMarker`) knows a screenshot by
+  its name, whatever its case and in the common GNOME/KDE languages ("Screenshot from …", "Bildschirmfoto vom …"), or by
+  a folder named like GNOME's `Screenshots`. So the six `shot_*.png` are screenshots, but the two `lang/` ones are
+  indexed as **pictures** (photo budget, 1024 px instead of 1536 px, no OCR, no "screenshot" kind boost). The testbed
+  keeps the eval paths, so it can't rename them. OCR is tesseract (see above): the exact queries on screenshots
+  (`card_declined`, `INV-2041`, `K7Q2LM`, `externally-managed-environment`) match its words; the Bengali and Arabic
+  screenshot queries would need those two to be screenshots and `tesseract-ocr-ben` / `-ara` installed.
 - **PDF text layers.** fpdf2 makes them; DigUp reads them with PDFium. Arabic reads back exactly; Bengali reads
   garbled where a cluster takes several glyphs (a vowel sign drawn before its consonant, conjuncts), which is how macOS
   reads its WebKit-made Bengali PDFs too. Most whole words survive (`ধানমন্ডি` is found).
