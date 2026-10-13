@@ -8,6 +8,15 @@ import LlamaRuntime
 signal(SIGPIPE, SIG_IGN)   // a dead worker must surface as an error, not kill us (Windows has no SIGPIPE)
 #endif
 
+/// Where DigUp keeps its own files on this OS (`AppPaths`), as the usage names it.
+#if os(macOS)
+let dataFolder = "~/Library/Application Support/DigUp"
+#elseif os(Windows)
+let dataFolder = "%LOCALAPPDATA%\\DigUp"
+#else
+let dataFolder = "~/.local/share/digup"
+#endif
+
 let usage = """
     digup: search your files by meaning (DigUp developer CLI)
 
@@ -32,7 +41,7 @@ let usage = """
                                               resume, checked (JSON lines: see DownloadModel)
 
     Options:
-      --index DIR          index folder (default: DigUp's Application Support folder; see `digup status`)
+      --index DIR          index folder (default: in \(dataFolder); see `digup status`)
       --code               estimate, index or show the code index of these folders (code.sqlite in the index
                            folder): source files, their repos' docs and notebooks, minus what git ignores
       --kind K,K           screenshot, image, pdf, doc, audio, video
@@ -47,7 +56,7 @@ let usage = """
       --code-stretch N     characters a stretch of code holds at most (default 1800; 1200 and 3600 lost on the evals)
 
     The model: EmbeddingGemma 2 on llama.cpp, from $DIGUP_MODELS (only there, when set), else
-    ~/Library/Application Support/DigUp/Models or the Hugging Face cache. DIGUP_WORKER_DIR=worker uses the
+    \(dataFolder)/Models or the Hugging Face cache. DIGUP_WORKER_DIR=worker uses the
     mlx-vlm reference worker instead (evals). On Linux and Windows it runs on the GPU when one loads (backends from
     $DIGUP_BACKENDS, else beside digup); DIGUP_GPU=0 keeps it on the CPU, on DIGUP_THREADS threads (default up to 8).
     """
@@ -118,7 +127,11 @@ struct Arguments {
         return try positional.map {
             let url = Self.folderURL($0)
             guard Self.isFolder(url) else { throw CLIError("not a folder: \($0)") }
+            #if os(macOS)
             guard Self.isReadable(url) else { throw CLIError("can't read \($0) (macOS privacy settings?)") }
+            #else
+            guard Self.isReadable(url) else { throw CLIError("can't read \($0) (its permissions?)") }
+            #endif
             return url
         }
     }
@@ -227,7 +240,11 @@ func estimate(_ args: Arguments) throws {
                 emit(["folder": folder.path, "readable": false, "seconds": 0, "files": [String: Int](),
                       "pdf_pages": 0, "audio_seconds": 0, "video_seconds": 0])
             } else {
+                #if os(macOS)
                 print("\(tilde(folder.path))    can't read it (not there, or not allowed in macOS privacy settings)")
+                #else
+                print("\(tilde(folder.path))    can't read it (not there, or its permissions don't let you)")
+                #endif
             }
             continue
         }
