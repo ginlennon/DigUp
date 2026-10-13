@@ -114,6 +114,12 @@ the same everywhere.
 Optional check that your GPU makes the same vectors as the Mac:
 `DIGUP_BACKENDS=$PWD/Vendor/llama/lib swift test --filter ReferenceVectorTests`.
 
+## Using it
+
+Ctrl+Alt+Space, describe what you're looking for, ↩ to open it at the page or moment. The
+[user guide](docs/USER_GUIDE_LINUX.md) has 18 ways to use it, from screenshots of error messages to recordings,
+languages, code and scripts.
+
 ## How it differs from the Mac app
 
 - **The hotkey.** Wayland doesn't let apps grab keys globally, and GNOME 46 has no shortcut portal yet, so the hotkey
