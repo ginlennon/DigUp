@@ -1,9 +1,10 @@
 # PLAN — DigUp on Ubuntu 24.04 (GNOME/Wayland) with a Vulkan embedder on the Radeon iGPU
 
-**Status: PLAN ONLY — nothing below is implemented yet (2026-10-14).** Evidence: `docs/linux-port/ANALYSIS.md`
-(code analysis), `docs/linux-port/LINUX_EQUIVALENTS.md` (macOS → Linux research, verified on the dev laptop). Goals
-and success bar: `LINUX_PORT.md`.
-
+**Status (2026-10-14):** Stages 0–3 **done**; Stage 2 done except the long soak (dropped: no soak tests); Stage 4
+(shell MVP) **mostly done** — hotkey via GNOME custom shortcut, panel, open at page/moment, settings, pause, GPU
+switch, start at login; Stage 5 (packaging) and the rest of Stage 6 open. Results: `docs/linux-port/VULKAN_RESULTS.md`,
+`docs/linux-port/EVAL_RESULTS.md`. Added thrusts: §C (robust embedder, on/off, folder-scoped search, integrations).
+Evidence: `docs/linux-port/ANALYSIS.md`, `docs/linux-port/LINUX_EQUIVALENTS.md`. Goals: `LINUX_PORT.md`.
 ---
 
 # Part A — Conceptual design
@@ -213,3 +214,42 @@ RapidOCR port (if A5 says so); GitHub Actions Linux CI (build + `swift test` + v
 Stages 1–2 de-risk the two things that can sink the port (Swift-on-Linux engine behaviour, Vulkan on RADV) before any
 UI work. Stage 3 before 4 because search quality is the product; the shell is a client of a working CLI and can be
 developed against `digup search` output at any time.
+
+
+---
+
+# Part C — Second round (2026-10-14): robustness, control, scope, integrations — PLAN, partly in progress
+
+### C1. A robust embedder
+Failure modes on a desktop GPU and the answer to each:
+| Failure | Seen as | Answer |
+|---|---|---|
+| Vulkan driver crash / DeviceLost | helper killed by a signal, or exits with a Vulkan error in its log | shell restarts it; **twice within 10 min → relaunch helpers with `DIGUP_GPU=0`** for the session, tray says "GPU problem: indexing on the CPU", Settings shows it and offers "Try the GPU again" |
+| GPU hang inside the driver | no progress, no exit | the helper's watchdog (15 min per file, RSS limit) exits 75; shell restarts ≤ 3 per 10 min (as the Mac app), then pauses with a message |
+| Query encoder fails on the GPU | search-service `encoder: unavailable` | restart search-service with `DIGUP_GPU=0`; keyword search keeps working meanwhile |
+| Broken install (missing model, libs, ffmpeg) | helper errors | `digup doctor --json` at first launch and from Settings → About ("Check DigUp") |
+Decision rule: CPU fallback is per session (a reboot or driver update may fix it); never silently persistent.
+
+### C2. On/off
+`digup-shell --toggle | --show | --pause | --resume | --settings | --quit` handed to the running instance
+(single-instance passes argv), so keyboard shortcuts, scripts and other apps can control DigUp. Settings gets
+"Turn DigUp off": quit + start at login off (+ offer to remove the shortcut).
+
+### C3. Search inside folders
+Engine: `folders` on search / `--in DIR` (in progress). Panel: `in:Documents …` / `in:~/Pictures/2026 …` prefix,
+resolved against the chosen folders (name or path), shown as a removable chip.
+
+### C4. Integrations (in progress)
+`integrations/`: an MCP server (search_files, read_segment, search_code, find_similar, index_status) for coding agents,
+and a localhost-only HTTP API (`/search`, `/context` for RAG, `/segments/{id}`, `/similar`, `/preview`,
+`/openapi.json`) for RAG apps and scripts. Both run their own `digup search-service` over the same index (SQLite WAL:
+several readers are fine), so they work whether or not the desktop app is running.
+
+### C5. Code search in the app
+Settings → Code: code folders (passed as `--code-root` to both helpers), editor choice (VS Code `-g f:l`, Zed,
+Sublime, Geany, JetBrains `--line`), `code:` in the panel.
+
+### C6. Install without the checkout (Stage 5, first step)
+`scripts/linux/install-user.sh`: release builds (`--static-swift-stdlib`, `cargo build --release`) into
+`~/.local/opt/digup` (shell + `helper/` with digup, llama.cpp + ggml backends, PDFium, ffmpeg), a `.desktop` entry
+and icon, shortcut and autostart pointing at it; `--uninstall` removes all of it.
