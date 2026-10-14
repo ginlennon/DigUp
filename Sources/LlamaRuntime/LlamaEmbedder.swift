@@ -435,7 +435,9 @@ struct LlamaError: Error, CustomStringConvertible {
 }
 
 /// llama.cpp's log is process-wide: warnings and errors go to one file (or stderr), the rest is dropped (it logs a lot
-/// at load time).
+/// at load time). Our own lines wait until an embedder says where its log goes: `digup status` and `doctor` load the
+/// backends only to say what the model would run on, and print that themselves, so a "[llama.cpp worker] backends: …"
+/// line in the terminal would only repeat it. With an embedder they go to its log, as before.
 final class LlamaLog: @unchecked Sendable {
     static let shared = LlamaLog()
     nonisolated(unsafe) static let userData = Unmanaged.passUnretained(shared).toOpaque()
@@ -447,11 +449,18 @@ final class LlamaLog: @unchecked Sendable {
     private let lock = NSLock()
     private var file: FileHandle?             // nil: stderr
     private var level = GGML_LOG_LEVEL_INFO   // CONT continues the previous message, at its level
+    private var chosen = false                // `send(to:)` was called: our lines go out
+    private var held: [String] = []           // our lines from before that
 
     func send(to url: URL?) {
         lock.withLock {
             try? file?.close()
             file = nil
+            chosen = true
+            defer {
+                for line in held { (file ?? .standardError).write(Data(line.utf8)) }
+                held.removeAll()
+            }
             guard let url else { return }
             if !FileManager.default.fileExists(atPath: url.path) {
                 FileManager.default.createFile(atPath: url.path, contents: nil)
@@ -461,9 +470,12 @@ final class LlamaLog: @unchecked Sendable {
         }
     }
 
-    /// One of our own lines.
+    /// One of our own lines (held until `send(to:)`).
     func line(_ message: String) {
-        lock.withLock { (file ?? .standardError).write(Data("[llama.cpp worker] \(message)\n".utf8)) }
+        let line = "[llama.cpp worker] \(message)\n"
+        lock.withLock {
+            if chosen { (file ?? .standardError).write(Data(line.utf8)) } else { held.append(line) }
+        }
     }
 
     private func write(_ level: ggml_log_level, _ text: String) {
