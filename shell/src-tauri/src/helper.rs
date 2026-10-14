@@ -507,11 +507,11 @@ while read -r line; do
     esac
 done
 "#).unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Run by sh, not exec'd itself: a test running in parallel can fork while this one still has the script open
+        // for writing, and exec then fails with ETXTBSY ("Text file busy") until that child has exec'd.
         Launch {
-            program: script,
-            args: vec!["index-service".into(), "/a".into()],
+            program: "/bin/sh".into(),
+            args: vec![script.display().to_string(), "index-service".into(), "/a".into()],
             env: vec![("FAKE_LOG".into(), folder.join("log").display().to_string()), ("FAKE_MODE".into(), mode.into())],
             log: Some(folder.join("stderr.log")),
             also_logs: Vec::new(),
