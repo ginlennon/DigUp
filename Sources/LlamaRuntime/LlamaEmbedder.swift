@@ -330,27 +330,38 @@ public final class LlamaEmbedder: Embedder {
     /// What the model runs on, as llama.cpp picks it: the GPUs (else the integrated ones) when it may use them, and the
     /// CPU. It loads the backends, not the model, so `digup status` can say it.
     public static var devices: String {
-        _ = backend
-        let all = (0..<ggml_backend_dev_count()).compactMap { ggml_backend_dev_get($0) }
-        let gpus = all.filter { ggml_backend_dev_type($0) == GGML_BACKEND_DEVICE_TYPE_GPU }
-        let integrated = all.filter { ggml_backend_dev_type($0) == GGML_BACKEND_DEVICE_TYPE_IGPU }
-        let used = useGPU ? (gpus.isEmpty ? integrated : gpus) : []
         #if os(macOS)
         let cpu = "CPU"
         #else
         let cpu = "CPU (\(threads) threads)"
         #endif
-        return (used.map {
+        return (gpus + [cpu]).joined(separator: ", ")
+    }
+
+    /// Whether any backend loaded: none (no CPU variant found where `loadBackends` looks), and no model can load.
+    public static var hasBackend: Bool {
+        _ = backend
+        return ggml_backend_dev_count() > 0
+    }
+
+    /// The GPUs of `devices`, as "name (description)": none when the model runs on the CPU alone (`digup doctor` says
+    /// why).
+    public static var gpus: [String] {
+        _ = backend
+        let all = (0..<ggml_backend_dev_count()).compactMap { ggml_backend_dev_get($0) }
+        let gpus = all.filter { ggml_backend_dev_type($0) == GGML_BACKEND_DEVICE_TYPE_GPU }
+        let integrated = all.filter { ggml_backend_dev_type($0) == GGML_BACKEND_DEVICE_TYPE_IGPU }
+        return (useGPU ? (gpus.isEmpty ? integrated : gpus) : []).map {
             "\(String(cString: ggml_backend_dev_name($0))) (\(String(cString: ggml_backend_dev_description($0))))"
-        } + [cpu]).joined(separator: ", ")
+        }
     }
 
     #if os(macOS)
-    static let useGPU = true
+    public static let useGPU = true
     #else
     /// Whether the model may run on a GPU: yes unless `DIGUP_GPU` is 0, off or cpu, which the shell sets after a GPU
     /// failure (or when told not to use it). Then the GPU's backend isn't even loaded, as a broken driver can fail there.
-    static let useGPU: Bool = {
+    public static let useGPU: Bool = {
         let chosen = ProcessInfo.processInfo.environment["DIGUP_GPU"]?.lowercased() ?? ""
         return !["0", "off", "cpu"].contains(chosen)
     }()

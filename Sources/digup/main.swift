@@ -32,6 +32,9 @@ let usage = """
       digup speed                             this machine's speed next to the M4 Pro behind the estimates, and
                                               what indexing has measured here (costs.json in the index folder)
       digup eval <queries.json> [-n 10]       recall of known answers (see evals/; "code: …" queries search code)
+      digup doctor [--deep] [--json]          whether DigUp can work here: the model and a self-test of it, the GPU,
+                                              ffmpeg, tesseract, git, the index, free space (exit 1: an essential
+                                              check failed); --deep also checks the model files' SHA-256 and the index
       digup index-service <folder>... [--code-root DIR]... [--code-exclude DIR]... [--backfill] [--prune]
                           [--memory-limit MB] [--time-limit S]
                                               the app's indexing helper (JSON lines; see IndexService); it stops
@@ -613,6 +616,7 @@ do {
     case "status": try status(args)
     case "speed": speed(args)
     case "eval": try evaluate(args)
+    case "doctor": exit(doctor(args))
     case "index-service": exit(try indexService(args))
     case "worker": exit(workerService(args))
     case "search-service": exit(try searchService(args))

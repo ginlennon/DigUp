@@ -89,6 +89,30 @@ import Testing
         return made
     }
 
+    /// `digup doctor`'s built-in check (`SelfTest`) carries the start of two of these vectors: the same inputs, and
+    /// numbers that agree with the reference.
+    @Test func theSelfTestAgreesWithTheReference() throws {
+        let url = Self.folder.appendingPathComponent("vectors.json")
+        let reference = try JSONDecoder().decode(Reference.self, from: Data(contentsOf: url))
+        #expect(reference.vectorVersion == LlamaEmbedder.vectorVersion)
+        let inputs = Dictionary(uniqueKeysWithValues: Self.texts.map { ($0.name, $0.text) })
+        for sample in SelfTest.samples {
+            #expect(inputs[sample.name] == sample.input, "\(sample.name): not the reference's input")
+            let expected = try #require(reference.vectors[sample.name])
+            let cosine = SelfTest.cosine(Array(expected.prefix(sample.start.count)), sample.start)
+            #expect(sample.start.count == 16 && cosine >= Self.agreement, "\(sample.name): cosine \(cosine)")
+        }
+    }
+
+    @Test(.enabled(if: modelsThere)) func theSelfTestPassesHere() throws {
+        let log = FileManager.default.temporaryDirectory.appendingPathComponent("digup-reference-vectors.log")
+        let embedder = try LlamaEmbedder(models: LlamaModels.locate(), textOnly: true, log: log)
+        defer { embedder.close() }
+        for (name, cosine) in try SelfTest.run(embedder) {
+            #expect(cosine >= SelfTest.agreement, "\(name): cosine \(cosine)")
+        }
+    }
+
     /// The vector furthest from its reference, as (name, cosine).
     static func worst(_ made: [String: [Float]], _ reference: [String: [Float]]) -> (String, Float)? {
         made.compactMap { name, vector in
