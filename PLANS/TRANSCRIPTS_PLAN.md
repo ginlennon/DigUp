@@ -129,6 +129,8 @@ If (1) holds but (3) doesn't: offer greedy decoding (~1.5× faster) as the "fast
 - `evals/european.json` with the A6 tags; `check_eval_paths.py` covers it.
 - **Check:** baseline numbers for european.json (expect `spoken-term` ≈ 0, German keyword queries weaker) in
   `docs/linux-port/EVAL_RESULTS.md`.
+- **Done 2026-10-14:** european 0.79 / 0.88 / 0.83 (R@1 / R@5 / MRR, 76 queries), `spoken-term` 0.10 / 0.40 (the
+  audio vector catches some names, never codes); the other evals unchanged. Weaknesses for 3b in EVAL_RESULTS.md.
 
 ### Stage 1 — whisper.cpp in the build
 - `scripts/linux/build-whisper.sh`: v1.9.5 pinned, Vulkan, static, only `whisper-cli` → `Vendor/whisper/bin/`;
