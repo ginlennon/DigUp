@@ -147,7 +147,8 @@ function openSelected() {
   if (hit) invoke("open_hit", { hit, query: state.text }).catch(failed);
 }
 
-/// What ↩ does with a result: "Open at p. 3" or "Open at 0:06" only when its default app can go there, else "Open".
+/// What ↩ does with a result: "Open at p. 3" or "Open at 0:06" only when the app it opens in can go there (its
+/// default app, or VLC for a recording when Settings say so), else "Open".
 /// The shell's answer comes a moment later (it looks the app up), so this says "Open" until then and redraws.
 const openTitles = new Map();
 function openTitle(hit) {

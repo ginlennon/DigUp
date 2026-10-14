@@ -90,6 +90,10 @@ impl Shell {
         self.options.hotkey.clone().unwrap_or(if chosen.is_empty() { DEFAULT_HOTKEY.to_string() } else { chosen })
     }
 
+    fn prefers_vlc(&self) -> bool {
+        self.settings.lock().unwrap().prefers_vlc()
+    }
+
     fn is_paused(&self) -> bool {
         self.settings.lock().unwrap().paused
     }
@@ -272,8 +276,8 @@ fn finish_setup(app: AppHandle, shell: State<'_, Arc<Shell>>, folders: Vec<Strin
     Ok(())
 }
 
-/// What the settings window shows: the folders and what's skipped, the pause, the GPU switch, the shortcut, starting
-/// at login, and where DigUp keeps things.
+/// What the settings window shows: the folders and what's skipped, the pause, the GPU switch, where recordings open at
+/// a moment (and whether VLC is there), the shortcut, starting at login, and where DigUp keeps things.
 #[tauri::command]
 async fn settings_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Result<Value, String> {
     let settings = shell.settings.lock().unwrap().clone();
@@ -296,6 +300,8 @@ async fn settings_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Result<V
         "skipTypes": settings.skip_types,
         "paused": settings.paused,
         "gpu": settings.gpu,
+        "momentPlayer": if settings.prefers_vlc() { "vlc" } else { "default" },
+        "vlc": shell.apps.vlc().is_some(),
         "hotkey": shortcut_text(&shell.hotkey()),
         "gnome": gnome,
         "shortcut": shortcut,
@@ -357,6 +363,18 @@ async fn set_gpu(app: AppHandle, shell: State<'_, Arc<Shell>>, gpu: bool) -> Res
     Ok(())
 }
 
+/// Where recordings open at a moment: "vlc" (when it's installed) or "default" (the default app). The panel asks for
+/// its Open titles again each time it's shown.
+#[tauri::command]
+fn set_moment_player(app: AppHandle, shell: State<'_, Arc<Shell>>, player: String) -> Result<(), String> {
+    if player != "vlc" && player != "default" {
+        return Err(format!("no such choice: {player}"));
+    }
+    shell.change_settings(|settings| settings.moment_player = player)?;
+    settings_changed(&app);
+    Ok(())
+}
+
 /// Starting at login: the autostart entry is written or removed.
 #[tauri::command]
 fn set_starts_at_login(app: AppHandle, on: bool) -> Result<(), String> {
@@ -394,7 +412,7 @@ async fn open_hit(app: AppHandle, shell: State<'_, Arc<Shell>>, hit: opener::Hit
     let shell = shell.inner().clone();
     let path = hit.path.clone();
     let opened = tauri::async_runtime::spawn_blocking(move || {
-        let plan = opener::plan(&hit, &query, shell.apps.for_file(&hit.path).as_ref());
+        let plan = opener::plan(&hit, &query, shell.apps.for_hit(&hit, shell.prefers_vlc()).as_ref());
         if cfg!(debug_assertions) {
             log!("open: {} → {plan:?}", hit.path);
         }
@@ -416,7 +434,7 @@ async fn open_title(shell: State<'_, Arc<Shell>>, hit: opener::Hit) -> Result<St
     }
     let shell = shell.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        opener::plan(&hit, "", shell.apps.for_file(&hit.path).as_ref()).title()
+        opener::plan(&hit, "", shell.apps.for_hit(&hit, shell.prefers_vlc()).as_ref()).title()
     })
     .await
     .map_err(|error| error.to_string())
@@ -492,7 +510,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             ask, estimate, setup_info, pick_folders, finish_setup, open_path, open_hit, open_title, reveal, hide_panel,
             panel_height, settings_info, save_folders, set_paused, set_gpu, set_starts_at_login, set_up_shortcut,
-            debug_query, debug_report
+            set_moment_player, debug_query, debug_report
         ])
         .build(tauri::generate_context!())
         .expect("DigUp couldn't start");

@@ -12,7 +12,9 @@
 //!   player is there, has the file and is playing it (checked, and told again if it didn't go there)
 //! - VS Code (and its forks) `-g file:line`, Geany `--line=N`, Kate `-l N`, gedit `+N`, Zed and Sublime `file:line`
 //!
-//! Which app and which arguments are pure functions (`plan`), tested below with made-up .desktop folders.
+//! A recording at a moment opens in VLC instead when it's installed and Settings say so (the default: `app_for`).
+//!
+//! Which app and which arguments are pure functions (`app_for`, `plan`), tested below with made-up .desktop folders.
 
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -359,6 +361,7 @@ fn default_desktop_id(mime: &str) -> Option<String> {
 /// The default apps of files, by extension, asked again after half a minute (one may have been changed meanwhile).
 /// The footer asks on every move of the selection, and each answer is two small processes.
 pub struct Apps {
+    /// By extension, and VLC under "" (no file's extension).
     known: Mutex<HashMap<String, (Instant, Option<App>)>>,
 }
 
@@ -369,15 +372,77 @@ impl Apps {
 
     pub fn for_file(&self, path: &str) -> Option<App> {
         let extension = Path::new(path).extension().and_then(|ext| ext.to_str()).unwrap_or_default().to_lowercase();
-        if let Some((when, app)) = self.known.lock().unwrap().get(&extension) {
+        self.remembered(extension, || default_app(path))
+    }
+
+    /// The app `hit` opens in (`app_for`), VLC preferred for recordings at a moment when `prefer_vlc`.
+    pub fn for_hit(&self, hit: &Hit, prefer_vlc: bool) -> Option<App> {
+        app_for(hit, prefer_vlc, || self.vlc(), || self.for_file(&hit.path))
+    }
+
+    /// VLC, when it's installed (asked again after half a minute too: it may have been installed meanwhile).
+    pub fn vlc(&self) -> Option<App> {
+        self.remembered(String::new(), installed_vlc)
+    }
+
+    fn remembered(&self, key: String, find: impl FnOnce() -> Option<App>) -> Option<App> {
+        if let Some((when, app)) = self.known.lock().unwrap().get(&key) {
             if when.elapsed() < Duration::from_secs(30) {
                 return app.clone();
             }
         }
-        let app = default_app(path);
-        self.known.lock().unwrap().insert(extension, (Instant::now(), app.clone()));
+        let app = find();
+        self.known.lock().unwrap().insert(key, (Instant::now(), app.clone()));
         app
     }
+}
+
+/// The app a result opens in. A recording with a moment goes to VLC when the person would rather (Settings, "Open
+/// recordings at the moment in") and it's installed: a VLC started without its .desktop file's --started-from-file is
+/// a new instance, which starts at `--start-time` (one-instance-when-started-from-file would hand the file to a
+/// running VLC, which ignores it). Everything else, and recordings when VLC isn't there, open in the default app.
+pub fn app_for(hit: &Hit, prefer_vlc: bool, vlc: impl FnOnce() -> Option<App>,
+               default: impl FnOnce() -> Option<App>) -> Option<App> {
+    if prefer_vlc && matches!(hit.place(), Some(Place::Moment(_))) {
+        if let Some(vlc) = vlc() {
+            return Some(vlc);
+        }
+    }
+    default()
+}
+
+/// `name` as the shell would find it on $PATH: the first executable file of that name.
+fn on_path(name: &str, path: Option<&str>) -> Option<PathBuf> {
+    std::env::split_paths(path?).map(|folder| folder.join(name)).find(|file| is_program(file))
+}
+
+fn is_program(file: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.metadata().is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    file.is_file()
+}
+
+/// VLC, if it's installed (Linux): `vlc` on $PATH, else the program of its .desktop file when that's VLC itself and is
+/// there. A Flatpak's Exec line runs `flatpak`, which can't be given the start time like this: not counted.
+fn installed_vlc() -> Option<App> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let env = |key: &str| std::env::var(key).ok();
+    if let Some(program) = on_path("vlc", env("PATH").as_deref()) {
+        return Some(App { id: "vlc.desktop".into(), program: program.display().to_string() });
+    }
+    let folders = application_folders(env("XDG_DATA_HOME").as_deref(), env("XDG_DATA_DIRS").as_deref(),
+                                      env("HOME").as_deref());
+    ["vlc.desktop", "org.videolan.VLC.desktop"].iter().find_map(|id| {
+        let program = exec_program(&std::fs::read_to_string(desktop_file(id, &folders)?).ok()?)?;
+        let there = is_program(Path::new(&program)) || on_path(&program, env("PATH").as_deref()).is_some();
+        (Viewer::of(&program) == Some(Viewer::Vlc) && there).then(|| App { id: id.to_string(), program })
+    })
 }
 
 /// The file's default app, as xdg-open would choose it (Linux; elsewhere none: results open the plain way).
@@ -566,7 +631,7 @@ fn seek_when_ready(bus: &str, seconds: f64, duration: Option<f64>) {
             return;
         }
     }
-    log_error!("digup-shell: {bus} didn't go to {seconds:.1} s (it's at {:?} µs after {} tries)", position, TRIES.len());
+    log_error!("digup-shell: {bus} didn't go to {seconds:.1} s (at {position:?} µs after {} tries)", TRIES.len());
 }
 
 #[cfg(test)]
@@ -639,6 +704,48 @@ mod tests {
                                               duration: Some(18.0) });
         assert_eq!(plan(&moment, "", Some(&app("audacious"))), Plan::Plain);
         assert_eq!(plan(&moment, "", Some(&app("evince"))), Plan::Plain, "a PDF viewer can't go to a moment");
+    }
+
+    #[test]
+    fn recordings_at_a_moment_go_to_vlc_when_chosen() {
+        let vlc = || Some(app("/usr/bin/vlc"));
+        let totem = || Some(app("totem"));
+        let mut moment = hit("video", "frame", 6.7);
+        moment.path = "/v/zebra.mp4".into();
+        let opened = |hit: &Hit, prefer_vlc: bool, vlc: Option<App>| {
+            app_for(hit, prefer_vlc, || vlc, totem).map(|app| app.program)
+        };
+        assert_eq!(opened(&moment, true, vlc()).as_deref(), Some("/usr/bin/vlc"), "even when Totem is the default");
+        assert_eq!(opened(&moment, true, None).as_deref(), Some("totem"), "no VLC: the default app");
+        assert_eq!(opened(&moment, false, vlc()).as_deref(), Some("totem"), "the default app was chosen");
+        let start = hit("video", "frame", 0.4);
+        assert_eq!(opened(&start, true, vlc()).as_deref(), Some("totem"), "no moment: the default app");
+        let page = hit("pdf", "page", 3.0);
+        assert_eq!(opened(&page, true, vlc()).as_deref(), Some("totem"), "not a recording");
+        let chosen = app_for(&moment, true, vlc, totem);
+        let plan = plan(&moment, "", chosen.as_ref());
+        assert_eq!(plan.title(), "Open at 0:06");
+        assert_eq!(argv(plan), ["/usr/bin/vlc", "--start-time=6", "/v/zebra.mp4"], "no --started-from-file");
+    }
+
+    #[test]
+    fn programs_on_the_path() {
+        let root = std::env::temp_dir().join(format!("digup-path-test-{}", std::process::id()));
+        let (bin, other) = (root.join("bin"), root.join("other"));
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(bin.join("vlc"), "#!/bin/sh\n").unwrap();
+        std::fs::write(other.join("vlc"), "not a program").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(bin.join("vlc"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = std::env::join_paths([&other, &bin]).unwrap();
+        assert_eq!(on_path("vlc", path.to_str()), Some(bin.join("vlc")));
+        assert_eq!(on_path("mpv", path.to_str()), None);
+        assert_eq!(on_path("vlc", None), None);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

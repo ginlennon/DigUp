@@ -1,8 +1,8 @@
 //! What the person chose: the folders DigUp searches, what it skips in them, the hotkey, whether setup is done,
-//! whether indexing is paused and may use the GPU. A JSON file in the app's config folder
-//! (%APPDATA%\com.abdurrahim.DigUp on Windows, ~/.config/com.abdurrahim.DigUp on Linux). Launch arguments (`--roots`,
-//! `--hotkey`) stand in for it in dev runs. A field a file doesn't have yet (one saved by an older shell) takes its
-//! default.
+//! whether indexing is paused and may use the GPU, where recordings open at a moment. A JSON file in the app's config
+//! folder (%APPDATA%\com.abdurrahim.DigUp on Windows, ~/.config/com.abdurrahim.DigUp on Linux). Launch arguments
+//! (`--roots`, `--hotkey`) stand in for it in dev runs. A field a file doesn't have yet (one saved by an older shell)
+//! takes its default.
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -25,6 +25,9 @@ pub struct Settings {
     pub paused: bool,
     /// The model may run on the GPU (Vulkan); off, the helpers get DIGUP_GPU=0 and use the CPU only.
     pub gpu: bool,
+    /// Where a recording opens when its result has a moment: "vlc" (VLC when it's installed, else as "default") or
+    /// "default" (the file's default app, told the moment if it can be: opener.rs).
+    pub moment_player: String,
 }
 
 impl Default for Settings {
@@ -37,11 +40,17 @@ impl Default for Settings {
             set_up: false,
             paused: false,
             gpu: true,
+            moment_player: "vlc".to_string(),
         }
     }
 }
 
 impl Settings {
+    /// Recordings with a moment open in VLC when it's there (anything but "default" reads as "vlc").
+    pub fn prefers_vlc(&self) -> bool {
+        self.moment_player != "default"
+    }
+
     /// The file's settings, or the defaults when there's none (or it can't be read).
     pub fn load(path: &Path) -> Settings {
         std::fs::read(path).ok().and_then(|data| serde_json::from_slice(&data).ok()).unwrap_or_default()
@@ -80,6 +89,9 @@ mod tests {
             .unwrap();
         assert_eq!(old.folders, ["/home/me/Documents"]);
         assert!(old.set_up && old.gpu && !old.paused, "new fields take their defaults");
+        assert!(old.prefers_vlc());
+        let chosen: Settings = serde_json::from_str(r#"{"momentPlayer":"default"}"#).unwrap();
+        assert!(!chosen.prefers_vlc());
         let written = serde_json::to_value(Settings { paused: true, gpu: false, ..old }).unwrap();
         assert_eq!((written["paused"].as_bool(), written["gpu"].as_bool()), (Some(true), Some(false)));
     }

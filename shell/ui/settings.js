@@ -1,7 +1,7 @@
-// DigUp's settings window: the folders and what's skipped in them, pausing indexing and the GPU switch, the shortcut
-// (on GNOME a GNOME shortcut, which this window can write), starting at login, and where DigUp keeps things. Each
-// change applies at once, as in the Mac app's Settings; the shell saves it and the helpers follow (search-service is
-// told the folders, the watcher and indexing start over with them).
+// DigUp's settings window: the folders and what's skipped in them, pausing indexing and the GPU switch, where
+// recordings open at a moment, the shortcut (on GNOME a GNOME shortcut, which this window can write), starting at
+// login, and where DigUp keeps things. Each change applies at once, as in the Mac app's Settings; the shell saves it
+// and the helpers follow (search-service is told the folders, the watcher and indexing start over with them).
 "use strict";
 
 const tauri = window.__TAURI__;
@@ -33,6 +33,7 @@ function render() {
   $("pause-title").textContent = info.paused ? "Indexing is paused" : "Indexing";
   showStatus(info.status);
   $("gpu").checked = info.gpu;
+  renderMomentPlayer();
 
   renderShortcut();
   $("login").checked = info.startsAtLogin;
@@ -135,6 +136,8 @@ async function save(change) {
 
 $("pause").addEventListener("click", () => run("set_paused", { paused: !info.paused }, $("pause")));
 $("gpu").addEventListener("change", () => run("set_gpu", { gpu: $("gpu").checked }, $("gpu")));
+$("moment-player").addEventListener("change", () =>
+  run("set_moment_player", { player: $("moment-player").value }, $("moment-player")));
 $("login").addEventListener("change", () => run("set_starts_at_login", { on: $("login").checked }, $("login")));
 $("set-up-shortcut").addEventListener("click", () => run("set_up_shortcut", {}, $("set-up-shortcut")));
 
@@ -149,6 +152,17 @@ async function run(command, args, control) {
   }
   control.disabled = false;
   load();
+}
+
+/// Where a video or audio result opens when it matched partway in.
+function renderMomentPlayer() {
+  $("moment-player").value = info.momentPlayer;
+  $("moment-text").textContent =
+    info.momentPlayer === "default"
+      ? "Its default app, at the moment when that app can be told it (VLC, mpv, Celluloid, Totem)."
+      : info.vlc
+        ? "A new VLC window starts playing where the result matched."
+        : "VLC isn't installed: recordings open in their default app, at the moment when it can be told it.";
 }
 
 function renderShortcut() {
