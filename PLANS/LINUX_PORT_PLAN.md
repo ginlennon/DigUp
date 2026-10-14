@@ -276,7 +276,7 @@ hits on spoken names/numbers without more than ~1.5× the audio indexing time on
 Ranked by expected use. Each is a bigger feature: pick one, plan it in detail, then build. Upstream (ARahim3/DigUp)
 is still at f9b8106, so nothing here has to be rebased yet.
 
-### D1. Transcripts for recordings (= C7, the first candidate)
+### D1. Transcripts for recordings (= C7) — chosen 2026-10-14; detailed plan: [TRANSCRIPTS_PLAN.md](./TRANSCRIPTS_PLAN.md), measurements: `docs/linux-port/ASR_SPIKE.md`
 What: whisper.cpp (ggml, Vulkan build like llama.cpp, `build-whisper.sh` beside `build-llama.sh`) transcribes each
 30 s audio window (audio files and video soundtracks); the text goes into the keyword index and into the segment's
 `text`, so exact spoken words match and `/context` / `read_segment` return text for recordings.
@@ -316,7 +316,10 @@ set (blur, downscale, JPEG); measure keyword-query hit rate and OCR time. Replac
 - `install-user.sh --uninstall` still calls the checkout's `gnome-shortcut.sh`; copy the shortcut logic into the
   installed tree so uninstall works without the checkout.
 - One `Gtk-CRITICAL gtk_widget_get_scale_factor` at start (likely the tray); harmless, find the source.
-- Exact-word OCR for Arabic/Bengali needs `tesseract-ocr-ara/-ben`; offer them in `setup.sh` (or D4 removes the need).
+- **Languages (user, 2026-10-14): German and English first, then French, Spanish, Italian, Portuguese; Bengali and
+  Arabic are tier 2** (kept working, not extended; testbed builds them only with `--tier2`). Keyword search needs
+  stopwords, kind words and prefix matching for those languages, and OCR packs `fra/spa/ita/por` offered in
+  `setup.sh` — planned with D1 (TRANSCRIPTS_PLAN.md A7, Stages 0 and 3b).
 - Suspend/resume with the helper mid-file on amdgpu: check once by hand (not a soak).
 - Remaining Stage 6 items: copy file (Ctrl+C), search window, power policy (battery → pause), index hours, SVG via
   `rsvg-convert`, speed calibration for setup estimates.
