@@ -6,11 +6,11 @@ import Foundation
 /// in the Mac app (tens of milliseconds), not a process start.
 ///
 /// Protocol: one JSON request per line on stdin, one JSON response per line on stdout, carrying the request's `id`.
-///   {"op":"search","q":…,"code":bool,"kinds":[…],"limit":n,"meaning":bool,"prefix_last":bool}
+///   {"op":"search","q":…,"code":bool,"kinds":[…],"limit":n,"meaning":bool,"prefix_last":bool,"folders":[…]}
 ///       → {"hits":[…], "strong":n, "meaning":bool, "ms":{"embed":…,"search":…}}
 ///         `meaning` false: keyword-only (while typing, or while the encoder isn't ready); `strong`: the weaker-matches
 ///         fold (`Searcher.strongCount`); each hit has the fields of `digup search --json` plus segment_id, modified,
-///         size and info.
+///         size and info. `folders`: only files inside these (absolute paths; missing or empty: everywhere).
 ///   {"op":"embed_ahead","q":…,"code":bool}   → {"ok":true}: embeds and caches the text (the panel sends what's typed so
 ///                                               far on every keystroke, so the pause's vector is usually ready)
 ///   {"op":"text","segment":id,"code":bool}    → {"text":…}: the part of a file a hit points at, for the preview
@@ -123,6 +123,7 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             let limit = request["limit"] as? Int ?? 40
             let wantMeaning = request["meaning"] as? Bool ?? true
             let prefixLast = request["prefix_last"] as? Bool ?? false
+            let folders = Self.folders(request)
             let started = Date()
             var vector: [Float]?
             var warning: String?
@@ -142,17 +143,14 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             let hits: [SearchHit]
             if code {
                 guard let codeSearcher else { return ["hits": [], "strong": 0, "meaning": false] }
-                hits = try codeSearcher.search(text, queryVector: vector, limit: limit, prefixLast: prefixLast).filter {
+                hits = try codeSearcher.search(text, queryVector: vector, limit: limit, prefixLast: prefixLast,
+                                               folders: folders).filter {
                     FolderSelection.isSearched($0.path, folders: codeRoots, skipped: codeSkipped)
                         && FileManager.default.fileExists(atPath: $0.path)
                 }
             } else {
-                hits = try searcher.search(text, queryVector: vector, kinds: kinds, limit: limit, prefixLast: prefixLast)
-                    .filter {
-                        (roots.isEmpty || FolderSelection.isSearched($0.path, folders: roots, skipped: skipped))
-                            && !types.contains(($0.path as NSString).pathExtension.lowercased())
-                            && FileManager.default.fileExists(atPath: $0.path)
-                    }
+                hits = shown(try searcher.search(text, queryVector: vector, kinds: kinds, limit: limit,
+                                                 prefixLast: prefixLast, folders: folders))
             }
             var reply: [String: Any] = [
                 "hits": hits.map(hitFields), "strong": Searcher.strongCount(hits), "meaning": vector != nil,
@@ -197,6 +195,20 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
         default:
             throw CLIError("unknown op \(op)")
         }
+    }
+
+    /// The main index's hits the shell's folder choices leave in, of files that are still there.
+    private func shown(_ hits: [SearchHit]) -> [SearchHit] {
+        hits.filter {
+            (roots.isEmpty || FolderSelection.isSearched($0.path, folders: roots, skipped: skipped))
+                && !types.contains(($0.path as NSString).pathExtension.lowercased())
+                && FileManager.default.fileExists(atPath: $0.path)
+        }
+    }
+
+    /// A request's `folders`, spelled as `digup search --in` spells them (nil: everywhere).
+    private static func folders(_ request: [String: Any]) -> [String]? {
+        (request["folders"] as? [String]).map { $0.map { Arguments.folderURL($0).path } }
     }
 
     private func write(_ fields: [String: Any]) {

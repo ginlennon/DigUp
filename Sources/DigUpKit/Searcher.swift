@@ -112,12 +112,15 @@ public final class Searcher {
     public static let wordWeight = 2.0
     public static let codeWordWeight = 1.0
 
+    /// `folders`: only files inside them (nil or empty: everywhere), applied before the limit, so a search of one
+    /// folder still fills `limit` from inside it.
     public func search(_ text: String, queryVector: [Float]?, kinds: Set<FileKind>? = nil, limit: Int = 20,
-                       zGate: Double = 2.0, wordWeight: Double? = nil, prefixLast: Bool = false) throws -> [SearchHit] {
+                       zGate: Double = 2.0, wordWeight: Double? = nil, prefixLast: Bool = false,
+                       folders: [String]? = nil) throws -> [SearchHit] {
         let wordWeight = wordWeight ?? (isCode ? Self.codeWordWeight : Self.wordWeight)
         if queryVector != nil, !vectorsLoaded { try reload() }
-        let fileKind = self.fileKind
-        let allowed = { (file: Int64) -> Bool in kinds == nil || fileKind[file].map { kinds!.contains($0) } ?? false }
+        let place = try Place(folders, in: store)
+        let allowed = filter(kinds: kinds, place: place)
 
         // Meaning: score every vector on this query's scale (`meaning`), keep each file's best segment.
         var best: [Int64: (z: Double, cosine: Double, row: Int)] = [:]
@@ -149,11 +152,12 @@ public final class Searcher {
         }
         if !patterns.isEmpty {
             var seen = Set<Int64>()
+            // In folders, the matches outside them are left out by SQLite, so the best 1,000 are all inside.
             try store.db.query("""
                 SELECT s.file, s.id, snippet(fts, 1, '«', '»', '…', 12), fts.original FROM fts
-                JOIN segments s ON s.id = fts.rowid
+                JOIN segments s ON s.id = fts.rowid\(place.map { " JOIN files f ON f.id = s.file AND \($0.sql)" } ?? "")
                 WHERE fts MATCH ? ORDER BY bm25(fts, 3.0, 1.0) LIMIT 1000
-                """, [.text(patterns.joined(separator: " OR "))]) { row in
+                """, (place?.values ?? []) + [.text(patterns.joined(separator: " OR "))]) { row in
                 let file = row.int(0)
                 guard words.count < 100, allowed(file), seen.insert(file).inserted else { return }
                 // Text that normalizing changed is quoted as it's written (with its hamza, harakat, joiners).
@@ -207,23 +211,8 @@ public final class Searcher {
                                                    identifier: rank < 10 ? identifier : nil, query: text, terms: terms,
                                                    wordsHere: keyword?.1.segment == segmentID || identifier != nil)
             }
-            var path = "", kind = FileKind.doc, modified = 0.0, size: Int64 = 0, info: [String: String] = [:]
-            try store.db.query("SELECT path, kind, mtime, size, info FROM files WHERE id = ?", [.int(file)]) {
-                path = $0.text(0) ?? ""
-                kind = FileKind(rawValue: $0.text(1) ?? "") ?? .doc
-                modified = $0.double(2)
-                size = $0.int(3)
-                if let json = $0.text(4)?.data(using: .utf8) {
-                    info = (try? JSONSerialization.jsonObject(with: json) as? [String: String]) ?? [:]
-                }
-            }
-            var segment = SegmentKind.name, loc: Double?, locEnd: Double?, storedExcerpt: String?
-            try store.db.query("SELECT kind, loc, loc_end, excerpt FROM segments WHERE id = ?", [.int(segmentID)]) {
-                segment = SegmentKind(rawValue: $0.text(0) ?? "") ?? .name
-                loc = $0.isNull(1) ? nil : $0.double(1)
-                locEnd = $0.isNull(2) ? nil : $0.double(2)
-                storedExcerpt = $0.text(3)
-            }
+            let about = try self.file(file)
+            let (segment, loc, locEnd, storedExcerpt) = try self.segment(segmentID)
             // Quote the matched words only when they come from the segment we point at, so a PDF hit on page 5
             // never shows page 2's words. A segment with no place and no text of its own (a screenshot's image
             // vector) can borrow them from its file's OCR text, which describes the same picture.
@@ -237,13 +226,73 @@ public final class Searcher {
                 }
                 if matchedKind != SegmentKind.name.rawValue { snippet = excerpt(text, limit: 400) }
             }
-            hits.append(SearchHit(path: path, kind: kind, score: score, z: semantic?.z, cosine: semantic?.cosine,
-                                  keywordRank: keyword?.0, segment: segment, segmentID: segmentID, loc: loc,
-                                  locEnd: locEnd,
-                                  excerpt: snippet ?? storedExcerpt, modified: modified, size: size, info: info,
-                                  focus: focus))
+            hits.append(SearchHit(path: about.path, kind: about.kind, score: score, z: semantic?.z,
+                                  cosine: semantic?.cosine, keywordRank: keyword?.0, segment: segment,
+                                  segmentID: segmentID, loc: loc, locEnd: locEnd, excerpt: snippet ?? storedExcerpt,
+                                  modified: about.modified, size: about.size, info: about.info, focus: focus))
         }
         return hits
+    }
+
+    /// The folders a search is kept to: the files under them, for meaning (every vector is scored anyway, and the
+    /// ones outside are passed over, as other kinds are), and the SQL that keeps keyword matches to them (`f` is the
+    /// files table). Each folder is looked up by its path's range in the index, in each of its spellings
+    /// (`IndexStore.pathRanges`: /var and /private/var, a name decomposed and as the disk keeps it), so "inside" means
+    /// on a component boundary: /a/b holds /a/b/c.png, not /a/bc.png.
+    ///
+    /// The meaning scale stays the whole index's: the few files of one folder would make a scale of their own out of
+    /// too few scores, and a match has to stand out among everything, as it does without folders.
+    struct Place {
+        let files: Set<Int64>
+        let sql: String
+        let values: [SQLValue]
+
+        init?(_ folders: [String]?, in store: IndexStore) throws {
+            guard let folders, !folders.isEmpty else { return nil }
+            let ranges = folders.flatMap(IndexStore.pathRanges(under:))
+            sql = "(" + ranges.map { _ in "(f.path >= ? AND f.path < ?)" }.joined(separator: " OR ") + ")"
+            values = ranges.flatMap { [SQLValue.text($0.from), .text($0.to)] }
+            var files = Set<Int64>()
+            try store.db.query("SELECT f.id FROM files f WHERE \(sql)", values) { files.insert($0.int(0)) }
+            self.files = files
+        }
+    }
+
+    /// Whether a file may be a result: one of `kinds` (nil: any), in `place` (nil: anywhere).
+    private func filter(kinds: Set<FileKind>?, place: Place?) -> (Int64) -> Bool {
+        let fileKind = self.fileKind
+        return { file in
+            (kinds == nil || fileKind[file].map { kinds!.contains($0) } ?? false)
+                && (place?.files.contains(file) ?? true)
+        }
+    }
+
+    /// What a hit says about its file.
+    private func file(_ id: Int64) throws -> (path: String, kind: FileKind, modified: Double, size: Int64,
+                                              info: [String: String]) {
+        var about = (path: "", kind: FileKind.doc, modified: 0.0, size: Int64(0), info: [String: String]())
+        try store.db.query("SELECT path, kind, mtime, size, info FROM files WHERE id = ?", [.int(id)]) {
+            about.path = $0.text(0) ?? ""
+            about.kind = FileKind(rawValue: $0.text(1) ?? "") ?? .doc
+            about.modified = $0.double(2)
+            about.size = $0.int(3)
+            if let json = $0.text(4)?.data(using: .utf8) {
+                about.info = (try? JSONSerialization.jsonObject(with: json) as? [String: String]) ?? [:]
+            }
+        }
+        return about
+    }
+
+    /// What a hit says about the segment it points at.
+    private func segment(_ id: Int64) throws -> (kind: SegmentKind, loc: Double?, locEnd: Double?, excerpt: String?) {
+        var segment = (kind: SegmentKind.name, loc: Double?.none, locEnd: Double?.none, excerpt: String?.none)
+        try store.db.query("SELECT kind, loc, loc_end, excerpt FROM segments WHERE id = ?", [.int(id)]) {
+            segment.kind = SegmentKind(rawValue: $0.text(0) ?? "") ?? .name
+            segment.loc = $0.isNull(1) ? nil : $0.double(1)
+            segment.locEnd = $0.isNull(2) ? nil : $0.double(2)
+            segment.excerpt = $0.text(3)
+        }
+        return segment
     }
 
     /// Code: the stretch to point at, and the line in it to open at. A name looked up points at the stretch that

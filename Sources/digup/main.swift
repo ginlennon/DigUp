@@ -23,7 +23,7 @@ let usage = """
       digup estimate <folder>... [--json]     what would be indexed, and how long the first pass takes
       digup index <folder>... [--limit N]     sync the index with these folders, embed what's new, then the rest
                                               of long PDFs and documents
-      digup search <words>... [--kind K,K] [-n 10] [--json]
+      digup search <words>... [--kind K,K] [--in DIR]... [-n 10] [--json]
                                               "code: <words>" searches the code index
       digup status                            what's in the index
       digup speed                             this machine's speed next to the M4 Pro behind the estimates, and
@@ -45,6 +45,7 @@ let usage = """
       --code               estimate, index or show the code index of these folders (code.sqlite in the index
                            folder): source files, their repos' docs and notebooks, minus what git ignores
       --kind K,K           screenshot, image, pdf, doc, audio, video
+      --in DIR             only the files inside this folder (repeatable)
       --include-code       also index loose source code and data files as documents (outside code projects)
       --include-datasets   don't skip folders that look like datasets
       --exclude DIR        don't index this folder (repeatable)
@@ -74,7 +75,7 @@ struct Arguments {
     static let valued: Set<String> = ["--index", "--limit", "--kind", "-n", "--zgate", "--word-weight", "--new-limit",
                                       "--linger", "--shot-tokens", "--code-stretch", "--encoder-idle", "--to",
                                       "--memory-limit", "--time-limit"]
-    static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude"]
+    static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude", "--in"]
 
     init(_ raw: ArraySlice<String>) throws {
         var index = raw.startIndex
@@ -154,6 +155,9 @@ struct Arguments {
     /// Dev knobs for A/B runs in evals/.
     var zGate: Double { values["--zgate"].flatMap(Double.init) ?? 2.0 }
     var wordWeight: Double? { values["--word-weight"].flatMap(Double.init) }   // nil: the index's own (`Searcher`)
+
+    /// `--in`: the folders a search is kept to (nil: everywhere).
+    var searchFolders: [String]? { lists["--in"].map { $0.map { Self.folderURL($0).path } } }
 
     func kinds() throws -> Set<FileKind>? {
         guard let list = values["--kind"] else { return nil }
@@ -384,7 +388,7 @@ func search(_ args: Arguments) throws {
     let encoded = Date()
     let hits = try searcher.search(query, queryVector: vector, kinds: try args.kinds(),
                                    limit: args.values["-n"].flatMap(Int.init) ?? 10, zGate: args.zGate,
-                                   wordWeight: args.wordWeight)
+                                   wordWeight: args.wordWeight, folders: args.searchFolders)
     let searched = Date()
     if args.flags.contains("--json") {
         let rows = hits.map(hitFields)
