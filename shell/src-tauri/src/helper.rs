@@ -268,7 +268,10 @@ impl IndexService {
             if !leaving && indexing.args == launch.args && indexing.process.is_running() {
                 indexing.progress.lock().unwrap().wanted = Some(seconds_now());
                 let stdin = &mut indexing.stdin;
-                return writeln!(stdin, "sync").and_then(|_| stdin.flush()).map_err(|error| error.to_string());
+                if writeln!(stdin, "sync").and_then(|_| stdin.flush()).is_ok() {
+                    return Ok(());
+                }
+                // It exited just now (the pipe is closed): a new one does the sync.
             }
         }
         if let Some(indexing) = running.take() {
