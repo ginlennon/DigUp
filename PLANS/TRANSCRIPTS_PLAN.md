@@ -1,7 +1,7 @@
 # PLAN — Transcripts for recordings (D1), with the European-language testbed it needs
 
-**Status (2026-10-14): approved by the user, default OFF. Stage 1 built (whisper-cli in the build, models, doctor);
-Stage 0 in progress; Stages 2–5 not implemented.** Engine chosen by measurement:
+**Status (2026-10-14): approved by the user, default OFF. Stages 0 (European testbed + eval,
+baseline) and 1 (whisper-cli in the build, models, doctor) built; Stage 2 in progress; 3–5 not implemented.** Engine chosen by measurement:
 [docs/linux-port/ASR_SPIKE.md](../docs/linux-port/ASR_SPIKE.md). Parent plan: [LINUX_PORT_PLAN.md](./LINUX_PORT_PLAN.md)
 Part D. Languages in focus: German and English first, then French, Spanish, Italian, Portuguese; Bengali and Arabic
 (upstream's multilingual set) become tier 2.
