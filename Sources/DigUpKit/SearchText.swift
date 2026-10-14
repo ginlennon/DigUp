@@ -4,12 +4,16 @@ import Foundation
 public enum SearchText {
     /// NFKC (Arabic presentation forms and ligatures become plain letters, full-width becomes ASCII, and Bengali's
     /// two spellings of "ো" become one), invisible formatting characters dropped (Bengali's zero-width joiners,
-    /// direction marks), and Arabic the way people type it: no tatweel, no short-vowel marks, one alef.
+    /// direction marks), and Arabic the way people type it: no tatweel, no short-vowel marks, one alef. German and Swiss
+    /// spelling meet: ß is ss ("Seestraße" is found as "Seestrasse", the only spelling in Switzerland), and the marks
+    /// that group a number's digits go (`digitGroupMarks`: "CHF 2'380.50" is 2380.50, not 2 / 380 / 50, which matched
+    /// every page with a 50 on it).
     public static func normalized(_ text: String) -> String {
-        let compatible = text.precomposedStringWithCompatibilityMapping
+        let compatible = joiningDigitGroups(text).precomposedStringWithCompatibilityMapping
         var scalars = String.UnicodeScalarView()
         for scalar in compatible.unicodeScalars {
             switch scalar.value {
+            case 0x00DF, 0x1E9E: scalars.append(contentsOf: "ss".unicodeScalars)   // ß, ẞ
             case 0x200B: scalars.append(" ")   // zero-width space: a word break (Thai, Khmer)
             case 0x00AD, 0x061C, 0x200C...0x200F, 0x202A...0x202E, 0x2060...0x2064, 0x2066...0x2069, 0xFEFF:
                 continue                         // joiners, direction marks, soft hyphen, BOM
@@ -23,6 +27,26 @@ public enum SearchText {
         }
         return String(scalars)
     }
+
+    /// Apostrophes (Swiss "2'380"), typographic ones, thin and narrow no-break spaces (French and typeset "2 380") and
+    /// the Arabic thousands separator, where they stand between two digits. Taken out before NFKC, which makes the
+    /// spaces plain ones: "Seite 2 380 Gäste" with a plain space stays two numbers.
+    static let digitGroupMarks: Set<UInt32> = [0x0027, 0x2019, 0x2009, 0x202F, 0x066C]
+
+    /// `text` without the digit-group marks that stand between two digits.
+    private static func joiningDigitGroups(_ text: String) -> String {
+        guard text.unicodeScalars.contains(where: { digitGroupMarks.contains($0.value) }) else { return text }
+        let source = Array(text.unicodeScalars)
+        var out = String.UnicodeScalarView()
+        for (index, scalar) in source.enumerated() {
+            if digitGroupMarks.contains(scalar.value), index > 0, index + 1 < source.count,
+               isDigit(source[index - 1]), isDigit(source[index + 1]) { continue }
+            out.append(scalar)
+        }
+        return String(out)
+    }
+
+    static func isDigit(_ scalar: Unicode.Scalar) -> Bool { scalar.properties.generalCategory == .decimalNumber }
 
     /// True for words of scripts that attach endings to words (Bengali, Hindi, Arabic): keyword search matches them as
     /// prefixes, so "কুমির" finds "কুমিরও" and "مدرس" finds "مدرسة".
@@ -46,24 +70,32 @@ public enum SearchText {
     /// the text as it's written: whole words, and for a word of a language that attaches endings, the whole word it
     /// starts ("কুমির" marks all of "কুমিরের"). For marking matches on what's shown (it never splits a letter from its
     /// vowel sign).
-    public static func matches(of word: String, in text: String) -> [Range<String.Index>] {
+    ///
+    /// `part`: where `word` has to be in a word of the text (`WordPart`, for the filter's `Rechnung*`, `*karte` and
+    /// `*kaution*`); the range is then the whole word it's in.
+    public static func matches(of word: String, in text: String, as part: WordPart = .whole) -> [Range<String.Index>] {
         let needle = normalized(word).lowercased()
         guard !needle.isEmpty else { return [] }
         let folded = Folded(text)
         let haystack = folded.text as NSString
-        let prefix = inflects(word)
+        let atStart = part == .whole || part == .start, atEnd = part == .end || (part == .whole && !inflects(word))
         var found: [Range<String.Index>] = []
         var searchRange = NSRange(location: 0, length: haystack.length)
         while found.count < 500 {
             let hit = haystack.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive], range: searchRange)
             guard hit.location != NSNotFound else { break }
-            searchRange = NSRange(location: hit.upperBound, length: haystack.length - hit.upperBound)
+            searchRange = NSRange(location: hit.location + 1, length: haystack.length - hit.location - 1)
             guard var range = folded.original(hit) else { continue }
             if range.lowerBound > text.startIndex, isWordCharacter(text[text.index(before: range.lowerBound)]) {
-                continue
+                guard !atStart else { continue }
+                var start = range.lowerBound
+                while start > text.startIndex, isWordCharacter(text[text.index(before: start)]) {
+                    start = text.index(before: start)
+                }
+                range = start..<range.upperBound
             }
             if range.upperBound < text.endIndex, isWordCharacter(text[range.upperBound]) {
-                guard prefix else { continue }
+                guard !atEnd else { continue }
                 var end = range.upperBound
                 while end < text.endIndex, isWordCharacter(text[end]) { end = text.index(after: end) }
                 range = range.lowerBound..<end
@@ -73,6 +105,10 @@ public enum SearchText {
         }
         return found
     }
+
+    /// Where a word looked for has to be in a word of the text: all of it, its start (`Rechnung*`), its end (`*karte`)
+    /// or anywhere (`*kaution*`).
+    public enum WordPart: Sendable { case whole, start, end, inside }
 
     /// One line from `text` around the first of `terms` it has, the terms marked « » as SQLite's snippet() marks them:
     /// the excerpt of a keyword match, from the text as it's written. Nil when none of the terms is in it.
@@ -118,12 +154,19 @@ public enum SearchText {
         init(_ source: String) {
             self.source = source
             var text = "", origin: [String.Index] = []
-            var index = source.startIndex
-            for character in source {
+            let indices = Array(source.indices)
+            func isDigit(_ position: Int) -> Bool {
+                indices.indices.contains(position)
+                    && source[indices[position]].unicodeScalars.first.map(SearchText.isDigit) == true
+            }
+            for (position, index) in indices.enumerated() {
+                let character = source[index]
+                // A digit-group mark between two digits goes, as `normalized` takes it out of the whole text.
+                if let scalar = character.unicodeScalars.first, character.unicodeScalars.count == 1,
+                   digitGroupMarks.contains(scalar.value), isDigit(position - 1), isDigit(position + 1) { continue }
                 let piece = normalized(String(character)).lowercased()
                 text += piece
                 origin += Array(repeating: index, count: piece.utf16.count)
-                index = source.index(after: index)
             }
             self.text = text
             self.origin = origin

@@ -1,6 +1,6 @@
 # PLAN — A keyword filter beside the search field (AND, OR, NOT, wildcards, phrases)
 
-**Status (2026-10-14): designed with the user, PLAN ONLY — not implemented.** Starts after transcripts Stage 2
+**Status (2026-10-14): F1 built (normalization + `fts_tri`, schema 6); F2–F5 not yet.** Starts after transcripts Stage 2
 (PLANS/TRANSCRIPTS_PLAN.md) is merged, since both touch the keyword index. Input: the German keyword weaknesses
 measured in `docs/linux-port/EVAL_RESULTS.md` ("European languages — baseline").
 
@@ -102,6 +102,22 @@ Dropped for now: automatic plural trimming (the filter's `Rechnung*` does it on 
 ß/ss + digit marks in `SearchText.normalized`; `fts_tri` created, filled and kept in step (every place `fts` is
 written or deleted, incl. transcripts' rows); migration from the stored text; tests.
 **Check:** old evals unchanged or better; "Seestrasse" finds the doctor's appointment.
+- **Done (2026-10-14).** Decided on the way:
+  - *Digit marks*: `'`, `’`, U+2009, U+202F and the Arabic thousands separator U+066C, only between two decimal digits,
+    taken out before NFKC (which turns the two spaces into plain ones: "Seite 2 380 Gäste" with a plain space stays two
+    numbers). `SearchText.matches`/`snippet` fold the same way, so «2'380» and «Seestraße» are marked as written;
+    `original` keeps the text as written for every row normalizing changed (now also every row with ß).
+  - *`fts_tri`*: `trigram remove_diacritics 1`, contentless with `contentless_delete = 1` and **`detail = none`**:
+    2.4 MB on the dev laptop's real index (5.8 M characters) instead of 17.7 MB with places. It answers "which rows
+    have all three-letter pieces of x" (candidates, `IndexStore.trigramQuery`); F2 checks them against `fts.body`.
+    Every write goes through `addKeywords` / `addNameRow` / `deleteKeywords` / `move` (segments, name rows, transcripts
+    in and out, requeue, resetAll, delete, prune); the code index is the same `IndexStore`, so it has it too.
+  - *Schema 6*: `fts_tri` filled from `fts`; `fts` rows whose words change are rewritten in place from `original`
+    (else `body`). An older DigUp refuses a schema 6 index ("made by a newer DigUp"), which is right: it wouldn't keep
+    `fts_tri` in step. Release notes must say that going back means re-indexing.
+- **Check passed:** european 0.84 → 0.86 R@1 (with transcripts; only "Seestrasse" moved, miss → #1 on
+  `Arzttermin.odt`), synthetic / multilingual / code identical line for line. Migration on a copy of the real index
+  0.53 s, 17.1 → 21.1 MB. Numbers in `docs/linux-port/EVAL_RESULTS.md`.
 
 ### F2 — Engine: the filter
 Parser (A3) with tests; set evaluation (A5); ranking (A4) incl. below-gate candidates and filter-only mode; hit

@@ -20,7 +20,7 @@ public struct FileRecord: Sendable {
 public final class IndexStore {
     public let directory: URL
     public let db: Database
-    public static let schemaVersion: Int64 = 5
+    public static let schemaVersion: Int64 = 6
 
     /// Keyword search's tokenizer. Marks (M*) count as letters, so Bengali vowel signs and Arabic harakat stay inside
     /// their words: by default SQLite splits on them ("কলকাতায়" became "কলক", "ত", "য").
@@ -28,6 +28,32 @@ public final class IndexStore {
     /// Keyword search's table: words are matched in `body`, normalized (`SearchText`); `original` keeps the text as it's
     /// written when normalizing changed it (Arabic with hamza or harakat, Bengali with joiners), for showing it.
     static let ftsColumns = "name, body, original UNINDEXED, tokenize = \"\(tokenizer)\""
+    /// The same names and text cut into every three characters (`fts_tri`, same rowids as `fts`), case and accents
+    /// ignored: the filter's `*karte` and `*kaution*` find the rows that have those letters anywhere in a word, which
+    /// words can't. Only which rows have which threes (contentless, `detail = none`): the text is `fts`'s already, and
+    /// `KeywordFilter` checks the candidates against it. On the dev laptop's index (5.8 M characters, 2026-10-14) that's
+    /// 2.4 MB; with the threes' places (to match them side by side) it was 17.7 MB, more than the rest of the index,
+    /// for checks that take milliseconds.
+    static let trigramColumns = """
+        name, body, content = '', contentless_delete = 1, detail = none, tokenize = "trigram remove_diacritics 1"
+        """
+
+    /// The query for the rows of `fts_tri` that have every three characters of `text` somewhere: candidates for rows
+    /// that have `text` (the table doesn't know where the threes are). Nil for text shorter than three.
+    static func trigramQuery(_ text: String) -> String? {
+        let scalars = Array(text.unicodeScalars)
+        guard scalars.count >= 3 else { return nil }
+        var seen = Set<String>(), pieces: [String] = []
+        for start in 0...(scalars.count - 3) {
+            var piece = String.UnicodeScalarView()
+            piece.append(contentsOf: scalars[start..<start + 3])
+            let three = String(piece)
+            if seen.insert(three.lowercased()).inserted {
+                pieces.append("\"" + three.replacingOccurrences(of: "\"", with: "\"\"") + "\"")
+            }
+        }
+        return pieces.joined(separator: " AND ")
+    }
 
     /// When set, `pending`, `pendingCount` and `counts` see only files under these folders: the app's helper sets the
     /// folders that are connected right now, so files on an unplugged drive neither fail nor count as waiting.
@@ -97,10 +123,16 @@ public final class IndexStore {
         try db.transaction {
             try db.query("PRAGMA user_version") { version = $0.int(0) }
             if version == 0 { try create() }
+            // The steps below write keyword search through `addKeywords` and `deleteKeywords`, which keep `fts_tri` in
+            // step: it's there (empty) from the first, and filled by the last.
+            if (1...5).contains(version) {
+                try db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS fts_tri USING fts5(\(Self.trigramColumns))")
+            }
             if version == 1 { try migrateKeywordSearch() }
             if (1...2).contains(version) { try migrateScreenshotText() }
             if (1...3).contains(version) { try migrateVectorNames() }
             if (1...4).contains(version) { try migrateLongFiles() }
+            if (1...5).contains(version) { try migrateFilter() }
         }
     }
 
@@ -134,6 +166,7 @@ public final class IndexStore {
             );
             CREATE INDEX segments_file ON segments(file);
             CREATE VIRTUAL TABLE fts USING fts5(\(Self.ftsColumns));
+            CREATE VIRTUAL TABLE fts_tri USING fts5(\(Self.trigramColumns));
             PRAGMA user_version = \(Self.schemaVersion);
             """)
     }
@@ -202,6 +235,31 @@ public final class IndexStore {
             WHERE kind = 'doc' AND state = 'done' AND json_extract(info, '$.chunks') = '40';
             PRAGMA user_version = 5;
             """)
+    }
+
+    /// Schema 5 → 6: the keyword filter. Keyword search's words are made again with ß as ss and numbers' digit-group
+    /// marks taken out (`SearchText.normalized`), from the text as it's written (`original`, else `body`: the text
+    /// normalizing didn't change), and `fts_tri` gets the same text in threes. Nothing is read or embedded; an older
+    /// DigUp can't open the index afterwards (it wouldn't keep `fts_tri` in step).
+    private func migrateFilter() throws {
+        try db.execute("DROP TABLE IF EXISTS fts_tri; CREATE VIRTUAL TABLE fts_tri USING fts5(\(Self.trigramColumns));")
+        // Row by row, as in `migrateKeywordSearch`. Only the rows whose words change are written again (those with ß or
+        // a grouped number), in place: a new table left the old one's pages free, 12 MB of a 17 MB index.
+        var changed: [[SQLValue]] = []
+        try db.query("SELECT rowid, name, body, original FROM fts") { row in
+            let rowid = row.int(0), name = SearchText.normalized(row.text(1) ?? "")
+            // A file's name row (its name, and its folders as `body`) is kept normalized only, as `addNameRow` keeps it.
+            let (body, original) = name.isEmpty ? Self.keywordColumns(row.text(3) ?? row.text(2) ?? "")
+                : (SearchText.normalized(row.text(2) ?? ""), nil)
+            try db.run("INSERT INTO fts_tri(rowid, name, body) VALUES(?, ?, ?)", [.int(rowid), .text(name), .text(body)])
+            if name != row.text(1) ?? "" || body != row.text(2) ?? "" || original != row.text(3) {
+                changed.append([.text(name), .text(body), .optional(original), .int(rowid)])
+            }
+        }
+        for values in changed {
+            try db.run("UPDATE fts SET name = ?, body = ?, original = ? WHERE rowid = ?", values)
+        }
+        try db.execute("PRAGMA user_version = 6")
     }
     // MARK: Meta
 
@@ -279,14 +337,16 @@ public final class IndexStore {
     /// (Screenshot tools move screenshots into project folders all the time.)
     public func move(_ id: Int64, to path: String) throws {
         try db.run("UPDATE files SET path = ? WHERE id = ?", [.text(path), .int(id)])
-        try db.run("""
-            UPDATE fts SET name = ?, body = ? WHERE rowid IN (SELECT id FROM segments WHERE file = ? AND kind = 'name')
-            """, [.text(SearchText.normalized(Self.nameText(path))), .text(SearchText.normalized(Self.folderText(path))),
-                  .int(id)])
+        for table in ["fts", "fts_tri"] {
+            try db.run("""
+                UPDATE \(table) SET name = ?, body = ? WHERE rowid IN (SELECT id FROM segments WHERE file = ? AND kind = 'name')
+                """, [.text(SearchText.normalized(Self.nameText(path))),
+                      .text(SearchText.normalized(Self.folderText(path))), .int(id)])
+        }
     }
 
     public func delete(_ id: Int64) throws {
-        try db.run("DELETE FROM fts WHERE rowid IN (SELECT id FROM segments WHERE file = ?)", [.int(id)])
+        try deleteKeywords("SELECT id FROM segments WHERE file = ?", [.int(id)])
         try db.run("DELETE FROM files WHERE id = ?", [.int(id)])
     }
 
@@ -309,7 +369,7 @@ public final class IndexStore {
     /// Queues every file again and forgets the fingerprint (after the model or settings changed).
     public func resetAll() throws {
         try db.transaction {
-            try db.run("DELETE FROM fts WHERE rowid IN (SELECT id FROM segments WHERE kind != 'name')")
+            try deleteKeywords("SELECT id FROM segments WHERE kind != 'name'")
             try db.run("DELETE FROM segments WHERE kind != 'name'")
             try db.run("UPDATE files SET state = 'pending', detail = NULL, info = NULL, indexed_at = NULL")
             try setMeta("fingerprint", nil)
@@ -459,27 +519,48 @@ public final class IndexStore {
                     .optional(loc), .optional(locEnd), .optional(excerpt),
                     vector.map { .blob(Vectors.half($0)) } ?? .null])
         if let text, !text.isEmpty {
-            try db.run("INSERT INTO fts(rowid, name, body, original) VALUES(?, '', ?, ?)",
-                       [.int(db.lastInsertID)] + Self.keywordText(text))
+            try addKeywords(db.lastInsertID, text: text)
         }
     }
 
     /// `body` and `original` for keyword search: the normalized text, and the text as written if that differs.
     static func keywordText(_ text: String) -> [SQLValue] {
+        let (body, original) = keywordColumns(text)
+        return [.text(body), .optional(original)]
+    }
+
+    static func keywordColumns(_ text: String) -> (body: String, original: String?) {
         let normalized = SearchText.normalized(text)
-        return [.text(normalized), normalized == text ? .null : .text(text)]
+        return (normalized, normalized == text ? nil : text)
+    }
+
+    /// Keyword search's row for a segment's text (`name` stays empty), in `fts` and `fts_tri` alike. Every row either
+    /// table gets comes through here or `addNameRow`, and goes through `deleteKeywords` (or `move`), so the two never
+    /// differ (the filter's suffixes and infixes would find files that keyword search had dropped, or miss new ones).
+    private func addKeywords(_ rowid: Int64, text: String) throws {
+        let (body, original) = Self.keywordColumns(text)
+        try db.run("INSERT INTO fts(rowid, name, body, original) VALUES(?, '', ?, ?)",
+                   [.int(rowid), .text(body), .optional(original)])
+        try db.run("INSERT INTO fts_tri(rowid, name, body) VALUES(?, '', ?)", [.int(rowid), .text(body)])
+    }
+
+    /// Takes the keyword rows of the segments `segments` selects (SQL returning ids) out of `fts` and `fts_tri`.
+    private func deleteKeywords(_ segments: String, _ values: [SQLValue] = []) throws {
+        try db.run("DELETE FROM fts WHERE rowid IN (\(segments))", values)
+        try db.run("DELETE FROM fts_tri WHERE rowid IN (\(segments))", values)
     }
 
     private func addNameRow(file: Int64, path: String) throws {
         try db.run("INSERT INTO segments(file, kind, modality) VALUES(?, 'name', 'none')", [.int(file)])
-        try db.run("INSERT INTO fts(rowid, name, body) VALUES(?, ?, ?)",
-                   [.int(db.lastInsertID), .text(SearchText.normalized(Self.nameText(path))),
-                    .text(SearchText.normalized(Self.folderText(path)))])
+        let row: [SQLValue] = [.int(db.lastInsertID), .text(SearchText.normalized(Self.nameText(path))),
+                               .text(SearchText.normalized(Self.folderText(path)))]
+        try db.run("INSERT INTO fts(rowid, name, body) VALUES(?, ?, ?)", row)
+        try db.run("INSERT INTO fts_tri(rowid, name, body) VALUES(?, ?, ?)", row)
     }
 
     private func deleteSegments(of file: Int64, keepingName: Bool) throws {
         let filter = keepingName ? "AND kind != 'name'" : ""
-        try db.run("DELETE FROM fts WHERE rowid IN (SELECT id FROM segments WHERE file = ? \(filter))", [.int(file)])
+        try deleteKeywords("SELECT id FROM segments WHERE file = ? \(filter)", [.int(file)])
         try db.run("DELETE FROM segments WHERE file = ? \(filter)", [.int(file)])
     }
 
@@ -550,8 +631,7 @@ public final class IndexStore {
         try db.transaction {
             try removeTranscriptText(file: file)
             for (window, text) in texts {
-                try db.run("INSERT INTO fts(rowid, name, body, original) VALUES(?, '', ?, ?)",
-                           [.int(window)] + Self.keywordText(text))
+                try addKeywords(window, text: text)
                 try db.run("UPDATE segments SET excerpt = ? WHERE id = ?", [.text(excerpt(text, limit: 200)), .int(window)])
             }
             var merged = try self.info(of: file)
@@ -589,8 +669,7 @@ public final class IndexStore {
     }
 
     private func removeTranscriptText(file: Int64) throws {
-        try db.run("DELETE FROM fts WHERE rowid IN (SELECT id FROM segments WHERE file = ? AND kind = 'audio')",
-                   [.int(file)])
+        try deleteKeywords("SELECT id FROM segments WHERE file = ? AND kind = 'audio'", [.int(file)])
         try db.run("UPDATE segments SET excerpt = NULL WHERE file = ? AND kind = 'audio' AND excerpt IS NOT NULL",
                    [.int(file)])
     }
@@ -606,7 +685,7 @@ public final class IndexStore {
     /// changes: audio windows never have words of their own.
     public func removeTranscripts() throws {
         try db.transaction {
-            try db.run("DELETE FROM fts WHERE rowid IN (SELECT id FROM segments WHERE kind = 'audio')")
+            try deleteKeywords("SELECT id FROM segments WHERE kind = 'audio'")
             try db.run("UPDATE segments SET excerpt = NULL WHERE kind = 'audio' AND excerpt IS NOT NULL")
             let paths = Self.transcriptKeys.map { "'$.\($0)'" }.joined(separator: ", ")
             try db.run("""

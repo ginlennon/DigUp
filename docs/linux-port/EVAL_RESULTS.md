@@ -109,3 +109,34 @@ Checked with `digup search` on the same index (`words #n` in its output = a keyw
    the board meeting” doesn't list the German meeting in its top 5. Written invoices outrank the calls about invoices in
    de/es/it. Transcripts (keyword hits on the moment) are the fix the plan has; the stopword and folding fixes above
    apply to them too.
+
+## Keyword filter F1 — ß/ss, Swiss numbers, `fts_tri` (2026-10-14)
+
+[KEYWORD_FILTER_PLAN.md](../../PLANS/KEYWORD_FILTER_PLAN.md) F1: `SearchText.normalized` folds ß → ss and drops the
+digit-group marks between digits (`2'380.50` → `2380.50`); a contentless trigram table `fts_tri` beside `fts`; schema
+5 → 6 rebuilds both from the stored text. Baseline = the same testbed indexed by the build before F1 **with
+transcripts** (Stage 2: `--transcripts gpu`, 18 recordings transcribed, 4 none), which is why european starts above the
+0.79 measured before transcripts. "After" = a copy of that index migrated by the F1 build (nothing re-read or
+re-embedded).
+
+| Eval | n | before R@1 / R@5 / MRR | after F1 R@1 / R@5 / MRR |
+|---|---|---|---|
+| european | 76 | 0.84 / 0.92 / 0.87 | **0.86 / 0.93 / 0.88** |
+| synthetic | 37 | 0.97 / 1.00 / 0.99 | 0.97 / 1.00 / 0.99 |
+| multilingual (tier 2) | 48 | 0.94 / 0.98 / 0.95 | 0.94 / 0.98 / 0.95 |
+| code | 41 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 |
+
+The only query that moved: `de-keyword` “Seestrasse” miss → **#1** (`de/Arzttermin.odt`, which says “Seestraße”);
+`de-keyword` 0.82 → 0.91 R@1. Every other line of the four evals' output is identical.
+
+Migration (`digup status` on copies; the time minus a second `status` on the migrated copy):
+
+| Index | text | before | after | fts_tri | migration |
+|---|---|---|---|---|---|
+| testbed (612 segments + code 81) | 0.5 M chars | 1.98 MB | 2.21 MB | 0.24 MB | 0.06 s (+ code 0.02 s) |
+| copy of the dev laptop's real index (4,059 segments) | 5.8 M chars | 17.1 MB | 21.1 MB | 2.4 MB | **0.53 s** |
+
+`fts_tri` is `detail = none`: which rows hold which three-letter pieces, not where. With places (`detail = full`, what a
+substring MATCH needs) it was 17.7 MB on the real index, more than everything else together; candidates are checked
+against `fts`'s text in Swift instead (F2). Only rows whose words change (those with ß or a grouped number) are
+rewritten in place: a rebuilt `fts` left 12 MB of free pages behind.

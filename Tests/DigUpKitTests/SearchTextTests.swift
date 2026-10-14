@@ -20,6 +20,32 @@ import Testing
         #expect(SearchText.normalized("a\u{200B}b") == "a b")                      // zero-width space breaks words
     }
 
+    @Test func germanAndSwissSpellingsMeet() throws {
+        #expect(SearchText.normalized("Seestraße 4") == "Seestrasse 4")
+        #expect(SearchText.normalized("GROẞ") == "GROss")
+        #expect(SearchText.normalized("CHF 2'380.50") == "CHF 2380.50")                // Swiss
+        #expect(SearchText.normalized("2’380 · 1\u{2009}250 · 3\u{202F}000") == "2380 · 1250 · 3000")
+        #expect(SearchText.normalized("Seite 2 380 Gäste") == "Seite 2 380 Gäste")    // a plain space: two numbers
+        #expect(SearchText.normalized("l'école, it's the '90s, 5'") == "l'école, it's the '90s, 5'")
+        #expect(SearchText.normalized("\u{202F}x") == " x")                            // not between digits: NFKC's
+        #expect(Searcher.terms("CHF 2'380.50 Seestraße") == ["chf", "2380", "50", "seestrasse"])
+        // Marked on the text as it's written.
+        let text = "Bitte an die Seestraße 4, Betrag CHF 2'380.50."
+        #expect(SearchText.snippet(text, terms: ["seestrasse", "2380"])
+                == "Bitte an die «Seestraße» 4, Betrag CHF «2'380».50.")
+
+        let store = try IndexStore(directory: folder)
+        let id = try store.insert(Candidate(path: "/notes/Arzttermin.odt", kind: .doc, size: 1, mtime: 1, inode: 1,
+                                            device: 1))
+        try store.addSegment(file: id, kind: .chunk, modality: .text, loc: 1, text: text)
+        let searcher = try Searcher(store: store, loadVectors: false)
+        let hits = try searcher.search("Seestrasse", queryVector: nil)
+        #expect(hits.map(\.path) == ["/notes/Arzttermin.odt"])
+        #expect(hits.first?.excerpt?.contains("«Seestraße»") == true)
+        #expect(try searcher.search("2380", queryVector: nil).map(\.path) == ["/notes/Arzttermin.odt"])
+        #expect(try searcher.text(ofSegment: hits[0].segmentID) == text)   // shown as it's written
+    }
+
     @Test func queryWordsOfLanguagesWithEndingsArePrefixes() {
         #expect(Searcher.ftsQuery("কুমির") == "\"কুমির\"*")
         #expect(Searcher.ftsQuery("مدرسة الأطفال") == "\"مدرسة\"* OR \"الاطفال\"*")
@@ -125,6 +151,95 @@ import Testing
         #expect(try store.meta("fingerprint")?.hasPrefix(named + " | ") == true)
         // Schema 5 (long files finished later, `LongFilesTests`) leaves short ones as they were.
         #expect(try store.unfinishedCount() == (0, 0))
+    }
+
+    @Test func schemaFiveGetsTheFilterTableFromWhatIsStored() throws {
+        // An index as schema 5 left it: ß and "2'380" kept as they were, no `fts_tri`.
+        let old = "Termin an der Seestraße, CHF 2'380.50"
+        var vectors: [String] = []
+        do {
+            let store = try IndexStore(directory: folder)
+            let id = try store.insert(Candidate(path: "/d/Straße.odt", kind: .doc, size: 1, mtime: 1, inode: 1, device: 1))
+            try store.addSegment(file: id, kind: .chunk, modality: .text, loc: 1, text: "x",
+                                 vector: FakeEmbedder.vector(for: "x"))
+            try store.addSegment(file: id, kind: .chunk, modality: .text, loc: 2, text: "قَالَ")   // harakat: has `original`
+            try store.db.run("UPDATE fts SET body = ?, original = NULL WHERE rowid = 2", [.text(old)])
+            try store.db.execute("""
+                DROP TABLE fts_tri;
+                UPDATE fts SET name = 'Straße.odt' WHERE rowid = 1;
+                PRAGMA user_version = 5;
+                """)
+            try store.db.query("SELECT hex(vec) FROM segments ORDER BY id") { vectors.append($0.text(0) ?? "") }
+        }
+        let store = try IndexStore(directory: folder)
+        var version: Int64 = 0
+        try store.db.query("PRAGMA user_version") { version = $0.int(0) }
+        #expect(version == 6)
+        var rows: [String] = []
+        try store.db.query("SELECT rowid, name, body, coalesce(original, '-') FROM fts ORDER BY rowid") { row in
+            rows.append((0..<4).map { row.text(Int32($0)) ?? "" }.joined(separator: "|"))
+        }
+        #expect(rows == ["1|Strasse.odt|d|-", "2||Termin an der Seestrasse, CHF 2380.50|\(old)", "3||قال|قَالَ"])
+        var after: [String] = []
+        try store.db.query("SELECT hex(vec) FROM segments ORDER BY id") { after.append($0.text(0) ?? "") }
+        #expect(after == vectors)   // nothing embedded again
+        #expect(try trigramRowids(store) == [1, 2, 3])
+        let searcher = try Searcher(store: store, loadVectors: false)
+        #expect(try searcher.search("Seestrasse", queryVector: nil).map(\.path) == ["/d/Straße.odt"])
+        #expect(try searcher.search("strasse", queryVector: nil).map(\.path) == ["/d/Straße.odt"])   // its name too
+    }
+
+    /// The rows of `fts_tri`, which must be `fts`'s.
+    func trigramRowids(_ store: IndexStore) throws -> [Int64] {
+        var tri: [Int64] = [], fts: [Int64] = []
+        try store.db.query("SELECT rowid FROM fts_tri ORDER BY rowid") { tri.append($0.int(0)) }
+        try store.db.query("SELECT rowid FROM fts ORDER BY rowid") { fts.append($0.int(0)) }
+        #expect(tri == fts)
+        return tri
+    }
+
+    @Test func theTrigramTableKeepsInStepWithKeywordSearch() throws {
+        let store = try IndexStore(directory: folder)
+        func trigrams(_ text: String) throws -> Set<Int64> {
+            var rows = Set<Int64>()
+            try store.db.query("SELECT rowid FROM fts_tri WHERE fts_tri MATCH ?", [.text(IndexStore.trigramQuery(text)!)]) {
+                rows.insert($0.int(0))
+            }
+            return rows
+        }
+        let doc = try store.insert(Candidate(path: "/a/Mietvertrag.pdf", kind: .pdf, size: 1, mtime: 1, inode: 1,
+                                             device: 1))
+        try store.addSegment(file: doc, kind: .page, modality: .text, loc: 1, text: "Mietkautionskonto der Bank")
+        let memo = try store.insert(Candidate(path: "/a/memo.m4a", kind: .audio, size: 1, mtime: 1, inode: 2, device: 1))
+        try store.addSegment(file: memo, kind: .audio, modality: .audio, loc: 0, locEnd: 30,
+                             vector: FakeEmbedder.vector(for: "memo"))
+        #expect(try trigramRowids(store).count == 3)
+        #expect(try trigrams("kaution").count == 1)
+        #expect(try trigrams("KÄUTION").count == 1)   // case and accents don't matter
+
+        // Transcripts in and out.
+        let window = try store.audioWindows(of: memo)[0].id
+        try store.setTranscript(file: memo, texts: [(window, "Die Kaution ist überwiesen")], info: ["transcript": "done"])
+        #expect(try trigrams("kaution").count == 2)
+        try store.removeTranscripts()
+        #expect(try trigrams("kaution").count == 1)
+        _ = try trigramRowids(store)
+
+        // A move renames the name row in both; a change on disk drops the pages from both.
+        try store.move(doc, to: "/a/Wohnung/Kautionsvertrag.pdf")
+        #expect(try trigrams("kautionsvertrag").count == 1 && trigrams("mietvertrag").isEmpty)
+        #expect(try trigrams("wohnung").count == 1)   // its folder
+        try store.requeue(doc, as: Candidate(path: "/a/Wohnung/Kautionsvertrag.pdf", kind: .pdf, size: 2, mtime: 2,
+                                             inode: 1, device: 1))
+        #expect(try trigrams("mietkaution").isEmpty)
+        _ = try trigramRowids(store)
+        try store.addSegment(file: doc, kind: .page, modality: .text, loc: 1, text: "Mietkautionskonto")
+        try store.resetAll()
+        #expect(try trigrams("mietkaution").isEmpty)
+        #expect(try trigramRowids(store).count == 2)   // the names stay
+        try store.delete(memo)
+        #expect(try store.prune(keepingUnder: []) == 1)
+        #expect(try trigramRowids(store).isEmpty)
     }
 
     @Test func landmarkFindsThePageInPreview() {
