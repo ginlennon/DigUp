@@ -162,4 +162,6 @@ If (1) holds but (3) doesn't: ship it off by default, with greedy decoding (~1.5
 
 ### Stage 5 — optional: CPU transcripts with Parakeet v3
 Only if transcripts with the GPU off turn out to matter: sherpa-onnx C API (Apache-2.0) + Parakeet v3 int8 (CC-BY-4.0,
-670 MB), VAD chunks ≤ 2 min, its token timestamps → the same windows.
+670 MB), VAD chunks ≤ 2 min, its token timestamps → the same windows. Also worth a measurement then:
+**Canary-180m-flash** (CC-BY-4.0, ~200 MB GGUF for transcribe.cpp; en/de/fr/es only, no it/pt; no timestamps in that
+port, so it would transcribe DigUp's 30 s windows one by one, which its length limit allows anyway).
