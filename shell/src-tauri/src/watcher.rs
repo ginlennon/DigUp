@@ -46,3 +46,67 @@ impl FolderWatcher {
         FolderWatcher { _watcher: Some(watcher) }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    fn wait_until(seconds: u64, mut done: impl FnMut() -> bool) -> bool {
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(seconds) {
+            if done() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        done()
+    }
+
+    /// A file copied in while lots else goes on (files read, DigUp's own index folder written) is seen, and what
+    /// happens only in the index folder or is only reading isn't.
+    #[test]
+    fn a_copy_is_seen_among_other_events() {
+        let root = std::env::temp_dir().join(format!("digup-watcher-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (videos, index) = (root.join("Videos"), root.join("index"));
+        std::fs::create_dir_all(&videos).unwrap();
+        std::fs::create_dir_all(&index).unwrap();
+        for number in 0..200 {
+            std::fs::write(videos.join(format!("old {number}.txt")), "old").unwrap();
+        }
+        let changes = Arc::new(AtomicUsize::new(0));
+        let counted = changes.clone();
+        let _watcher = FolderWatcher::start(std::slice::from_ref(&root), Some(index.clone()), move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        });
+        std::thread::sleep(Duration::from_millis(300));
+
+        // Reading the folder's files and writing the index: nothing to sync.
+        for round in 0..5 {
+            for number in 0..200 {
+                let _ = std::fs::read(videos.join(format!("old {number}.txt")));
+                std::fs::write(index.join(format!("chunk {round} {number}")), "x").unwrap();
+            }
+        }
+        std::thread::sleep(Duration::from_millis(2600));
+        assert_eq!(changes.load(Ordering::SeqCst), 0, "reads and the index folder don't count");
+
+        // A copy among more of the same, as `cp some.mp4 ~/Videos/` during an indexing pass.
+        let noise = {
+            let (videos, index) = (videos.clone(), index.clone());
+            std::thread::spawn(move || {
+                for number in 0..2000 {
+                    let _ = std::fs::read(videos.join(format!("old {}.txt", number % 200)));
+                    std::fs::write(index.join(format!("more {number}")), "x").unwrap();
+                }
+            })
+        };
+        std::fs::write(videos.join("new.mp4"), vec![0u8; 4 << 20]).unwrap();
+        noise.join().unwrap();
+        assert!(wait_until(6, || changes.load(Ordering::SeqCst) == 1), "the copy asks for one sync");
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
