@@ -63,6 +63,7 @@ label.row { cursor: default; }
 .folder .path, .value.path {
   font-size: 11px; color: var(--secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.folder .path.warning { color: var(--danger); }
 
 .key-name { width: 72px; flex: none; color: var(--secondary); }
 .value { flex: 1; min-width: 0; user-select: text; -webkit-user-select: text; cursor: text; }

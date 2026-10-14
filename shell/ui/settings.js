@@ -91,21 +91,26 @@ function renderSkipped() {
   }
 }
 
-/// A folder with a button that removes it; `warning` makes the button ask once more first ("Remove?").
+/// A folder with a button that removes it; `warning` makes the button ask once more first ("Remove?"), the warning
+/// shown in place of the folder's path meanwhile.
 function folderRow(path, title, warning, remove) {
   const row = element("div", "row folder");
   const text = element("div", "text");
-  text.append(element("div", "name", path.split(/[\\/]/).filter(Boolean).pop() || path),
-              element("div", "path", shown(path)));
+  const where = element("div", "path", shown(path));
+  text.append(element("div", "name", path.split(/[\\/]/).filter(Boolean).pop() || path), where);
   const button = element("button", "remove", title);
   button.onclick = () => {
     if (warning && !button.classList.contains("confirm")) {
       button.classList.add("confirm");
       button.textContent = `${title}?`;
       button.title = warning;
+      where.textContent = warning;
+      where.classList.add("warning");
       setTimeout(() => {
         button.classList.remove("confirm");
         button.textContent = title;
+        where.textContent = shown(path);
+        where.classList.remove("warning");
       }, 4000);
       return;
     }
@@ -156,8 +161,13 @@ function renderCode() {
   const folders = $("code-folders"), skipped = $("code-skipped");
   folders.replaceChildren();
   if (!info.codeFolders.length) folders.append(emptyRow("None: code search is off. Add the folders you keep code in."));
+  // The last one taken out turns code search off, and the shell deletes the code index (as the Mac app's "Turn Off
+  // Code Search").
+  const warning = info.codeFolders.length === 1
+    ? "Code search turns off, and its index is deleted."
+    : "Its code leaves code search; adding it back reads it again.";
   for (const path of info.codeFolders) {
-    folders.append(folderRow(path, "Remove", "Its code leaves code search; adding it back reads it again.", () =>
+    folders.append(folderRow(path, "Remove", warning, () =>
       saveCode({ folders: info.codeFolders.filter((folder) => folder !== path) })));
   }
   skipped.replaceChildren();

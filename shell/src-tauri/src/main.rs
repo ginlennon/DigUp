@@ -540,20 +540,57 @@ fn panel_info(shell: State<'_, Arc<Shell>>) -> Value {
     json!({"codeFolders": shell.code_folders().len()})
 }
 
-/// Settings → Code: the code folders and what's skipped in them. Saved, and both helpers and the watcher follow.
+/// Settings → Code: the code folders and what's skipped in them. Saved, and both helpers and the watcher follow. The
+/// last code folder taken out turns code search off, and its index is deleted (`turn_off_code_search`).
 #[tauri::command]
 async fn save_code_folders(app: AppHandle, shell: State<'_, Arc<Shell>>, folders: Vec<String>, skipped: Vec<String>)
                            -> Result<(), String> {
+    let mut turned_off = false;
     shell.change_settings(|settings| {
+        turned_off = !settings.code_folders.is_empty() && folders.is_empty();
         settings.code_folders = folders;
         settings.code_skipped = skipped;
     })?;
     tauri::async_runtime::spawn_blocking(move || {
+        if turned_off {
+            turn_off_code_search(&app);
+        }
         apply_folders(&app);
         settings_changed(&app);
     })
     .await
     .map_err(|error| error.to_string())
+}
+
+/// Code search is off (its last folder was taken out): its index goes, as with the Mac app's "Turn Off Code Search"
+/// (Engine.swift's `removeCodeIndexIfAsked`). Both helpers have it open, so they stop first; `apply_folders` starts
+/// them again without code folders. Blocks while they stop: not on the main thread. (Another program's search helper
+/// on this index, an MCP server's, reads the deleted file until it starts over.)
+fn turn_off_code_search(app: &AppHandle) {
+    let shell = app.state::<Arc<Shell>>().inner().clone();
+    shell.index.stop();
+    shell.search.set_launch(shell.search_launch());
+    shell.search.stop();
+    let Some(index) = shell.options.index_folder() else { return };
+    match delete_code_index(&index) {
+        Ok(true) => log!("code search off: the code index was deleted"),
+        Ok(false) => {}
+        Err(error) => log_error!("digup-shell: can't delete the code index in {}: {error}", index.display()),
+    }
+}
+
+/// Deletes the code index in the index folder (code.sqlite, and SQLite's -wal and -shm beside it): whether there was
+/// one.
+fn delete_code_index(index: &Path) -> std::io::Result<bool> {
+    let mut deleted = false;
+    for name in ["code.sqlite", "code.sqlite-wal", "code.sqlite-shm"] {
+        match std::fs::remove_file(index.join(name)) {
+            Ok(()) => deleted = true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(deleted)
 }
 
 /// Where code results open: an installed editor's id, or "default" (editors.rs). The panel asks for its Open titles
@@ -1402,5 +1439,21 @@ mod tests {
         assert_eq!(launch.args, ["search-service", "--exclude", "/a/b", "/a"]);
         assert_eq!(launch.env, [("DIGUP_GPU".to_string(), "0".to_string())]);
         assert!(!launch.background);
+    }
+
+    #[test]
+    fn turning_code_search_off_deletes_its_index() {
+        let index = std::env::temp_dir().join(format!("digup-code-index-test-{}", std::process::id()));
+        std::fs::create_dir_all(&index).unwrap();
+        for name in ["index.sqlite", "index.sqlite-wal", "code.sqlite", "code.sqlite-wal", "code.sqlite-shm"] {
+            std::fs::write(index.join(name), "").unwrap();
+        }
+        assert!(delete_code_index(&index).unwrap());
+        let mut left: Vec<String> = std::fs::read_dir(&index).unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, ["index.sqlite", "index.sqlite-wal"], "the main index stays");
+        assert!(!delete_code_index(&index).unwrap(), "none left to delete");
+        let _ = std::fs::remove_dir_all(index);
     }
 }
