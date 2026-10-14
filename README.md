@@ -107,6 +107,9 @@ the same everywhere.
    .build/release/digup download-model   # the model, 865 MB, once (to ~/.local/share/digup/Models)
    ```
    (`swift build` on Linux drops `Package.resolved`, whose only pin is the Mac app's updater; the checkout puts it back.)
+
+   To install it (optional): `scripts/linux/install-user.sh` puts DigUp in `~/.local/opt/digup` with an app-menu
+   entry, no sudo, and offers to point the hotkey at it; `--uninstall` removes it again.
 4. Run it and add the hotkey:
    ```sh
    scripts/linux/gnome-shortcut.sh       # Ctrl+Alt+Space opens the panel (GNOME custom shortcut)

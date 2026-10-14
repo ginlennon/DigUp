@@ -253,6 +253,10 @@ Sublime, Geany, JetBrains `--line`), `code:` in the panel.
 `scripts/linux/install-user.sh`: release builds (`--static-swift-stdlib`, `cargo build --release`) into
 `~/.local/opt/digup` (shell + `helper/` with digup, llama.cpp + ggml backends, PDFium, ffmpeg), a `.desktop` entry
 and icon, shortcut and autostart pointing at it; `--uninstall` removes all of it.
+**Done (2026-10-14):** `--static-swift-stdlib` builds Foundation, FoundationNetworking and ICU in, so no Swift `.so`
+ships; the only extra host library is `libcurl.so.4` (FoundationNetworking). patchelf sets `$ORIGIN` on digup and the
+llama.cpp libraries (theirs pointed at the build folder). ~420 MB; checked with `doctor` and `search` (Vulkan and
+`DIGUP_GPU=0`) under `env -i`. Open: `.deb`/AppImage, a fresh-account check of the whole flow.
 
 ### C7. Idea (not started): transcripts for recordings
 Found while testing the HTTP API's `/context`: audio and video soundtracks are embedded (searchable by meaning) but

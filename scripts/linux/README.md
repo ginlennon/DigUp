@@ -1,5 +1,33 @@
 # Linux scripts
 
+## Install: `install-user.sh`
+
+```sh
+scripts/linux/install-user.sh [--prefix DIR] [--dry-run] [--yes] [--no-desktop] [--no-shortcut]
+scripts/linux/install-user.sh --uninstall       # removes what it put in place, never your data
+```
+
+Puts a DigUp that runs without the checkout in `~/.local/opt/digup` (no sudo), after the build steps of `setup.sh`:
+release builds (`swift build -c release --product digup --static-swift-stdlib`, `cargo build --release`), then
+
+```
+digup-shell                 the desktop shell; it finds its helper in helper/ by itself
+helper/digup                the engine, Swift's libraries (Foundation, ICU) built in
+helper/lib{llama,mtmd,ggml,ggml-base}.so*, libggml-cpu-*.so, libggml-vulkan.so, libpdfium.so
+helper/ffmpeg, ffprobe      8.1 from fetch-ffmpeg.sh, with its licence
+share/icons, share/licenses
+```
+
+with `$ORIGIN` as the libraries' search path (patchelf drops the dev builds' absolute `Vendor/` paths), so `digup`
+finds its backends and ffmpeg beside itself without any `DIGUP_*` variable. From the system it takes glibc,
+libstdc++, libgomp (llama.cpp's CPU backends), libcurl (only `digup download-model`) and the Vulkan loader with the
+GPU's driver, which are never bundled; tesseract is looked for on PATH. ~420 MB, two thirds of it ffmpeg and ffprobe
+(2026-10-14). It adds an app-menu entry (`~/.local/share/applications/digup.desktop`, the icon in
+`~/.local/share/icons/hicolor`) and offers to point the GNOME shortcut (with `--toggle` once the shell has it) and an
+existing login entry (`~/.config/autostart/digup.desktop`) at the installed shell. Run it again to update: the folder
+is built as `<prefix>.new` and swapped in. The model, the index (`~/.local/share/digup`) and the settings
+(`~/.config/com.abdurrahim.DigUp`) are shared with dev runs and never touched; `--uninstall` says how to remove them.
+
 ## A newer ffmpeg: `fetch-ffmpeg.sh`
 
 ```sh
