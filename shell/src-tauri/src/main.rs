@@ -45,7 +45,7 @@ use watcher::FolderWatcher;
 const PANEL_WIDTH: f64 = 780.0;
 const FIELD_HEIGHT: f64 = 56.0;
 
-/// How often the folders are synced with no change seen. The watcher can miss changes: inotify drops events when its
+/// How often the folders (and the code folders) are synced with no change seen. The watcher can miss changes: inotify drops events when its
 /// queue overflows and stops adding watches at fs.inotify.max_user_watches (a big home folder gets there), a network or
 /// FUSE folder may send none, and a folder that wasn't there when the watcher started (a drive plugged in later, with
 /// files changed elsewhere) isn't watched at all. A sync of ~500 unchanged files takes the helper ~70 ms, and with
@@ -892,12 +892,14 @@ fn watch_folders(app: &AppHandle) {
 
 /// Syncs every `RESYNC_EVERY` (when indexing would run at all: `run_index` checks), unless a helper is in the middle of
 /// a pass: asking it would only send it crawling sooner, and the next round comes after it's done. A lingering one is
-/// asked; with none running, one starts.
+/// asked; with none running, one starts. The code index too, when there are code folders (`run_code_index` checks):
+/// the watcher misses code changes the same ways, and leaves out folders past `CODE_WATCHES` (watcher.rs).
 fn resync_now_and_then(app: AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(RESYNC_EVERY);
         if !app.state::<Arc<Shell>>().index.is_busy() {
             run_index(&app);
+            run_code_index(&app);
         }
     });
 }
