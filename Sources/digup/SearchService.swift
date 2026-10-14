@@ -11,6 +11,9 @@ import Foundation
 ///         `meaning` false: keyword-only (while typing, or while the encoder isn't ready); `strong`: the weaker-matches
 ///         fold (`Searcher.strongCount`); each hit has the fields of `digup search --json` plus segment_id, modified,
 ///         size and info. `folders`: only files inside these (absolute paths; missing or empty: everywhere).
+///   {"op":"similar","path":…,"kinds":[…],"limit":n,"folders":[…]}
+///       → as search's (and "stored": whether the file's vectors came from the index): the files most like that one,
+///         by meaning alone (`digup similar`)
 ///   {"op":"embed_ahead","q":…,"code":bool}   → {"ok":true}: embeds and caches the text (the panel sends what's typed so
 ///                                               far on every keystroke, so the pause's vector is usually ready)
 ///   {"op":"text","segment":id,"code":bool}    → {"text":…}: the part of a file a hit points at, for the preview
@@ -159,6 +162,23 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             ]
             if let warning { reply["warning"] = warning }
             return reply
+        case "similar":
+            guard let path = request["path"] as? String else { throw CLIError("similar to which file?") }
+            let kinds = (request["kinds"] as? [String]).map { Set($0.compactMap(FileKind.init(rawValue:))) }
+            let started = Date()
+            lastQuery = started
+            // A file that isn't indexed is embedded here, by the query encoder when it's text, else by a whole model
+            // started for it (seconds, and the requests behind it wait).
+            let query = try SimilarQuery(Arguments.folderURL(path).path, searcher: searcher, log: log,
+                                         textEncoder: { runningEncoder() })
+            let embedded = Date()
+            let hits = shown(try searcher.similar(to: query.vector, excluding: query.own, kinds: kinds,
+                                                  folders: Self.folders(request),
+                                                  limit: request["limit"] as? Int ?? 40))
+            return ["hits": hits.map(hitFields), "strong": Searcher.strongCount(hits), "meaning": true,
+                    "stored": query.stored,
+                    "ms": ["embed": Int(embedded.timeIntervalSince(started) * 1000),
+                           "search": Int(Date().timeIntervalSince(embedded) * 1000)]]
         case "embed_ahead":
             _ = vector(for: request["q"] as? String ?? "", code: request["code"] as? Bool ?? false)
             return ["ok": true]

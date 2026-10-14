@@ -25,6 +25,9 @@ let usage = """
                                               of long PDFs and documents
       digup search <words>... [--kind K,K] [--in DIR]... [-n 10] [--json]
                                               "code: <words>" searches the code index
+      digup similar <file> [--kind K,K] [--in DIR]... [-n 10] [--json]
+                                              the files most like this one, by meaning (its vectors from the index,
+                                              or embedded as indexing would: a picture, a PDF's first page, …)
       digup status                            what's in the index
       digup speed                             this machine's speed next to the M4 Pro behind the estimates, and
                                               what indexing has measured here (costs.json in the index folder)
@@ -51,7 +54,7 @@ let usage = """
       --exclude DIR        don't index this folder (repeatable)
       --exclude-ext EXT    don't index files with this extension (repeatable, or comma-separated: "heic,txt")
       --reindex            drop vectors and embed everything again (after changing settings or model)
-      --zgate Z            how far a meaning match must stand out (default 2.0)
+      --zgate Z            how far a meaning match must stand out (default 2.0; 1.0 for similar)
       --word-weight W      bonus for containing all of the query's words (default 2.0, and for code see Searcher)
       --shot-tokens N      vision tokens per screenshot (default 280; 560 was 2× slower, no better on real shots)
       --code-stretch N     characters a stretch of code holds at most (default 1800; 1200 and 3600 lost on the evals)
@@ -391,12 +394,22 @@ func search(_ args: Arguments) throws {
                                    wordWeight: args.wordWeight, folders: args.searchFolders)
     let searched = Date()
     if args.flags.contains("--json") {
-        let rows = hits.map(hitFields)
-        let data = try JSONSerialization.data(withJSONObject: rows, options: [.prettyPrinted, .sortedKeys])
-        print(String(data: data, encoding: .utf8) ?? "[]")
+        printJSON(hits)
         return
     }
     if hits.isEmpty { print("no good matches") }
+    printHits(hits)
+    print(String(format: "(%d vectors · query encoder %.2f s incl. start-up · search %.0f ms)", searcher.vectorCount,
+                 encoded.timeIntervalSince(started), searched.timeIntervalSince(encoded) * 1000))
+}
+
+/// Hits as `digup search --json` prints them.
+func printJSON(_ hits: [SearchHit]) {
+    let data = try? JSONSerialization.data(withJSONObject: hits.map(hitFields), options: [.prettyPrinted, .sortedKeys])
+    print(data.flatMap { String(data: $0, encoding: .utf8) } ?? "[]")
+}
+
+func printHits(_ hits: [SearchHit]) {
     for (rank, hit) in hits.enumerated() {
         let why = [hit.z.map { String(format: "z %.1f", $0) }, hit.keywordRank.map { "words #\($0)" }]
             .compactMap { $0 }.joined(separator: ", ")
@@ -406,8 +419,6 @@ func search(_ args: Arguments) throws {
         print("      \(tilde((hit.path as NSString).deletingLastPathComponent))")
         if let excerpt = hit.excerpt, !excerpt.isEmpty { print("      “\(excerpt.prefix(160))”") }
     }
-    print(String(format: "(%d vectors · query encoder %.2f s incl. start-up · search %.0f ms)", searcher.vectorCount,
-                 encoded.timeIntervalSince(started), searched.timeIntervalSince(encoded) * 1000))
 }
 
 func status(_ args: Arguments) throws {
@@ -598,6 +609,7 @@ do {
     case "estimate": try estimate(args)
     case "index": try index(args)
     case "search": try search(args)
+    case "similar": try similar(args)
     case "status": try status(args)
     case "speed": speed(args)
     case "eval": try evaluate(args)

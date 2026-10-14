@@ -234,6 +234,76 @@ public final class Searcher {
         return hits
     }
 
+    // MARK: Similar files
+
+    /// The index's rows for the file at `path`, spelled as given or as the disk spells it (`IndexStore.pathRanges`).
+    /// Empty when it isn't indexed.
+    public func files(at path: String) throws -> Set<Int64> {
+        var ids = Set<Int64>()
+        let real = FolderSelection.realPath(path)
+        for spelling in real.utf8.elementsEqual(path.utf8) ? [path] : [path, real] {
+            try store.db.query("SELECT id FROM files WHERE path = ?", [.text(spelling)]) { ids.insert($0.int(0)) }
+        }
+        return ids
+    }
+
+    /// One vector for files already in the index: the mean of their vectors, made unit length again. It stands for the
+    /// whole file (every page of a PDF, a video's frames and its sound), so files like any part of it come up, and it
+    /// needs no model. Nil when they have no vectors (not embedded yet, or skipped).
+    public func storedVector(of files: Set<Int64>) throws -> [Float]? {
+        guard !files.isEmpty else { return nil }
+        if !vectorsLoaded { try reload() }
+        guard let matrix else { return nil }
+        var sum = [Float](repeating: 0, count: Vectors.dimension), count = 0
+        for row in rowFile.indices where files.contains(rowFile[row]) {
+            let halves = matrix.halves + row * Vectors.dimension
+            for index in sum.indices { sum[index] += Float(halves[index]) }
+            count += 1
+        }
+        let norm = sum.reduce(0) { $0 + $1 * $1 }.squareRoot()
+        return count > 0 && norm > 0 ? sum.map { $0 / norm } : nil
+    }
+
+    /// How far a file must stand out to be like another (`similar`): less than a search's 2. A file is a fuller query
+    /// than a few words, and like goes with like everywhere (every photo is a bit like every other), so the right
+    /// neighbours stand out less: on the testbed (2026-10-14) they came at z 1.5–4 (a cat's photo: the other animals and
+    /// the zoo videos, 1.3–2.3; a Tokyo itinerary: the flight booking screenshot, 3.9), and unrelated files mostly
+    /// below 1.
+    public static let similarZGate = 1.0
+
+    /// Files like the one `vector` stands for (`storedVector`, or `FileVector` for a file that isn't indexed): meaning
+    /// alone, on a search's scale (`meaning`), each file at its segment most like it, best first. Only files that stand
+    /// out (`zGate`) count, so "nothing much like it" is an answer too. `excluding`: the file itself (`files(at:)`),
+    /// always the most like itself. `kinds` and `folders` as in `search`.
+    public func similar(to vector: [Float], excluding: Set<Int64> = [], kinds: Set<FileKind>? = nil,
+                        folders: [String]? = nil, limit: Int = 20,
+                        zGate: Double = Searcher.similarZGate) throws -> [SearchHit] {
+        guard vector.count == Vectors.dimension else { return [] }
+        if !vectorsLoaded { try reload() }
+        let allowed = filter(kinds: kinds, place: try Place(folders, in: store))
+        let scores = score(vector)
+        // The file's own vectors are left out of the scale too: they're all close to it (a book's hundred pages to their
+        // mean), and they lifted the average of their modality over everything else.
+        var setsScale = rowSetsScale
+        for row in rowFile.indices where excluding.contains(rowFile[row]) { setsScale[row] = false }
+        let meaning = Self.meaning(scores, rowModality, setsScale: setsScale)
+        var best: [Int64: (z: Double, row: Int)] = [:]
+        for row in scores.indices where !excluding.contains(rowFile[row]) && allowed(rowFile[row]) {
+            if meaning[row] > (best[rowFile[row]]?.z ?? -.infinity) { best[rowFile[row]] = (meaning[row], row) }
+        }
+        return try best.filter { $0.value.z >= zGate }
+            .sorted { $0.value.z > $1.value.z || ($0.value.z == $1.value.z && $0.key < $1.key) }
+            .prefix(limit).map { file, match in
+                let about = try self.file(file)
+                let segmentID = rowSegment[match.row]
+                let segment = try self.segment(segmentID)
+                return SearchHit(path: about.path, kind: about.kind, score: match.z, z: match.z,
+                                 cosine: Double(scores[match.row]), keywordRank: nil, segment: segment.kind,
+                                 segmentID: segmentID, loc: segment.loc, locEnd: segment.locEnd,
+                                 excerpt: segment.excerpt, modified: about.modified, size: about.size, info: about.info)
+            }
+    }
+
     /// The folders a search is kept to: the files under them, for meaning (every vector is scored anyway, and the
     /// ones outside are passed over, as other kinds are), and the SQL that keeps keyword matches to them (`f` is the
     /// files table). Each folder is looked up by its path's range in the index, in each of its spellings
