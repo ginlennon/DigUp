@@ -47,7 +47,8 @@ jobs:
           echo "$SWIFTLY_BIN_DIR" >> "$GITHUB_PATH"
           "$SWIFTLY_BIN_DIR/swift" --version
 
-      # The vendored libraries, ffmpeg and the llama.cpp build: only the results, keyed on the scripts that pin them.
+      # The vendored libraries, ffmpeg, the llama.cpp build and whisper-cli (transcripts, CPU here): only the results,
+      # keyed on the scripts that pin them.
       - name: Cache Vendor/
         id: vendor
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -60,7 +61,8 @@ jobs:
             Vendor/pdfium
             Vendor/ffmpeg
             Vendor/llama
-          key: vendor-cpu-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/fetch-vendor.sh', 'scripts/build-llama.sh', 'scripts/llama.cpp-no-logits.patch', 'scripts/linux/fetch-ffmpeg.sh') }}
+            Vendor/whisper
+          key: vendor-cpu-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/fetch-vendor.sh', 'scripts/build-llama.sh', 'scripts/llama.cpp-no-logits.patch', 'scripts/linux/fetch-ffmpeg.sh', 'scripts/linux/build-whisper.sh', 'scripts/linux/whisper.cpp-no-backend-search.patch') }}
 
       - name: Fetch and build Vendor/ (no-ops when cached)
         run: |
@@ -73,6 +75,11 @@ jobs:
           mkdir -p Vendor/llama/cpu-only
           (cd Vendor/llama/cpu-only && for f in ../lib/libggml-cpu-*.so; do ln -sfn "$f" .; done)
           ls Vendor/llama/cpu-only
+          # whisper-cli, CPU only (fetch-vendor.sh builds it; this fails the step if it didn't), and that it runs.
+          scripts/linux/build-whisper.sh
+          cat Vendor/whisper/BUILD
+          grep -q ' cpu ' Vendor/whisper/BUILD
+          Vendor/whisper/bin/whisper-cli --help > /dev/null
 
       - name: Build digup
         run: swift build -c release --product digup
@@ -105,8 +112,13 @@ jobs:
         run: DIGUP_MODELS="$HOME/digup-models" DIGUP_BACKENDS="$PWD/Vendor/llama/cpu-only" swift test
 
       - name: digup doctor
-        # Exits 1 only when an essential check fails; the others (no index yet, no GPU) may show ✗.
-        run: DIGUP_MODELS="$HOME/digup-models" DIGUP_BACKENDS="$PWD/Vendor/llama/cpu-only" .build/release/digup doctor --deep
+        # Exits 1 only when an essential check fails; the others (no index yet, no GPU) may show ✗. It finds
+        # whisper-cli in Vendor/whisper/bin (no transcript models here: they're optional).
+        run: |
+          set -o pipefail
+          DIGUP_MODELS="$HOME/digup-models" DIGUP_BACKENDS="$PWD/Vendor/llama/cpu-only" .build/release/digup doctor --deep \
+            | tee "$RUNNER_TEMP/doctor.txt"
+          grep -q '^✓ whisper .*(whisper\.cpp 1\.9\.5)' "$RUNNER_TEMP/doctor.txt"
 
   shell:
     runs-on: ubuntu-24.04

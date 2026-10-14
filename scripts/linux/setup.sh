@@ -452,7 +452,8 @@ step_build() {
     record "6 C libraries (Vendor/)" "already there"
   else
     say "SQLite with FTS5 (the index), stb (pictures), miniz (docx/odt), PDFium (PDF text and pages; a prebuilt"
-    say "library), at pinned versions, into Vendor/. A few MB of source and ~10 MB of PDFium."
+    say "library), at pinned versions, into Vendor/. A few MB of source and ~10 MB of PDFium. (It also builds the"
+    say "optional whisper-cli, see below.)"
     offer "6 C libraries (Vendor/)" "Fetch them?" "scripts/fetch-vendor.sh"
   fi
 
@@ -483,6 +484,19 @@ step_build() {
     say "Vendor/llama.cpp, built in Vendor/llama-build, libraries into Vendor/llama/lib. It picks ${BOLD}$FLAVOR${OFF} here"
     say "(step 1) and takes a few minutes on $(nproc) threads (more for CUDA); it prints little until it's done."
     offer "6 llama.cpp ($FLAVOR)" "Build it?" "scripts/build-llama.sh"
+  fi
+
+  printf '\n  %swhisper.cpp (optional: transcripts of recordings)%s\n' "$BOLD" "$OFF"
+  f=scripts/linux/build-whisper.sh
+  tag=$(pin $f TAG)
+  if [[ -x Vendor/whisper/bin/whisper-cli && "$(cat Vendor/whisper/BUILD 2> /dev/null || true)" == "$tag "* ]]; then
+    good "already there: whisper-cli $(< Vendor/whisper/BUILD)"
+    record "6 whisper-cli (optional)" "already there"
+  else
+    say "Transcripts are off unless turned on; without whisper-cli DigUp works as it does now. This builds whisper.cpp"
+    say "$tag's whisper-cli into Vendor/whisper/bin, static (its own ggml, apart from llama.cpp's), Vulkan if glslc is"
+    say "there: about a minute. Its models (575 MB) come later with: .build/release/digup download-model --transcripts"
+    offer "6 whisper-cli (optional)" "Build it?" "scripts/linux/build-whisper.sh"
   fi
 
   printf '\n  %sCPU-only backends%s\n' "$BOLD" "$OFF"

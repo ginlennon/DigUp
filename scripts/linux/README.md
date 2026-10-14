@@ -15,6 +15,7 @@ digup-shell                 the desktop shell; it finds its helper in helper/ by
 helper/digup                the engine, Swift's libraries (Foundation, ICU) built in
 helper/lib{llama,mtmd,ggml,ggml-base}.so*, libggml-cpu-*.so, libggml-vulkan.so, libpdfium.so
 helper/ffmpeg, ffprobe      8.1 from fetch-ffmpeg.sh, with its licence
+helper/whisper-cli          when build-whisper.sh built it (transcripts, optional): static, no patchelf
 share/icons, share/licenses
 ```
 
@@ -38,6 +39,23 @@ Ubuntu 24.04's ffmpeg 6.1 reads no HEIC and leaves WebP and TIFF pictures unturn
 BtbN/FFmpeg-Builds' static **LGPL** build of 8.1.3 (the last autobuild of September 2026, kept by BtbN for two years;
 x86_64 and arm64, pinned by sha256) in `Vendor/ffmpeg/`. Dev builds and the tests find it there by themselves (they run
 from the checkout's `.build/`); an installed `digup` looks in `$DIGUP_FFMPEG` (a folder), beside itself, then on PATH.
+
+## Transcripts (optional): `build-whisper.sh`
+
+```sh
+scripts/linux/build-whisper.sh                    # → Vendor/whisper/bin/whisper-cli (+ BUILD, LICENSE), ~1 min
+.build/release/digup download-model --transcripts [--small]   # → ~/.local/share/digup/Models/whisper
+```
+
+Transcripts of recordings are off by default (and not used for indexing yet: `PLANS/TRANSCRIPTS_PLAN.md`). The
+script builds whisper.cpp v1.9.5 (pinned by commit) as one **static** program, so it never loads llama.cpp's
+`libggml*.so` beside `digup` (a one-line patch also stops it from looking for backends in its folder): Vulkan when
+glslc and the Vulkan headers are there, else the CPU (`WHISPER_FLAVOR=cpu` forces it); CPU code for x86-64-v3
+(AVX2/FMA/F16C), not `-march=native`. `fetch-vendor.sh` runs it too. `digup` looks for `whisper-cli` in
+`$DIGUP_WHISPER` (the program or its folder), beside itself, in a dev build's `Vendor/whisper/bin`, then on PATH. The
+models, pinned by Hugging Face revision and sha256: `ggml-large-v3-turbo-q5_0.bin` (574 MB, the default, for the
+GPU) or with `--small` `ggml-small.bin` (488 MB, for the CPU), plus the Silero VAD `ggml-silero-v6.2.0.bin`
+(0.9 MB). `digup doctor` shows what's there (`--deep` checks the sha256); nothing missing is an error.
 
 ## OCR: tesseract
 

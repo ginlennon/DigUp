@@ -1,10 +1,11 @@
 #!/bin/bash
 # Installs DigUp for you alone, no sudo, so it runs without this checkout: release builds of the engine (digup) and
-# the desktop shell, with llama.cpp's backends, PDFium, ffmpeg and the licences, in one folder (default
-# ~/.local/opt/digup), plus an app-menu entry and icon. It offers to point the GNOME shortcut and starting at login at
-# the installed DigUp. Each step says what it does, shows its commands and asks [Y/n/s(kip)/q(uit)]. Run it again to
-# update: the folder is rebuilt beside the old one and swapped in. The model, the index and the settings
-# (~/.local/share/digup, ~/.config/com.abdurrahim.DigUp) are never touched, not even by --uninstall.
+# the desktop shell, with llama.cpp's backends, PDFium, ffmpeg, whisper-cli when it's built (transcripts, optional)
+# and the licences, in one folder (default ~/.local/opt/digup), plus an app-menu entry and icon. It offers to point the
+# GNOME shortcut and starting at login at the installed DigUp. Each step says what it does, shows its commands and asks
+# [Y/n/s(kip)/q(uit)]. Run it again to update: the folder is rebuilt beside the old one and swapped in. The model,
+# the index and the settings (~/.local/share/digup, ~/.config/com.abdurrahim.DigUp) are never touched, not even by
+# --uninstall.
 #   scripts/linux/install-user.sh [--prefix DIR] [--dry-run] [--yes] [--no-desktop] [--no-shortcut] [--uninstall]
 #     --prefix DIR   where DigUp goes (default ~/.local/opt/digup)
 #     --dry-run      show every step and its commands; only the read-only checks run
@@ -41,7 +42,7 @@ while (( $# )); do
     --no-desktop) DESKTOP=0 ;;
     --no-shortcut) SHORTCUT=0 ;;
     --uninstall) UNINSTALL=1 ;;
-    -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option $1 (see --help)"; exit 1 ;;
   esac
   shift
@@ -264,6 +265,8 @@ step_check() {
   host_lib libcurl.so.4 "downloads: digup download-model" libcurl4t64
   host_lib libvulkan.so.1 "the Vulkan loader: the model on the GPU; without it, the CPU" libvulkan1
   if have tesseract; then good "tesseract (OCR) on PATH"; else say "no tesseract: no OCR (sudo apt install tesseract-ocr)"; fi
+  if [[ -x Vendor/whisper/bin/whisper-cli ]]; then good "Vendor/whisper/bin/whisper-cli (transcripts, optional): $(< Vendor/whisper/BUILD)"
+  else say "no whisper-cli: no transcripts (optional; scripts/linux/build-whisper.sh builds it)"; fi
   record "1 check" "done"
 }
 
@@ -338,8 +341,15 @@ step_install() {
     esac
     icon_cmds+=$'\n'"install -Dm644 shell/src-tauri/icons/$s $new/share/icons/hicolor/${size}x$size/apps/digup.png"
   done
-  local ffmpeg_version
+  local ffmpeg_version whisper="" whisper_version=""
   ffmpeg_version=$(cat Vendor/ffmpeg/VENDOR 2> /dev/null || echo "?")
+  # whisper-cli (transcripts, optional) when it's built: static, with no library search path to change.
+  if [[ -x Vendor/whisper/bin/whisper-cli ]]; then
+    say "whisper-cli (transcripts, optional) goes into helper/ too; it's static (its own ggml), so no patchelf."
+    whisper=$'\n'"install -m755 Vendor/whisper/bin/whisper-cli $new/helper/"
+    whisper+=$'\n'"install -m644 Vendor/whisper/LICENSE $new/share/licenses/whisper.cpp-LICENSE.txt"
+    whisper_version="whisper.cpp: $(cat Vendor/whisper/BUILD 2> /dev/null || echo "?")\\n"
+  fi
   local cmd="rm -rf $new $old
 mkdir -p $new/helper $new/share/licenses
 install -m755 $SHELL_BUILT $new/digup-shell
@@ -347,14 +357,14 @@ install -m755 $DIGUP_BUILT $new/helper/digup
 cp -P Vendor/llama/lib/lib*.so* $new/helper/
 install -m644 Vendor/pdfium/lib/libpdfium.so $new/helper/
 install -m755 Vendor/ffmpeg/ffmpeg Vendor/ffmpeg/ffprobe $new/helper/
-install -m644 Vendor/ffmpeg/LICENSE.txt $new/helper/ffmpeg-LICENSE.txt
+install -m644 Vendor/ffmpeg/LICENSE.txt $new/helper/ffmpeg-LICENSE.txt$whisper
 patchelf --set-rpath '\$ORIGIN' $new/helper/digup
 find $new/helper -name 'lib*.so*' -type f -exec patchelf --set-rpath '\$ORIGIN' {} +$icon_cmds
 install -m644 LICENSE $new/share/licenses/DigUp-LICENSE.txt
 install -m644 Resources/Acknowledgements.txt $new/share/licenses/Acknowledgements.txt
 install -m644 Vendor/ffmpeg/LICENSE.txt $new/share/licenses/ffmpeg-LICENSE.txt
 mkdir -p $new/share/licenses/pdfium && cp -r Vendor/pdfium/LICENSE Vendor/pdfium/licenses $new/share/licenses/pdfium/
-printf 'DigUp, installed by scripts/linux/install-user.sh\nsource: %s\nllama.cpp: %s\nffmpeg: %s\n' \\
+printf 'DigUp, installed by scripts/linux/install-user.sh\nsource: %s\nllama.cpp: %s\nffmpeg: %s\n$whisper_version' \\
   \"\$(git describe --always --dirty 2> /dev/null || echo ?)\" \"\$(cat Vendor/llama/BUILD)\" '$ffmpeg_version' > $new/$MARK
 if [[ -e $P ]]; then mv $P $old; fi
 mv $new $P && rm -rf $old"
@@ -373,7 +383,8 @@ check_install() {
   local f out bad_libs="" outside="" system
   # The system's library folders: those in ld.so's cache (/usr/lib/…, and any a driver package adds).
   system=$(ldconfig -p 2> /dev/null | awk '$NF ~ /^\// { sub(/\/[^\/]*$/, "", $NF); print $NF "/" }' | sort -u)
-  for f in "$PREFIX/helper/digup" "$PREFIX"/helper/lib*.so "$PREFIX/digup-shell"; do
+  # (whisper-cl[i]: a pattern, so that nullglob leaves it out when it isn't there.)
+  for f in "$PREFIX/helper/digup" "$PREFIX"/helper/lib*.so "$PREFIX"/helper/whisper-cl[i] "$PREFIX/digup-shell"; do
     out=$(ldd "$f" 2> /dev/null || true)
     if [[ "$out" == *"not found"* ]]; then bad_libs+=" ${f##*/}:$(awk '/not found/ { printf " %s", $1 }' <<< "$out")"; fi
     outside+=$(awk -v p="$PREFIX/" -v sys="$system" 'BEGIN { n = split(sys, dirs, "\n"); for (i = 1; i <= n; i++) known[dirs[i]] = 1 }
@@ -385,6 +396,13 @@ check_install() {
     good "helper/digup runs without this checkout's environment"
   else
     bad "helper/digup --help failed in a clean environment"
+  fi
+  if [[ -x "$PREFIX/helper/whisper-cli" ]]; then
+    if env -i PATH=/usr/bin:/bin HOME="$HOME" "$PREFIX/helper/whisper-cli" --help > /dev/null 2>&1; then
+      good "helper/whisper-cli runs too (transcripts, optional): $("$PREFIX/helper/whisper-cli" --version 2>&1 || true)"
+    else
+      bad "helper/whisper-cli --help failed in a clean environment"
+    fi
   fi
   say "$(du -sh "$PREFIX" | cut -f1) in $PREFIX"
 }
@@ -490,6 +508,10 @@ step_model() {
   else
     say "EmbeddingGemma 2 (865 MB, once) into ${MODELS/#$HOME/\~}, where every DigUp looks."
     offer "6 model" "Download it?" "$P/helper/digup download-model" || true
+  fi
+  if [[ -x "$PREFIX/helper/whisper-cli" && ! -f "$MODELS/whisper/ggml-silero-v6.2.0.bin" ]]; then
+    say "Transcripts (optional, off unless turned on) need their models too (575 MB, or 489 MB with --small):"
+    show "$P/helper/digup download-model --transcripts"
   fi
 }
 

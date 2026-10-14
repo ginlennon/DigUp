@@ -1,0 +1,14 @@
+diff --git a/examples/cli/cli.cpp b/examples/cli/cli.cpp
+--- a/examples/cli/cli.cpp
++++ b/examples/cli/cli.cpp
+@@ -1056,7 +1056,9 @@ int main(int argc, char ** argv) {
+         whisper_log_set(cb_log_disable, NULL);
+     }
+
+-    ggml_backend_load_all();
++    // DigUp: the backends are linked in (a static build). Searching would load any libggml-*.so in this program's
++    // folder or the current one: llama.cpp's, beside DigUp's helper, are another ggml (scripts/linux/build-whisper.sh).
++    // ggml_backend_load_all();
+
+     // whisper init
+     struct whisper_context_params cparams = whisper_context_default_params();

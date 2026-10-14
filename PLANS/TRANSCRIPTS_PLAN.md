@@ -1,6 +1,7 @@
 # PLAN — Transcripts for recordings (D1), with the European-language testbed it needs
 
-**Status (2026-10-14): approved by the user, default OFF; Stages 0–1 in progress.** Engine chosen by measurement:
+**Status (2026-10-14): approved by the user, default OFF. Stage 1 built (whisper-cli in the build, models, doctor);
+Stage 0 in progress; Stages 2–5 not implemented.** Engine chosen by measurement:
 [docs/linux-port/ASR_SPIKE.md](../docs/linux-port/ASR_SPIKE.md). Parent plan: [LINUX_PORT_PLAN.md](./LINUX_PORT_PLAN.md)
 Part D. Languages in focus: German and English first, then French, Spanish, Italian, Portuguese; Bengali and Arabic
 (upstream's multilingual set) become tier 2.
@@ -135,6 +136,12 @@ If (1) holds but (3) doesn't: offer greedy decoding (~1.5× faster) as the "fast
 - `digup download-model --transcripts` (turbo q5_0 or `--small`, + Silero VAD; sha256; resume as the main model does).
 - `digup doctor`: transcriber found, model present, a 3 s self-test clip transcribed (CPU in CI).
 - **Check:** `whisper-cli` from the installed tree under `env -i` on the 162 s clip = the spike's text.
+- **Done (2026-10-14):** as above, with two findings. (1) A static `whisper-cli` still calls `ggml_backend_load_all()`,
+  which opened llama.cpp's `libggml-vulkan.so` / `libggml-cpu-*.so` beside `digup` (and would from the current
+  folder): `scripts/linux/whisper.cpp-no-backend-search.patch` takes the call out (2 backends, none loaded). (2) The
+  doctor self-test clip is left for Stage 2, where the `Transcriber` runs anything. Check passed: the installed
+  `whisper-cli` under `env -i` gives the spike's text word for word on the 162 s clip (with VAD, 17.4 s on Vulkan)
+  and on `syn_de_invoice` (without VAD).
 
 ### Stage 2 — engine: the transcript pass
 - `Transcriber` (Platform/Portable: subprocess, JSON, guards, chunking); `Indexer` pass 2 after pending files, with

@@ -2,7 +2,9 @@
 # Linux and Windows: the C libraries the engine needs where Apple's frameworks aren't there, at pinned versions, laid out
 # in Vendor/ (out of git) as Package.swift expects: SQLite with FTS5 (storage), stb (images), miniz (docx/odt), PDFium
 # (PDF text and page renders; prebuilt by bblanchon/pdfium-binaries). macOS needs none of this. Does nothing when the
-# pinned set is already there. Needs curl, tar and python3 (to unzip); on Windows, Git for Windows' bash.
+# pinned set is already there. Needs curl, tar and python3 (to unzip); on Windows, Git for Windows' bash. On Linux it
+# also builds whisper-cli for transcripts (scripts/linux/build-whisper.sh, a no-op once it's built; transcripts are
+# optional, so a failed build only says so).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 SQLITE_ZIP=2026/sqlite-amalgamation-3540000.zip       # SQLite 3.54.0
@@ -10,7 +12,12 @@ STB_COMMIT=2c980bb59875b0d32144a71867fbdebb2f77cd20   # nothings/stb, 2026-08-02
 MINIZ_VERSION=3.1.2
 PDFIUM_TAG=chromium/8086
 STAMP="sqlite $SQLITE_ZIP stb $STB_COMMIT miniz $MINIZ_VERSION pdfium $PDFIUM_TAG"
-if [[ "$(cat Vendor/VENDOR 2>/dev/null)" == "$STAMP" ]]; then exit 0; fi
+whisper() {
+  if [[ "$(uname -s)" == Linux ]] && ! scripts/linux/build-whisper.sh; then
+    echo "whisper-cli didn't build: no transcripts (they're optional); scripts/linux/build-whisper.sh says why" >&2
+  fi
+}
+if [[ "$(cat Vendor/VENDOR 2>/dev/null)" == "$STAMP" ]]; then whisper; exit 0; fi
 
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64) PDFIUM=pdfium-linux-x64 ;;
@@ -63,3 +70,4 @@ ls Vendor/pdfium/lib
 rm -rf "$T"
 echo "$STAMP" > Vendor/VENDOR
 echo "Fetched into Vendor/: sqlite, stb, miniz, pdfium"
+whisper

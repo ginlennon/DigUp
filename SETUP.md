@@ -27,6 +27,7 @@ Linux counterpart. Durable goals/decisions: `LINUX_PORT.md`. Plan: `PLANS/LINUX_
 | Tauri Linux deps | installed (2026-10-14) | `sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libsoup-3.0-dev patchelf` |
 | ffmpeg / ffprobe | apt 6.1.1 can't read HEIC → `scripts/linux/fetch-ffmpeg.sh` (8.1.3 LGPL in Vendor/ffmpeg, found automatically by dev builds) | — |
 | tesseract | 5.3.4 CLI, eng+deu+osd (used as a subprocess for OCR) | `tesseract-ocr-<lang>` for more languages |
+| whisper.cpp (optional: transcripts, off by default) | `whisper-cli` v1.9.5, static, Vulkan → `Vendor/whisper/bin` | `scripts/linux/build-whisper.sh`; models `digup download-model --transcripts [--small]` |
 | Python | uv 0.12.2; **always uv venvs on Python 3.13** | `uv venv --python 3.13` |
 
 ### Swift via swiftly (user-level, no sudo)
@@ -44,6 +45,10 @@ scripts/build-llama.sh       # llama.cpp b11461 + no-logits patch; picks Vulkan 
 swift build -c release --product digup && swift test
 .build/release/digup --help
 ```
+Optional, for transcripts of recordings (not used for indexing yet; PLANS/TRANSCRIPTS_PLAN.md):
+`scripts/linux/build-whisper.sh` (fetch-vendor.sh runs it too) and `.build/release/digup download-model --transcripts`
+(large-v3-turbo q5_0 + Silero VAD, 575 MB; `--small` for the CPU) into `~/.local/share/digup/Models/whisper`.
+`digup doctor` shows both.
 Vendor/ and .build/ are gitignored. llama.cpp's backend modules load at run time from `Vendor/llama/lib` (rpath).
 
 ## Shell (Tauri UI) — dev run: `scripts/linux/dev-run-shell.sh` (+ `scripts/linux/gnome-shortcut.sh` for Ctrl+Alt+Space)
