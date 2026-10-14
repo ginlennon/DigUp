@@ -2,7 +2,7 @@ import pytest
 
 import digup_client
 from digup_client import HelperConfig
-from digup_tools import BadRequest, DigUp, Unsupported, code_query, compact, kinds_of, where
+from digup_tools import BadRequest, DigUp, Forbidden, Unsupported, code_query, compact, kinds_of, where
 
 
 def digup(**config):
@@ -113,7 +113,7 @@ def test_render_only_inside_the_searched_folders(fake_helper):
     d = digup()
     try:
         assert d.render("/data/docs/lease.pdf", loc=2).endswith("render.jpg")
-        with pytest.raises(BadRequest, match="isn't in a folder"):
+        with pytest.raises(Forbidden, match="isn't in a folder"):
             d.render("/etc/passwd.png")
         with pytest.raises(BadRequest, match="previews are of"):
             d.render("/data/a.mp3", kind="audio")

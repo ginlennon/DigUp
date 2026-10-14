@@ -33,6 +33,10 @@ class BadRequest(DigUpError):
     """The caller's arguments are wrong (HTTP 400)."""
 
 
+class Forbidden(DigUpError):
+    """Outside what DigUp searches (HTTP 403)."""
+
+
 class Unsupported(DigUpError):
     """This helper is older than the feature (HTTP 501)."""
 
@@ -253,7 +257,7 @@ class DigUp:
             raise BadRequest(f"previews are of {', '.join(RENDER_KINDS)}, not {kind}")
         allowed = self.config.roots + self.config.code_roots
         if allowed and not is_inside(path, allowed):
-            raise BadRequest("that file isn't in a folder DigUp searches")
+            raise Forbidden("that file isn't in a folder DigUp searches")
         try:
             size = max(32, min(int(pixels or 1024), 2048))
         except (TypeError, ValueError):
@@ -292,9 +296,8 @@ class DigUp:
         try:
             return json.loads(done.stdout)
         except ValueError:
-            message = (done.stderr or done.stdout).strip().splitlines()
-            raise Unsupported("`digup doctor --json` isn't available in this helper"
-                              + (f" ({message[-1][:200]})" if message else "")) from None
+            raise Unsupported(f"`digup doctor --json` isn't available in this helper (exit {done.returncode})") \
+                from None
 
     def context(self, query: str, *, limit: Any = 5, max_chars: Any = 6000, kinds: Any = None, folders: Any = None,
                 code: bool | None = None) -> dict[str, Any]:
@@ -310,6 +313,9 @@ class DigUp:
         for hit in results.hits:
             text = self.text(hit.get("segment_id"), code=results.code) if hit.get("segment_id") is not None else None
             text = (text or "").strip()
+            if not text:
+                # A screenshot's hit points at the image, its OCR text is only in the excerpt
+                text = (excerpt(hit) or "").replace("«", "").replace("»", "")
             if not text:
                 others.append(compact(hit))   # a picture or a frame: nothing to read, but it matched
                 continue
