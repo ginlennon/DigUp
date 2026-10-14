@@ -1,7 +1,8 @@
 # PLAN — Transcripts for recordings (D1), with the European-language testbed it needs
 
-**Status (2026-10-14): approved by the user, default OFF. Stages 0 (European testbed + eval,
-baseline) and 1 (whisper-cli in the build, models, doctor) built; Stage 2 in progress; 3–5 not implemented.** Engine chosen by measurement:
+**Status (2026-10-14): approved by the user, default OFF. Stages 0 (European testbed + eval, baseline), 1
+(whisper-cli in the build, models, doctor) and 2 (the engine's transcript pass, CLI) built; Stage 4 (shell) next;
+Stage 3 and 5 not implemented.** Engine chosen by measurement:
 [docs/linux-port/ASR_SPIKE.md](../docs/linux-port/ASR_SPIKE.md). Parent plan: [LINUX_PORT_PLAN.md](./LINUX_PORT_PLAN.md)
 Part D. Languages in focus: German and English first, then French, Spanish, Italian, Portuguese; Bengali and Arabic
 (upstream's multilingual set) become tier 2.
@@ -155,6 +156,52 @@ If (1) holds but (3) doesn't: offer greedy decoding (~1.5× faster) as the "fast
   with a tiny model behind an env flag.
 - **Check:** testbed indexed with transcripts; `digup search "RE-2041"` finds the German invoice recording at the
   right second; the manual GPU check (searching during a long transcription).
+- **Done (2026-10-14).** What was decided on the way:
+  - *Where the code is.* `Transcripts.swift` (shared: chunks, seams, guards, window mapping, whisper's JSON and log,
+    song tags), `Platform/Portable/Transcribe+Portable.swift` (ffmpeg → WAV per chunk, whisper-cli with the current
+    folder set to the file's own scratch folder, a time limit per call: 2 min + the chunk's length, then SIGKILL),
+    `Platform/Apple/Transcribe+Apple.swift` (no engine: the pass is a no-op). `Indexer.checkTranscripts` /
+    `transcribeRecordings`, `IndexStore.setTranscript` / `removeTranscripts` / `untranscribed`. No schema change.
+  - *Window mapping.* The words go onto the audio segments pass 1 stored (their `loc`/`loc_end`, not recomputed
+    windows). A segment belongs to every window it overlaps by ≥ 1 s, and to the window holding its middle: a sentence
+    in the 5 s two windows share is in both, one longer than a window in each it spans, a short word at an edge stays
+    where it was said. A segment in a stretch pass 1 left out as silent is lost.
+  - *Chunks.* Up to 10 min: one call for the file. Longer: 10-min chunks overlapping by 5 s (a last one under a
+    minute joins the one before); a segment in an overlap is kept from the chunk whose half of the overlap holds its
+    middle. A stop between chunks drops the file's progress (it waits for the next pass, from its start).
+  - *Language confidence* comes from whisper-cli's log ("auto-detected language: de (p = 0.999)"): the JSON names the
+    language but not how sure, and `-ojf`'s probabilities are per token. Applied per chunk. Segments without that
+    line = `failed` (better than unguarded text); no speech heard = no line, no segments = `none`.
+  - *State.* `files.info`: `transcript` done | none | failed, `transcript_lang`, `transcript_model` (whisper.cpp
+    version + model), `transcript_why` (music, no sound, no speech, unsure of the language, the error),
+    `transcript_tries`. Meta `transcripts` = "whisper <model file>": a new model (gpu ↔ cpu) takes all transcripts out
+    and queues pass 2; a new whisper.cpp alone doesn't, but retries what failed twice. Off removes the FTS rows,
+    excerpts and info keys. Songs by tags get `none`/music and come back when "also music" is turned on.
+  - *Helper.* `index-service --transcripts gpu|cpu|off [--transcribe-music]` (args, as the shell passes the other
+    settings; without it, as from today's shell, transcripts are off). Pass 2 runs after pending files, code and the
+    rest of long files, under the backfill's rules; it yields between recordings and chunks like the others. On the
+    GPU the embedder is closed first. New events: `transcript` (as `file`'s, + `audio_seconds`), `summary` with
+    `"transcripts": true`; counts gain `transcripts_done` / `transcripts_waiting` while on. The watchdog gives each
+    chunk its time limit (`Indexer.nowTranscribing`); a stop there fails the transcript only (`StoppedFile.transcript`).
+  - *CLI.* `digup index … --transcripts gpu|cpu|off [--transcribe-music]` (off, the default, removes them),
+    `digup transcribe <file> [--cpu] [--json]`, `digup status` counts when on.
+- **Check (2026-10-14, Radeon 860M, Vulkan, turbo q5_0, VAD):** the spike's 69 clips into a scratch index: pass 1
+  21 s (62 done, 7 skipped as silent: the silence probe and 6 FLEURS clips at −62…−66 dB); pass 2 200 s for ~19 min
+  of audio (5.7× real time, ~2.3 s a call of start-up on short clips; 162 s clip 18.2 s, a 280 s file 31.6 s = 8.9×:
+  an hour of long recordings ≈ 7 min, A8.3 met): 60 done, noise and music probes `none` (no speech), no text on any
+  probe. Keyword hits at the right window: "Brunner", "Winterthur" → syn_de_invoice at 0:00, "Uster" at 0:25 (said
+  at 25.2 s); "Villeurbanne", "Moreau Immobilier" → syn_fr_invoice 0:00; "Bianchi Arredamenti", "Modena" →
+  syn_it_invoice 0:00; "Rapperswil" → both 162 s clips at 0:00. **"RE-2041" is not found**: with VAD whisper writes
+  "Rhe 2000 41" (without VAD "RE 2041"); VAD stays (16 planted-term clips: 135/160 terms with default VAD, 132 without,
+  133 with longer silences). "Kassier Peter Huber" finds the 162 s clip but points at 1:40, its best meaning window
+  (z 3.1), not at 0:00 where the words are (Searcher's rule; Stage 3). `search --json`: the excerpt is the transcript
+  snippet («Rapperswil»), `info` carries the transcript keys; `text(ofSegment:)` returns the window's words.
+  **GPU concurrency (once):** 12 searches through `search-service` (encoder on Vulkan) while whisper-cli transcribed
+  the 280 s file: no errors; encoder start 1.6 s (0.6 s alone), searches 12–640 ms (~15 ms alone); the transcription
+  took 31.6 s (32.0 s alone). **CPU** (`--transcripts cpu`, small, 8 threads): the 162 s clip in 22.9 s (7.1× real
+  time), "Rapperswil" found ("Gassier" for "Kassier"); switching it to gpu redid the transcript (vectors untouched),
+  `off` took it out. Helper run: a tagged song `none` (music), a video without sound `none` (no sound), a video's
+  French soundtrack found by "Villeurbanne"; restarted without `--transcripts`, its transcripts were removed.
 
 ### Stage 3 — evals and tuning
 - (a) european.json + the other evals before/after; beam vs greedy; transcript text vector on/off; the A8 rule.
