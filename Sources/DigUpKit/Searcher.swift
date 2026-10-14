@@ -397,12 +397,21 @@ public final class Searcher {
     /// alone, on a search's scale (`meaning`), each file at its segment most like it, best first. Only files that stand
     /// out (`zGate`) count, so "nothing much like it" is an answer too. `excluding`: the file itself (`files(at:)`),
     /// always the most like itself. `kinds` and `folders` as in `search`.
+    ///
+    /// `filter` (the field beside the search field) keeps it to the files whose text has it, as in `search`: every one
+    /// of them with a vector is a result, ranked by how like the file it is, below the gate too (the weakest are folded
+    /// by `strongCount`), each at its segment with the filter's words that's most like the file.
     public func similar(to vector: [Float], excluding: Set<Int64> = [], kinds: Set<FileKind>? = nil,
-                        folders: [String]? = nil, limit: Int = 20,
-                        zGate: Double = Searcher.similarZGate) throws -> [SearchHit] {
+                        folders: [String]? = nil, limit: Int = 20, zGate: Double = Searcher.similarZGate,
+                        filter keywordFilter: KeywordFilter? = nil) throws -> [SearchHit] {
         guard vector.count == Vectors.dimension else { return [] }
         if !vectorsLoaded { try reload() }
-        let allowed = filter(kinds: kinds, place: try Place(folders, in: store))
+        let keywordFilter = keywordFilter?.expression == nil ? nil : keywordFilter
+        let inScope = filter(kinds: kinds, place: try Place(folders, in: store))
+        let filtered = try keywordFilter.map { keywords in
+            try FilterMatch(keywords, store: store, universe: Set(fileKind.keys.filter(inScope)))
+        }
+        let allowed = { (file: Int64) in inScope(file) && (filtered?.files.contains(file) ?? true) }
         let scores = score(vector)
         // The file's own vectors are left out of the scale too: they're all close to it (a book's hundred pages to their
         // mean), and they lifted the average of their modality over everything else.
@@ -410,19 +419,32 @@ public final class Searcher {
         for row in rowFile.indices where excluding.contains(rowFile[row]) { setsScale[row] = false }
         let meaning = Self.meaning(scores, rowModality, setsScale: setsScale)
         var best: [Int64: (z: Double, row: Int)] = [:]
+        var segmentZ: [Int64: Double] = [:]   // of the segments with the filter's words
         for row in scores.indices where !excluding.contains(rowFile[row]) && allowed(rowFile[row]) {
             if meaning[row] > (best[rowFile[row]]?.z ?? -.infinity) { best[rowFile[row]] = (meaning[row], row) }
+            if let filtered, filtered.segments[rowFile[row]]?[rowSegment[row]] != nil {
+                segmentZ[rowSegment[row]] = max(segmentZ[rowSegment[row]] ?? -.infinity, meaning[row])
+            }
         }
-        return try best.filter { $0.value.z >= zGate }
+        return try best.filter { filtered != nil || $0.value.z >= zGate }
             .sorted { $0.value.z > $1.value.z || ($0.value.z == $1.value.z && $0.key < $1.key) }
             .prefix(limit).map { file, match in
                 let about = try self.file(file)
-                let segmentID = rowSegment[match.row]
+                var segmentID = rowSegment[match.row]
+                if let filtered {
+                    segmentID = try filterSegment(file, filtered, segmentZ: segmentZ, meaning: segmentID, words: nil)
+                }
                 let segment = try self.segment(segmentID)
+                var snippet = segment.excerpt
+                if let keywordFilter, filtered?.segments[file]?[segmentID] != nil,
+                   let words = try self.text(ofSegment: segmentID),
+                   let marked = SearchText.snippet(words, marks: keywordFilter.marks(in: words)) {
+                    snippet = excerpt(marked, limit: 400)
+                }
                 return SearchHit(path: about.path, kind: about.kind, score: match.z, z: match.z,
                                  cosine: Double(scores[match.row]), keywordRank: nil, segment: segment.kind,
                                  segmentID: segmentID, loc: segment.loc, locEnd: segment.locEnd,
-                                 excerpt: segment.excerpt, modified: about.modified, size: about.size, info: about.info,
+                                 excerpt: snippet, modified: about.modified, size: about.size, info: about.info,
                                  textSegmentID: try textSegment(of: segmentID, kind: segment.kind, file: file,
                                                                 loc: segment.loc))
             }

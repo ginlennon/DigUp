@@ -16,9 +16,10 @@ import Foundation
 ///         whose text has it, ranked by `q` below the meaning gate too, each hit at a segment with its words (`q` may
 ///         be empty then: ranked by how well its words match); "filter_note" in the reply when it was read other
 ///         than as written (an unclosed quote: as plain words).
-///   {"op":"similar","path":…,"kinds":[…],"limit":n,"folders":[…]}
+///   {"op":"similar","path":…,"kinds":[…],"limit":n,"folders":[…],"filter":…}
 ///       → as search's (and "stored": whether the file's vectors came from the index): the files most like that one,
-///         by meaning alone (`digup similar`)
+///         by meaning alone (`digup similar`); with `filter`, only the files whose text has it (below the gate too,
+///         each at a segment with its words) and "filter_note" as for search
 ///   {"op":"embed_ahead","q":…,"code":bool}   → {"ok":true}: embeds and caches the text (the panel sends what's typed so
 ///                                               far on every keystroke, so the pause's vector is usually ready)
 ///   {"op":"text","segment":id,"code":bool}    → {"text":…}: the part of a file a hit points at, for the preview
@@ -137,7 +138,7 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             let wantMeaning = request["meaning"] as? Bool ?? true
             let prefixLast = request["prefix_last"] as? Bool ?? false
             let folders = Self.folders(request)
-            let filter = (request["filter"] as? String).flatMap { $0.isEmpty ? nil : KeywordFilter($0) }
+            let filter = Self.filter(request)
             let started = Date()
             var vector: [Float]?
             var warning: String?
@@ -184,13 +185,18 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             let query = try SimilarQuery(Arguments.folderURL(path).path, searcher: searcher, log: log,
                                          textEncoder: { runningEncoder() })
             let embedded = Date()
+            let filter = Self.filter(request)
             let hits = shown(try searcher.similar(to: query.vector, excluding: query.own, kinds: kinds,
                                                   folders: Self.folders(request),
-                                                  limit: request["limit"] as? Int ?? 40))
-            return ["hits": hits.map(hitFields), "strong": Searcher.strongCount(hits), "meaning": true,
-                    "stored": query.stored,
-                    "ms": ["embed": Int(embedded.timeIntervalSince(started) * 1000),
-                           "search": Int(Date().timeIntervalSince(embedded) * 1000)]]
+                                                  limit: request["limit"] as? Int ?? 40, filter: filter))
+            var reply: [String: Any] = [
+                "hits": hits.map(hitFields), "strong": Searcher.strongCount(hits), "meaning": true,
+                "stored": query.stored,
+                "ms": ["embed": Int(embedded.timeIntervalSince(started) * 1000),
+                       "search": Int(Date().timeIntervalSince(embedded) * 1000)],
+            ]
+            if let note = filter?.note { reply["filter_note"] = note }
+            return reply
         case "embed_ahead":
             _ = vector(for: request["q"] as? String ?? "", code: request["code"] as? Bool ?? false)
             return ["ok": true]
@@ -244,6 +250,11 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
                 && !types.contains(($0.path as NSString).pathExtension.lowercased())
                 && FileManager.default.fileExists(atPath: $0.path)
         }
+    }
+
+    /// A request's `filter` (`KeywordFilter`), nil when it has none.
+    private static func filter(_ request: [String: Any]) -> KeywordFilter? {
+        (request["filter"] as? String).flatMap { $0.isEmpty ? nil : KeywordFilter($0) }
     }
 
     /// A request's `folders`, spelled as `digup search --in` spells them (nil: everywhere).

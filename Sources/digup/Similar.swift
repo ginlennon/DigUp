@@ -47,9 +47,12 @@ func similar(_ args: Arguments) throws {
     let query = try SimilarQuery(path, searcher: searcher,
                                  log: store.directory.appendingPathComponent("worker-query.log"))
     let embedded = Date()
+    let filter = args.values["--filter"].map(KeywordFilter.init)
+    if let note = filter?.note { FileHandle.standardError.write(Data("filter: \(note)\n".utf8)) }
     let hits = try searcher.similar(to: query.vector, excluding: query.own, kinds: try args.kinds(),
                                     folders: args.searchFolders, limit: args.values["-n"].flatMap(Int.init) ?? 10,
-                                    zGate: args.values["--zgate"].flatMap(Double.init) ?? Searcher.similarZGate)
+                                    zGate: args.values["--zgate"].flatMap(Double.init) ?? Searcher.similarZGate,
+                                    filter: filter)
     let searched = Date()
     if args.flags.contains("--json") {
         printJSON(hits)

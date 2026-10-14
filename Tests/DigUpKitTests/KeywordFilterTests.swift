@@ -215,6 +215,31 @@ import Testing
         #expect(try index.searcher.search("  ", queryVector: nil, filter: KeywordFilter("")).isEmpty)
     }
 
+    @Test func similarFilesKeepToTheFilter() throws {
+        let index = try fixture()
+        let pdf = try #require(index.files["Schreinerei Gubler.pdf"])
+        // Like the PDF's first page: of the files with "Rechnung…", every one, below the gate too, the most like first.
+        let vector = FakeEmbedder.vector(for: Fixture.pages[0])
+        let hits = try index.searcher.similar(to: vector, excluding: [pdf], filter: KeywordFilter("Rechnung*"))
+        #expect(Set(names(hits)) == ["Mahnung.txt", "Memo.m4a"])
+        let z = hits.map { $0.z ?? -.infinity }
+        #expect(z == z.sorted(by: >))
+        #expect(Set(names(try index.searcher.similar(to: vector, excluding: [pdf], filter: KeywordFilter("NOT Rechnung*"))))
+                == ["Notizen.txt", "Zahlung.txt"])
+        // Each at its part with the filter's words that's most like it: the PDF's page 2, though page 1 is the file.
+        let page = try index.searcher.similar(to: vector, filter: KeywordFilter("*kaution*"))
+        #expect(names(page) == ["Schreinerei Gubler.pdf"] && page.first?.loc == 2)
+        #expect(page.first?.excerpt?.contains("«Mietkaution»") == true)
+        // The recording is most like itself at 0:25, but only 0:00 has "Brunner".
+        let moment = try index.searcher.similar(to: FakeEmbedder.vector(for: Fixture.windows[1]),
+                                                filter: KeywordFilter("Brunner"))
+        #expect(names(moment) == ["Memo.m4a"] && moment.first?.loc == 0)
+        #expect(moment.first?.excerpt?.contains("«Brunner»") == true)
+        // An empty filter is none: the gate is back.
+        #expect(try index.searcher.similar(to: vector, excluding: [pdf], filter: KeywordFilter("")).map(\.path)
+                == index.searcher.similar(to: vector, excluding: [pdf]).map(\.path))
+    }
+
     @Test func codeHasTheFilterToo() throws {
         let store = try IndexStore(directory: folder, file: IndexStore.codeFile)
         let id = try store.insert(Candidate(path: "/repo/retry.py", kind: .doc, size: 1, mtime: 1, inode: 1, device: 1))

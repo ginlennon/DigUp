@@ -63,7 +63,7 @@ let usage = """
                            folder): source files, their repos' docs and notebooks, minus what git ignores
       --kind K,K           screenshot, image, pdf, doc, audio, video
       --in DIR             only the files inside this folder (repeatable)
-      --filter EXPR        search: only the files whose text has this (the words may be left out then):
+      --filter EXPR        search, similar: only the files whose text has this (search's words may be left out then):
                            Rechnung* AND (Uster OR Winterthur) NOT Mahnung, "a phrase", *karte, *kaution*, -word
       --include-code       also index loose source code and data files as documents (outside code projects)
       --include-datasets   don't skip folders that look like datasets
