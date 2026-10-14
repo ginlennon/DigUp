@@ -299,21 +299,35 @@ final class IndexService: @unchecked Sendable {
         return false
     }
 
+    /// The app's commands, a line at a time. Read from the file descriptor, not with `readLine()`: that holds stdin's
+    /// lock while it waits for a line, and `exit` takes every stream's lock to flush it (glibc does), so on Linux a
+    /// helper that was done hung on its way out for as long as the app kept the pipe open. It still looked alive to
+    /// the app, and the syncs sent to it went nowhere: a file copied in meanwhile wasn't indexed.
     private func readCommands() {
-        while let line = readLine() {
-            lock.withLock {
-                switch line.trimmingCharacters(in: .whitespaces) {
-                case "sync": syncRequested = true
-                case "sync code": codeSyncRequested = true
-                case "stop": stopRequested = true
-                case "backfill on": backfillAllowed = true
-                case "backfill off": backfillAllowed = false
-                default: break
-                }
+        var pending = Data()
+        while case let chunk = FileHandle.standardInput.availableData, !chunk.isEmpty {   // empty: EOF
+            pending.append(chunk)
+            while let end = pending.firstIndex(of: 0x0A) {
+                obey(String(decoding: pending[pending.startIndex..<end], as: UTF8.self))
+                pending.removeSubrange(pending.startIndex...end)
             }
-            wake.signal()
         }
+        if !pending.isEmpty { obey(String(decoding: pending, as: UTF8.self)) }
         lock.withLock { stopRequested = true }   // the app went away
+        wake.signal()
+    }
+
+    private func obey(_ line: String) {
+        lock.withLock {
+            switch line.trimmingCharacters(in: .whitespacesAndNewlines) {
+            case "sync": syncRequested = true
+            case "sync code": codeSyncRequested = true
+            case "stop": stopRequested = true
+            case "backfill on": backfillAllowed = true
+            case "backfill off": backfillAllowed = false
+            default: break
+            }
+        }
         wake.signal()
     }
 
