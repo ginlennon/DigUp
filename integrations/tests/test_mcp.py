@@ -43,7 +43,10 @@ def test_tools_over_stdio(fake_helper):
              ("read_segment", {"segment_id": 272}),
              ("search_code", {"query": "retry with backoff"}),
              ("find_similar", {"path": "/data/notes/todo.md"}),
-             ("index_status", {})]
+             ("index_status", {}),
+             ("search_files", {"filter": "payment*"}),
+             ("search_files", {"query": "zebra", "filter": "\"nothing"}),
+             ("search_code", {"filter": "retry"})]
     out = run({}, calls, args=("--code-root", "/data/code"))
     assert set(out["tools"]) == {"search_files", "search_code", "read_segment", "find_similar", "index_status"}
     assert "on-device" in out["tools"]["search_files"].description
@@ -66,6 +69,21 @@ def test_tools_over_stdio(fake_helper):
     assert failed(similar) and "newer DigUp helper" in text_of(similar)
     status = text_of(out[calls[6][0], str(calls[6][1])])
     assert "Folders searched: /data" in status and "Code folders: /data/code" in status
+
+    # The filter: in both search tools' schemas, alone or with a query.
+    for tool in ("search_files", "search_code"):
+        schema = out["tools"][tool].input_schema
+        assert "filter" in schema["properties"] and "query" not in schema.get("required", [])
+        assert "*word*" in schema["properties"]["filter"]["description"]
+    filtered = text_of(out[calls[7][0], str(calls[7][1])])
+    assert filtered.splitlines()[0] == ("DigUp results filtered by payment*: 1 match with the filter's words, best "
+                                        "match first; 1 strong.")
+    assert "1. /data/docs/lease.pdf" in filtered
+    none = text_of(out[calls[8][0], str(calls[8][1])])
+    assert none.startswith('DigUp results for "zebra" filtered by "nothing: no matches.')
+    assert "(Filter: unclosed quote: read as plain words)" in none
+    code = text_of(out[calls[9][0], str(calls[9][1])])
+    assert code.startswith("DigUp code results filtered by retry: 1 match") and "/data/code/retry.py" in code
 
 
 def test_missing_helper_is_a_clear_tool_error(fake_helper, tmp_path):

@@ -60,6 +60,29 @@ def test_search(fake_helper):
         d.close()
 
 
+def test_filter(fake_helper):
+    d = digup(code_roots=["/data/code"])
+    try:
+        # Sent along with the query, and on its own (the query may be empty then).
+        results = d.search("zebra", filter=" lease ")
+        assert [hit["path"] for hit in results.hits] == ["/data/docs/lease.pdf"] and results.filter == "lease"
+        assert results.filter_note is None
+        results = d.search("", filter="payment*")
+        assert [hit["path"] for hit in results.hits] == ["/data/docs/lease.pdf"] and results.query == ""
+        assert d.search(None, filter='"payment').filter_note == "unclosed quote: read as plain words"
+        assert d.search("code:", filter="retry").code
+        # An empty filter is none.
+        assert d.search("zebra", filter="  ").filter is None
+        with pytest.raises(BadRequest, match="a query, a filter, or both"):
+            d.search("", filter="")
+        with pytest.raises(BadRequest, match="filter must be a string"):
+            d.search("zebra", filter=["lease"])
+        context = d.context("", filter="lease")
+        assert context["filter"] == "lease" and [s["path"] for s in context["sources"]] == ["/data/docs/lease.pdf"]
+    finally:
+        d.close()
+
+
 def test_code_search_needs_code_folders(fake_helper):
     d = digup()
     try:

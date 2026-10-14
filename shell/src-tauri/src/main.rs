@@ -46,7 +46,8 @@ use tauri_plugin_opener::OpenerExt;
 use watcher::FolderWatcher;
 
 const PANEL_WIDTH: f64 = 780.0;
-const FIELD_HEIGHT: f64 = 56.0;
+/// The panel's height with nothing searched: the field and the keyword filter under it (panel.js has it too).
+const FIELD_HEIGHT: f64 = 88.0;
 
 /// How often the folders (and the code folders) are synced with no change seen. The watcher can miss changes: inotify drops events when its
 /// queue overflows and stops adding watches at fs.inotify.max_user_watches (a big home folder gets there), a network or
@@ -806,6 +807,12 @@ fn debug_query(shell: State<'_, Arc<Shell>>) -> Option<String> {
     shell.options.debug_query.clone()
 }
 
+/// Debug runs: the filter the panel types in with the debug query (`--debug-filter`).
+#[tauri::command]
+fn debug_filter(shell: State<'_, Arc<Shell>>) -> Option<String> {
+    shell.options.debug_filter.clone()
+}
+
 /// Debug runs: what the page showed for the debug query, printed (and the shell quits, if asked).
 #[tauri::command]
 fn debug_report(app: AppHandle, shell: State<'_, Arc<Shell>>, report: Value) {
@@ -860,7 +867,7 @@ fn main() {
             ask, estimate, setup_info, pick_folders, finish_setup, resolve_folder, open_path, open_hit, open_title, reveal,
             hide_panel, panel_height, settings_info, save_folders, set_paused, set_gpu, set_starts_at_login, set_up_shortcut,
             turn_off, try_gpu_again, check_digup, set_moment_player, panel_info, save_code_folders, set_code_editor,
-            set_transcripts, set_transcribe_music, debug_query, debug_report
+            set_transcripts, set_transcribe_music, debug_query, debug_filter, debug_report
         ])
         .build(context)
         .expect("DigUp couldn't start");
@@ -1610,8 +1617,8 @@ mod tests {
     fn helpers_use_the_cpu_when_told() {
         let options = Options {
             helper: "digup".into(), index: None, models: None, roots: Vec::new(), hotkey: None, settings: None,
-            command: None, offered: None, debug_setup: false, debug_query: None, debug_quit: false, debug_show: false,
-            background: false,
+            command: None, offered: None, debug_setup: false, debug_query: None, debug_filter: None, debug_quit: false,
+            debug_show: false, background: false,
         };
         assert!(helper_env(&options, false).is_empty());
         assert_eq!(helper_env(&options, true), [("DIGUP_GPU".to_string(), "0".to_string())]);

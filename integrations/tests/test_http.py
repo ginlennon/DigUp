@@ -79,6 +79,26 @@ def test_endpoints(api):
     assert spec["servers"][0]["url"] == f"http://127.0.0.1:{server.server_address[1]}"
 
 
+def test_filter(api):
+    server = api()
+    # GET with an empty query: the filter alone.
+    status, body, _ = call(server, "GET", "/search?q=&filter=payment*")
+    assert status == 200 and body["filter"] == "payment*" and [hit["path"] for hit in body["hits"]] == [
+        "/data/docs/lease.pdf"]
+    assert "filter_note" not in body
+    status, body, _ = call(server, "POST", "/search", {"query": "zebra", "filter": "\"lease"})
+    assert status == 200 and body["filter_note"] == "unclosed quote: read as plain words"
+    status, body, _ = call(server, "POST", "/context", {"filter": "lease", "max_chars": 2000})
+    assert status == 200 and body["filter"] == "lease" and body["context"].startswith("[1] /data/docs/lease.pdf")
+    assert call(server, "POST", "/search", {"query": "", "filter": " "})[0] == 400
+    assert call(server, "POST", "/search", {"query": "x", "filter": 3})[0] == 400
+    spec = call(server, "GET", "/openapi.json")[1]
+    search = spec["components"]["schemas"]["SearchRequest"]["properties"]
+    assert "NOT" in search["filter"]["description"] and search["filter"]["examples"]
+    assert spec["components"]["schemas"]["ContextRequest"]["properties"]["filter"] == search["filter"]
+    assert spec["paths"]["/search"]["post"]["requestBody"]["content"]["application/json"]["example"]["filter"]
+
+
 def test_errors(api):
     server = api()
     assert call(server, "POST", "/search", {"query": ""})[0] == 400

@@ -1,6 +1,6 @@
 """A stand-in for `digup search-service`: the same JSON-lines protocol, canned answers, and ways to misbehave.
 
-Queries steer it: "die" exits without answering (only the first time when FAKE_STATE has a folder: it leaves a mark
+A "filter" keeps the hits whose path or excerpt has its first word. Queries steer it: "die" exits without answering (only the first time when FAKE_STATE has a folder: it leaves a mark
 there), "hang" never answers, "error" answers with an error. FAKE_NO_READY=1: never ready. FAKE_SIMILAR=1: knows the
 `similar` op. FAKE_STATE/argv.json: its arguments; FAKE_STATE/quit: written on `quit`.
 """
@@ -61,9 +61,22 @@ def answer(request):
             hits = [hit for hit in HITS if not request.get("kinds") or hit["kind"] in request["kinds"]]
             if request.get("folders") and os.environ.get("FAKE_FOLDERS"):
                 hits = [hit for hit in hits if any(hit["path"].startswith(f + "/") for f in request["folders"])]
+        note = None
+        if request.get("filter"):
+            # The filter: only the hits whose path or excerpt has its first word ("lease", "payment*"); an odd quote
+            # is read as plain words, as KeywordFilter does.
+            word = request["filter"].split()[0].strip('*"').lower()
+            hits = [hit for hit in hits if word in (hit["path"] + hit.get("excerpt", "")).lower()]
+            if request["filter"].count('"') % 2:
+                note = "unclosed quote: read as plain words"
+        elif not q:
+            hits = []
         hits = hits[: request.get("limit", 40)]
-        return {"hits": hits, "strong": min(2, len(hits)), "meaning": request.get("meaning", True),
-                "ms": {"embed": 1, "search": 1}, "echo": {k: v for k, v in request.items() if k != "id"}}
+        reply = {"hits": hits, "strong": min(2, len(hits)), "meaning": request.get("meaning", True) and bool(q),
+                 "ms": {"embed": 1, "search": 1}, "echo": {k: v for k, v in request.items() if k != "id"}}
+        if note:
+            reply["filter_note"] = note
+        return reply
     if op == "text":
         return {"text": TEXTS.get(request.get("segment"))}
     if op == "render":

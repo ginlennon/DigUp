@@ -3,6 +3,10 @@
 // query was embedded while you typed). Results far weaker than the best are folded under "N weaker matches". The
 // helper (`digup search-service`) does the work; the Mac app's panel (Sources/DigUpApp/SearchPanel.swift) is the
 // reference for how it behaves.
+//
+// Under the field is the filter (PLANS/KEYWORD_FILTER_PLAN.md): exact words, AND OR NOT, "phrases", Rechnung*,
+// *kaution*. It says which files appear, and the field above ranks them; alone it's a keyword search. Tab or Ctrl+F
+// goes to it, Esc clears it first, and it's gone when the panel opens again.
 "use strict";
 
 const tauri = window.__TAURI__;
@@ -12,7 +16,7 @@ const fileURL = (path) => tauri.core.convertFileSrc(path);
 
 const TYPING_PAUSE = 120;          // ms after the last keystroke until the meaning results show
 const ROWS_PER_GROUP = 6;
-const FIELD_HEIGHT = 56;
+const FIELD_HEIGHT = 88;           // the field and the filter under it (main.rs has it too)
 const PANEL_HEIGHT = 480;
 const WEAKER = "\u0000weaker";     // the selectable row that folds and unfolds the weaker matches
 const isMac = /Mac/.test(navigator.platform);
@@ -30,6 +34,20 @@ const $ = (id) => document.getElementById(id);
 const $query = $("query"), $body = $("body"), $list = $("list"), $preview = $("preview");
 const $footer = $("footer"), $summary = $("summary"), $keys = $("keys"), $activity = $("activity");
 const $chips = $("chips");
+const $filter = $("filter"), $filterField = $filter.parentElement, $filterNote = $("filter-note");
+
+/// How the filter is written, for its "?" (and while it's empty and has the keyboard): KeywordFilter.swift.
+const FILTER_SYNTAX = [
+  ["Rechnung Uster", "both words: AND is implied"],
+  ["A OR B", "either"],
+  ["NOT A   -A", "without it"],
+  ["(Uster OR Winterthur)", "brackets group; NOT before AND before OR"],
+  ["\"Bahnhofstrasse 12\"", "these words side by side"],
+  ["Rechnung*", "a word starting with it"],
+  ["*karte", "a word ending with it"],
+  ["*kaution*", "inside a word (3 letters or more)"],
+  ["RE-2041   2'380.50", "a code or a number as written"],
+];
 
 /// A query that starts with in:<folder> and a space searches inside that folder: the folder becomes a chip before the
 /// field and the rest is the query (the shell finds the folder: scope.rs). `in:` comes first and `code:` after it
@@ -41,9 +59,12 @@ const state = {
   generation: 0,
   finalGeneration: -1,   // the generation whose meaning results are showing: late keyword results don't replace them
   timer: null,
-  phase: "empty",        // empty | words | meaning | wordsOnly | codeHint | scopeHint | scopeProblem | similarWaiting
-                         // | similar
+  phase: "empty",        // empty | words | meaning | wordsOnly | filtered (the filter alone) | codeHint | scopeHint
+                         // | scopeProblem | similarWaiting | similar
   text: "",              // what was searched (without "code:")
+  filter: "",            // the filter the results are for ("": none)
+  filterNote: null,      // how the helper read a filter it couldn't read as written ("unclosed quote: …")
+  help: false,           // the filter's syntax is showing (its "?")
   scope: null,           // the folder searched in ({path, name, ambiguous}), or null: all of them
   scopeProblem: null,    // what the panel says when in: names no chosen folder
   like: null,            // the file whose similar files are showing ({path, name}), or null
@@ -66,7 +87,9 @@ let debugPending = false;
 
 // MARK: Searching
 
-function queryChanged() {
+/// `fromFilter`: the filter changed. Its words are matched whole, so a half-typed one would match nothing (and a quote
+/// or bracket not yet closed would be read as plain words): it's searched once typing pauses.
+function queryChanged(fromFilter = false) {
   const generation = ++state.generation;
   clearTimeout(state.timer);
   state.navigated = false;
@@ -82,32 +105,71 @@ function queryChanged() {
     return;
   }
   const typed = $query.value.trim();
+  const filter = $filter.value.trim();
   const code = /^code:/i.test(typed);
   const text = code ? typed.slice(5).trim() : typed;
   const folders = state.scope ? [state.scope.path] : undefined;
+  const search = { op: "search", q: text, code, limit: 40, folders, ...(filter ? { filter } : {}) };
   state.isCode = code;
-  if (!typed || (code && !text)) {
+  if (!filter && (!typed || (code && !text))) {
     show({ hits: [], strong: 0 }, text, typed ? "codeHint" : "empty");
     return;
   }
-  // Words now. The last word is probably half-typed, so it matches as a prefix.
-  ask({ op: "search", q: text, code, meaning: false, prefix_last: true, limit: 40, folders })
-    .then((reply) => {
-      if (generation === state.generation && state.finalGeneration !== generation) show(reply, text, "words");
-    })
-    .catch(failed);
-  // The meaning is embedded now, so its vector is ready when typing pauses: the pause is the whole wait.
-  ask({ op: "embed_ahead", q: text, code }).catch(() => {});
+  if (!text) {
+    // The filter alone: a keyword search, ranked by how well its words match. No meaning to wait for.
+    state.timer = setTimeout(() => {
+      ask({ ...search, meaning: false })
+        .then((reply) => {
+          if (generation !== state.generation) return;
+          state.finalGeneration = generation;
+          show(reply, text, "filtered", filter);
+          if (debugPending) report();
+        })
+        .catch(failed);
+    }, fromFilter ? TYPING_PAUSE : 0);
+    return;
+  }
+  if (!fromFilter) {
+    // Words now. The last word is probably half-typed, so it matches as a prefix.
+    ask({ ...search, meaning: false, prefix_last: true })
+      .then((reply) => {
+        if (generation === state.generation && state.finalGeneration !== generation) {
+          show(reply, text, "words", filter);
+        }
+      })
+      .catch(failed);
+    // The meaning is embedded now, so its vector is ready when typing pauses: the pause is the whole wait.
+    ask({ op: "embed_ahead", q: text, code }).catch(() => {});
+  }
   state.timer = setTimeout(() => {
-    ask({ op: "search", q: text, code, meaning: true, limit: 40, folders })
+    ask({ ...search, meaning: true })
       .then((reply) => {
         if (generation !== state.generation) return;
         state.finalGeneration = generation;
-        show(reply, text, reply.meaning ? "meaning" : "wordsOnly");
+        show(reply, text, reply.meaning ? "meaning" : "wordsOnly", filter);
         if (debugPending) report();
       })
       .catch(failed);
   }, TYPING_PAUSE);
+}
+
+/// The filter's own keys: Esc empties it (the search field gets the keyboard back), and the results follow.
+function clearFilter() {
+  $filter.value = "";
+  filterTyped();
+  $query.focus();
+}
+
+function filterTyped(paused = false) {
+  $filterField.classList.toggle("active", !!$filter.value.trim());
+  if (state.like) findSimilar(paused);
+  else queryChanged(paused);
+}
+
+/// The syntax shows on its "?", and by itself while the filter is empty and has the keyboard with nothing searched.
+function helpShown() {
+  return state.help
+    || (document.activeElement === $filter && !$filter.value.trim() && state.phase === "empty");
 }
 
 /// The query's in:<folder>: found, it becomes the chip and what follows it is searched; not found, the panel says so
@@ -154,21 +216,25 @@ function moreLike(hit) {
   findSimilar();
 }
 
-function findSimilar() {
+/// With the filter, only the similar files that have its words (`paused`: it's being typed, so once typing pauses).
+function findSimilar(paused = false) {
   const generation = ++state.generation;
   clearTimeout(state.timer);
   state.navigated = false;
   state.error = null;
   state.isCode = false;
-  show({ hits: [], strong: 0 }, "", "similarWaiting");
+  if (!paused) show({ hits: [], strong: 0 }, "", "similarWaiting");
   const folders = state.scope ? [state.scope.path] : undefined;
-  ask({ op: "similar", path: state.like.path, limit: 40, folders })
-    .then((reply) => {
-      if (generation !== state.generation) return;
-      state.finalGeneration = generation;
-      show(reply, "", "similar");
-    })
-    .catch(failed);
+  const filter = $filter.value.trim();
+  state.timer = setTimeout(() => {
+    ask({ op: "similar", path: state.like.path, limit: 40, folders, ...(filter ? { filter } : {}) })
+      .then((reply) => {
+        if (generation !== state.generation) return;
+        state.finalGeneration = generation;
+        show(reply, "", "similar", filter);
+      })
+      .catch(failed);
+  }, paused ? TYPING_PAUSE : 0);
 }
 
 /// Leaves the similar files: back to the query typed before them (`back`), or on to what's being typed now.
@@ -182,11 +248,13 @@ function leaveLike(back) {
   }
 }
 
-function show(reply, text, phase) {
+function show(reply, text, phase, filter = "") {
   const hits = reply.hits || [];
   const strong = Math.min(reply.strong ?? hits.length, hits.length);
   state.text = text;
   state.phase = phase;
+  state.filter = filter;
+  state.filterNote = filter ? reply.filter_note ?? null : null;
   state.strong = hits.slice(0, strong);
   state.weaker = hits.slice(strong);
   // Grouped by kind, the best hit's group first; code is one group with the room of all of them.
@@ -228,6 +296,7 @@ function move(step) {
   const index = ids.indexOf(state.selection);
   state.selection = ids[Math.max(0, Math.min(ids.length - 1, (index < 0 ? -1 : index) + step))];
   state.navigated = true;
+  state.help = false;   // a result to look at
   render();
 }
 
@@ -274,7 +343,7 @@ function revealSelected() {
 // MARK: Drawing
 
 function render() {
-  const empty = state.phase === "empty";
+  const empty = state.phase === "empty" && !helpShown();
   const height = empty ? FIELD_HEIGHT : PANEL_HEIGHT;
   if (height !== state.height) {
     state.height = height;
@@ -282,6 +351,10 @@ function render() {
   }
   $body.hidden = empty;
   $footer.hidden = empty;
+  // How the helper read a filter it couldn't read as written, under the filter: "Unclosed quote: read as plain words".
+  const note = state.filterNote;
+  $filterNote.hidden = empty || !note;
+  $filterNote.textContent = note ? note[0].toUpperCase() + note.slice(1) : "";
   if (empty) return;
   renderList();
   renderPreview();
@@ -327,6 +400,7 @@ function row(hit) {
   item.onclick = () => {
     state.selection = hit.path;
     state.navigated = true;
+    state.help = false;
     render();
   };
   item.ondblclick = openSelected;
@@ -352,8 +426,14 @@ function thumbnail(hit) {
 
 function renderPreview() {
   $preview.replaceChildren();
+  if (helpShown()) {
+    $preview.append(filterHelp());
+    return;
+  }
   if (!state.strong.length && !state.weaker.length) {
     const inside = state.scope ? ` in ${state.scope.name}` : "";
+    const filterTip = "Its words match whole: Rechnung* finds Rechnungen too, *kaution* finds Mietkautionskonto. "
+      + "The ? beside it shows how it's written.";
     if (state.isCode && !state.codeFolders) {
       $preview.append(message("No code folders yet", "Add the folders you keep code in under Settings → Code search; "
         + "then say what the code does, or type a name that's in it."));
@@ -365,12 +445,17 @@ function renderPreview() {
     } else if (state.phase === "similarWaiting") {
       $preview.append(message(`Looking for files like ${state.like.name}…`,
         "A file that isn't in the index yet is read first, which takes a few seconds."));
+    } else if (state.phase === "similar" && state.filter) {
+      $preview.append(message(`Nothing like ${state.like.name}${inside} has the filter's words`, filterTip));
     } else if (state.phase === "similar") {
       $preview.append(message(`Nothing much like ${state.like.name}${inside}`,
         "Press Esc to go back to your search."));
     } else if (state.phase === "scopeProblem") {
       $preview.append(message(state.scopeProblem, "in: looks among the folders DigUp searches (Settings) and the "
         + "folders right inside them, or takes a path: in:~/Documents/Trips."));
+    } else if (state.filter && !state.indexing) {
+      // The filter says which files appear: none means none has its words.
+      $preview.append(message(`No ${state.isCode ? "code" : "file"}${inside} has the filter's words`, filterTip));
     } else if (state.indexing) {
       const { done, total } = state.indexing;
       $preview.append(message("Nothing yet", `Still indexing (${done} of ${total} files). Until a file is read, `
@@ -444,11 +529,27 @@ function picture(hit) {
       const passage = element("div", "passage" + (hit.kind === "code" ? " code" : ""));
       passage.textContent = (hit.excerpt ?? "").replace(/[«»]/g, "");
       ask({ op: "text", segment: hit.segment_id, code: state.isCode })
-        .then((reply) => { if (reply.text) passage.innerHTML = highlighted(reply.text, state.text); })
+        .then((reply) => { if (reply.text) passage.innerHTML = highlighted(reply.text, state.text, marksOf(hit)); })
         .catch(() => {});
       return passage;
     }
   }
+}
+
+/// The filter's syntax in one table (its "?").
+function filterHelp() {
+  const box = element("div", "filter-syntax");
+  box.append(element("strong", "", "Filter by exact words"),
+             element("span", "", "The filter says which files appear; the search field above ranks them."));
+  const table = element("table");
+  for (const [written, means] of FILTER_SYNTAX) {
+    const line = element("tr");
+    line.append(element("td", "written", written), element("td", "", means));
+    table.append(line);
+  }
+  box.append(table, element("span", "", "AND, OR and NOT only in capitals. Case, accents and ß/ss don't matter. "
+    + "It looks at names, text, PDF pages, text in screenshots and transcripts."));
+  return box;
 }
 
 function facts(hit) {
@@ -485,7 +586,11 @@ function renderFooter() {
   const strong = state.strong.length, weaker = state.weaker.length;
   let summary;
   if (state.error) summary = `DigUp's helper: ${state.error}`;
-  else if (state.phase === "words") {
+  else if (helpShown()) summary = "How the filter is written";
+  else if (state.phase === "filtered") {
+    const all = strong + weaker;
+    summary = `${all} ${all === 1 ? "file has" : "files have"} the filter's words`;
+  } else if (state.phase === "words") {
     summary = state.encoder === "starting" ? "Matching words; meaning search is warming up…" : "Matching words…";
   } else if (state.phase === "wordsOnly") summary = "Words only: meaning search isn't available";
   else if (state.phase === "codeHint") summary = "Searching your code";
@@ -497,6 +602,11 @@ function renderFooter() {
   if (state.indexing && !state.error) summary += ` · still indexing (${state.indexing.done} of ${state.indexing.total})`;
   $summary.textContent = summary;
   const hit = selectedHit();
+  if (helpShown()) {
+    $keys.textContent = `${document.activeElement === $filter ? "Tab Search field" : "Tab Filter"}   Esc `
+      + (state.help ? "Close this" : "Close");
+    return;
+  }
   $keys.textContent = `↩ ${openTitle(hit)}   ${MOD}↩ Show in ${FILE_MANAGER}`
     + (hit && !state.isCode ? `   ${MOD}L More like this` : "");
 }
@@ -570,6 +680,7 @@ function reasonOf(hit) {
   const at = hit.loc != null ? clock(hit.loc) : "";
   // Its transcript has the words, at this moment (the line said shows below).
   if (said(hit)?.includes("«")) return `Said at ${at || "0:00"}`;
+  if (!meaning && state.filter) return filterReason(hit);
   if (!meaning) return words ? "Has your words" : "Matches its name";
   const page = hit.loc != null ? `page ${Math.trunc(hit.loc)}` : "a page";
   switch (hit.segment) {
@@ -583,6 +694,23 @@ function reasonOf(hit) {
     case "lines":
     case "cells": return `Matches ${span(hit) ?? "the code"}`;
     default: return "Matches its name";
+  }
+}
+
+/// Why a file the filter let through is here when the meaning doesn't say: where its words are (the helper points a
+/// hit at the page, the moment or the stretch with them, and marks them « »), else it matched by its name or folder,
+/// or by what it hasn't (NOT).
+function filterReason(hit) {
+  if (!hit.excerpt?.includes("«")) return "Matches the filter";
+  switch (hit.segment) {
+    case "page":
+    case "page_image": return `Has the filter's words on page ${Math.trunc(hit.loc ?? 1)}`;
+    case "ocr": return hit.kind === "screenshot" ? "Has the filter's words on screen" : "Has the filter's words in it";
+    case "lines":
+    case "cells": return `Has the filter's words in ${span(hit) ?? "the code"}`;
+    case "frame":
+    case "audio": return `Has the filter's words at ${clock(hit.loc ?? 0)}`;
+    default: return "Has the filter's words";
   }
 }
 
@@ -659,12 +787,19 @@ function marked(excerpt) {
   return escaped(excerpt).replace(/«([^»]*)»/g, "<b>$1</b>");
 }
 
-/// A passage with the query's words marked where they start a word.
-function highlighted(text, query) {
-  const words = [...new Set(query.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter((word) => word.length > 1))];
+/// The words the helper marked « » in a hit's excerpt (the filter's, or keyword search's), as they're written there.
+function marksOf(hit) {
+  return [...(hit.excerpt ?? "").matchAll(/«([^»]+)»/g)].map((match) => match[1].toLowerCase());
+}
+
+/// A passage with the query's words (and `marks`, whole as written) marked where they start a word.
+function highlighted(text, query, marks = []) {
+  const words = [...new Set([...query.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter((word) => word.length > 1),
+                             ...marks])].sort((a, b) => b.length - a.length);
   let html = escaped(text);
   if (!words.length) return html;
-  const pattern = new RegExp(`(?<![\\p{L}\\p{N}])(${words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "giu");
+  // Matched in the escaped text, so a mark's own ' or & is looked for as it's escaped there («2'380.50»).
+  const pattern = new RegExp(`(?<![\\p{L}\\p{N}])(${words.map((w) => escaped(w).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "giu");
   return html.replace(pattern, "<mark>$1</mark>");
 }
 
@@ -709,10 +844,22 @@ ICONS.screenshot = ICONS.image;
 // MARK: Keys and events
 
 $query.addEventListener("input", () => {
-  // Typing over similar files searches what's typed.
+  // Typing over similar files searches what's typed; typing a query puts the filter's syntax away.
   if (state.like) leaveLike(false);
+  state.help = false;
   queryChanged();
 });
+
+$filter.addEventListener("input", () => filterTyped(true));
+$filter.addEventListener("focus", render);
+$filter.addEventListener("blur", render);
+
+const $help = $("filter-help");
+$help.onmousedown = (event) => event.preventDefault();   // the field keeps the keyboard
+$help.onclick = () => {
+  state.help = !helpShown();
+  render();
+};
 
 document.addEventListener("keydown", (event) => {
   if (event.isComposing) return; // an input method is composing: its keys
@@ -722,11 +869,29 @@ document.addEventListener("keydown", (event) => {
     moreLike(selectedHit());
     return;
   }
+  // Ctrl+F: to the filter, what's in it selected.
+  if (modifier && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "f") {
+    event.preventDefault();
+    $filter.focus();
+    $filter.select();
+    return;
+  }
   switch (event.key) {
+    case "Tab":
+      // Between the two fields only (the buttons are for the mouse).
+      if (event.altKey || modifier) return;
+      event.preventDefault();
+      (document.activeElement === $filter ? $query : $filter).focus();
+      break;
     case "Escape":
       event.preventDefault();
-      // Similar files go back to the search before them; else the panel steps away.
-      if (state.like) leaveLike(true);
+      // The filter's syntax goes, then the filter; similar files go back to the search before them; else the panel
+      // steps away.
+      if (state.help) {
+        state.help = false;
+        render();
+      } else if ($filter.value) clearFilter();
+      else if (state.like) leaveLike(true);
       else invoke("hide_panel").catch(() => {});
       break;
     case "ArrowDown":
@@ -743,7 +908,7 @@ document.addEventListener("keydown", (event) => {
       break;
     case "Backspace":
       // At the field's very start (nothing selected): the chip before it goes, the last one first.
-      if ($query.selectionStart !== 0 || $query.selectionEnd !== 0) break;
+      if (event.target !== $query || $query.selectionStart !== 0 || $query.selectionEnd !== 0) break;
       if (state.like) {
         event.preventDefault();
         leaveLike(true);
@@ -764,9 +929,15 @@ loadInfo();
 tauri.event.listen("panel-shown", () => {
   loadInfo();
   openTitles.clear();   // a default app or the code editor may have changed since
-  // Like Spotlight: the last query, selected.
+  // Like Spotlight: the last query, selected. The filter was for that look only: it's gone, and the results with it.
+  const helped = state.help;
+  state.help = false;
   $query.focus();
   $query.select();
+  if ($filter.value) {
+    $filter.value = "";
+    filterTyped();
+  } else if (helped) render();
   ask({ op: "prewarm" }).catch(() => {});
 });
 
@@ -795,15 +966,21 @@ tauri.event.listen("helper", ({ payload }) => {
 
 tauri.path.homeDir().then((home) => { state.home = home.replace(/[\\/]$/, ""); }).catch(() => {});
 
-// Debug runs (--debug-query): type the query in, and once the meaning results and their pictures are in, report
-// what the panel shows.
+// Debug runs (--debug-query, --debug-filter): type the query and the filter in, and once the meaning results and their
+// pictures are in, report what the panel shows.
+let debugFilter = null;
 function debugSearch(query) {
-  if (!query) return;
+  if (!query && !debugFilter) return;
   debugPending = true;
-  $query.value = query;
+  $query.value = query ?? "";
+  $filter.value = debugFilter ?? "";
+  $filterField.classList.toggle("active", !!$filter.value.trim());
   queryChanged();
 }
-invoke("debug_query").then(debugSearch);
+Promise.all([invoke("debug_query"), invoke("debug_filter")]).then(([query, filter]) => {
+  debugFilter = filter;
+  debugSearch(query);
+});
 tauri.event.listen("debug-query", ({ payload }) => debugSearch(payload));   // after setup's first index
 
 function report() {
@@ -814,10 +991,16 @@ function report() {
     invoke("debug_report", {
       report: {
         query: $query.value,
+        filter: $filter.value,
+        filter_note: $filterNote.hidden ? null : $filterNote.textContent,
         scope: state.scope && state.scope.path,
         like: state.like && state.like.path,
         phase: state.phase,
-        groups: state.groups.map((group) => ({ title: group.title, rows: group.rows.map((hit) => nameOf(hit.path)) })),
+        // "Unterlagen Wohnung.pdf · p. 2": the row's name and its badge.
+        groups: state.groups.map((group) => ({
+          title: group.title,
+          rows: group.rows.map((hit) => nameOf(hit.path) + (placeOf(hit) ? ` · ${placeOf(hit)}` : "")),
+        })),
         weaker: state.weaker.length,
         selected: state.selection && nameOf(state.selection),
         preview: big && {

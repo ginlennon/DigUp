@@ -125,6 +125,99 @@ html, body {
 
 .chip button:hover { background: var(--line); color: var(--text); }
 
+/* The filter under the field: slimmer, its text where the query's starts. */
+.filter-field {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  height: 32px;
+  flex: none;
+  margin: 0 12px;
+  padding: 0 6px 2px;
+  border-top: 1px solid var(--line);
+}
+
+.funnel {
+  width: 24px;
+  height: 15px;
+  flex: none;
+  fill: none;
+  stroke: var(--tertiary);
+  stroke-width: 1.8;
+  stroke-linejoin: round;
+}
+
+.filter-field:focus-within .funnel { stroke: var(--secondary); }
+.filter-field.active .funnel { stroke: var(--ember); fill: var(--mark); }
+
+#filter {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+}
+
+#filter::placeholder { color: var(--tertiary); }
+
+.filter-help {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--chip);
+  color: var(--secondary);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.filter-field:hover .filter-help, .filter-field:focus-within .filter-help, .filter-field.active .filter-help { opacity: 1; }
+.filter-help:hover { background: var(--line); color: var(--text); }
+
+.filter-note {
+  flex: none;
+  font-size: 11px;
+  color: var(--ember);
+  padding: 0 18px 6px 53px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.filter-note[hidden] { display: none; }
+
+/* The filter's syntax, in the preview's place. */
+.filter-syntax {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 24px;
+  color: var(--secondary);
+  font-size: 12px;
+}
+
+.filter-syntax strong { color: var(--text); font-size: 15px; }
+.filter-syntax table { align-self: flex-start; border-collapse: collapse; margin: 4px 0; }
+.filter-syntax td { padding: 3px 14px 3px 0; vertical-align: baseline; }
+
+.filter-syntax td.written {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+  font-size: 12px;
+  color: var(--text);
+  white-space: pre;
+}
+
 .activity {
   font-size: 11px;
   font-weight: 500;

@@ -16,6 +16,14 @@
              placeholder="Describe it: “payment error screenshot”, “zebra in a video”…">
       <span id="activity" class="activity" hidden></span>
     </header>
+    <div class="filter-field">
+      <svg class="funnel" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5 H20 L14 12.5 V19 L10 17 V12.5 Z"/></svg>
+      <input id="filter" type="text" autocomplete="off" autocorrect="off" spellcheck="false"
+             aria-label="Filter by exact words" placeholder="Filter: Rechnung* AND (Uster OR Winterthur) NOT Mahnung">
+      <button id="filter-help" class="filter-help" type="button" tabindex="-1" aria-label="How the filter is written"
+              title="How the filter is written">?</button>
+    </div>
+    <div id="filter-note" class="filter-note" hidden></div>
     <section id="body" class="body" hidden>
       <div id="list" class="list" role="listbox" aria-label="Results"></div>
       <div id="preview" class="preview" aria-live="polite"></div>

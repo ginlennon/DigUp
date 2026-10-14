@@ -25,7 +25,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from digup_client import DigUpError, HelperConfig
-from digup_tools import KINDS, DigUp, Results, add_helper_arguments, config_from, excerpt, where
+from digup_tools import FILTER_SYNTAX, KINDS, DigUp, Results, add_helper_arguments, config_from, excerpt, where
 
 INSTRUCTIONS = """\
 DigUp is an on-device semantic search engine for the user's own files on this computer. It has indexed the folders \
@@ -35,7 +35,9 @@ their text read by OCR (screenshot), audio by what is said and heard (audio) and
 (EmbeddingGemma 2) and by words, in many languages, so describe what you are looking for in plain words \
 ("the lease agreement with the deposit clause", "a photo of a zebra", "where we retry with backoff"). Results are \
 local files with absolute paths you can open; a hit also says where in the file it is (a PDF page, a moment in a \
-video, a range of lines). Use read_segment with a hit's segment number to read the passage that matched.\
+video, a range of lines). Use read_segment with a hit's segment number to read the passage that matched. When exact \
+words must be in the file (a name, a number, a code, German compounds), add a filter (Rechnung* NOT Mahnung, \
+*kaution*, "Bahnhofstrasse 12"): it decides which files appear, the query ranks them.\
 """
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
@@ -79,14 +81,22 @@ def format_results(results: Results, heading: str, *, code: bool = False) -> str
     excerpt. Weaker matches come after a marker."""
     if not results.hits:
         lines = [f"{heading}: no matches."]
-        if not results.meaning:
+        if results.filter_note:
+            lines.append(f"(Filter: {results.filter_note})")
+        if results.filter:
+            lines.append("(No file has the filter's words: words match whole, so try word* or *word*.)")
+        elif not results.meaning:
             lines.append("(Keyword matching only: DigUp's encoder isn't running, so meaning wasn't searched.)")
         if results.warning:
             lines.append(f"(DigUp: {results.warning})")
         return "\n".join(lines)
     how = "by meaning and words" if results.meaning else "by words only (the encoder isn't running)"
+    if results.filter and not results.query:
+        how = "with the filter's words, best match first"
     count = len(results.hits)
     lines = [f"{heading}: {count} match{'es' if count != 1 else ''} {how}; {results.strong} strong."]
+    if results.filter_note:
+        lines.append(f"(Filter: {results.filter_note})")
     if results.warning:
         lines.append(f"(DigUp: {results.warning})")
     for index, hit in enumerate(results.hits):
@@ -105,10 +115,26 @@ def format_results(results: Results, heading: str, *, code: bool = False) -> str
     return "\n".join(lines)
 
 
+def heading(results: Results, what: str) -> str:
+    """'DigUp results for "invoice" filtered by Rechnung* NOT Mahnung'."""
+    parts = [what] + ([f'for "{results.query}"'] if results.query else []) \
+        + ([f"filtered by {results.filter}"] if results.filter else [])
+    return " ".join(parts)
+
+
+FILTER_HELP = ("Optional: exact words the file must contain. Only matching files are returned, ranked by query "
+               "(query may be empty: then ranked by these words). Each hit points at the page/moment/lines where "
+               "they are. ")
+
+
 @mcp.tool(annotations=READ_ONLY)
 def search_files(
     query: Annotated[str, Field(description="What to find, in plain words (any language): what the file is about, "
-                                            "what's in the picture, what's said in the recording")],
+                                            "what's in the picture, what's said in the recording. May be empty "
+                                            "when filter is given")] = "",
+    filter: Annotated[str | None, Field(description=FILTER_HELP + FILTER_SYNTAX + " Looks at file and folder names, "
+                                        "document and PDF text, text in screenshots and transcripts. Example: "
+                                        "Rechnung* AND (Uster OR Winterthur) NOT Mahnung")] = None,
     kinds: Annotated[list[str] | None, Field(description=f"Only these kinds of files: {', '.join(KINDS)} "
                                                          "(default: all)")] = None,
     folders: Annotated[list[str] | None, Field(description="Only files inside these folders (absolute or ~/ paths; "
@@ -119,23 +145,27 @@ def search_files(
     machine). Finds documents, PDFs (by page), photos, screenshots (with their text), audio (by speech and sound) and
     videos (by frames and sound) in the folders DigUp indexes. Returns absolute paths, the kind, where in the file the
     match is (page, time, lines), a relevance score, an excerpt, and a segment number for read_segment. Results above
-    the "weaker matches" line are clear matches. For source code use search_code instead."""
-    results = _call(lambda: digup().search(query, kinds=kinds, folders=folders, limit=limit))
-    return format_results(results, f'DigUp results for "{results.query}"')
+    the "weaker matches" line are clear matches. Use filter when exact words, a name, a number or a code must be in
+    the file (German compounds and plurals: *kaution*, Rechnung*). For source code use search_code instead."""
+    results = _call(lambda: digup().search(query, kinds=kinds, folders=folders, limit=limit, filter=filter))
+    return format_results(results, heading(results, "DigUp results"))
 
 
 @mcp.tool(annotations=READ_ONLY)
 def search_code(
     query: Annotated[str, Field(description="What the code does, or a name in it: \"retry with exponential "
-                                            "backoff\", \"where the config file is parsed\", \"PaymentDeclined\"")],
+                                            "backoff\", \"where the config file is parsed\", \"PaymentDeclined\". "
+                                            "May be empty when filter is given")] = "",
+    filter: Annotated[str | None, Field(description=FILTER_HELP + FILTER_SYNTAX + " Looks at the code's text and "
+                                        "file names. Example: *_handler AND retry* NOT test")] = None,
     limit: Annotated[int, Field(description="How many results at most", ge=1, le=100)] = 10,
 ) -> str:
     """Search DigUp's code index (the code folders the user chose: source files, their repos' docs and notebooks) by
     what the code does, on-device. Same as a DigUp search starting with "code:". Returns absolute file paths with the
     line range of the matching stretch (and the line to open at), a score and a segment number; read the stretch with
-    read_segment(segment_id, code=True)."""
-    results = _call(lambda: digup().search(query, limit=limit, code=True))
-    return format_results(results, f'DigUp code results for "{results.query}"', code=True)
+    read_segment(segment_id, code=True). Use filter when exact names or words must be in the file."""
+    results = _call(lambda: digup().search(query, limit=limit, code=True, filter=filter))
+    return format_results(results, heading(results, "DigUp code results"), code=True)
 
 
 @mcp.tool(annotations=READ_ONLY)

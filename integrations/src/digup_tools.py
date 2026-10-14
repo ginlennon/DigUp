@@ -27,6 +27,14 @@ KIND_ALIASES = {
 RENDER_KINDS = ("pdf", "video", "image")
 CODE_PREFIX = "code:"
 MAX_LIMIT = 200
+MAX_FILTER = 2000
+
+# The keyword filter (KeywordFilter in DigUpKit), for the tools' and the API's descriptions.
+FILTER_SYNTAX = (
+    "Words are ANDed; AND, OR, NOT (or -word) in capitals; ( ) to group (NOT before AND before OR); "
+    '"exact phrase"; word* (starts with), *word (ends with), *word* (inside a word, 3+ letters); codes and '
+    "numbers as written (RE-2041, 2'380.50). Case, accents and ß/ss don't matter."
+)
 
 
 class BadRequest(DigUpError):
@@ -85,6 +93,17 @@ def folders_of(value: Any) -> list[str] | None:
         raise BadRequest("folders must be a list of paths")
     folders = [absolute(item) for item in items if item.strip()]
     return folders or None
+
+
+def filter_of(value: Any) -> str | None:
+    """The keyword filter as the helper takes it ("Rechnung* NOT Mahnung"); None: no filter."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise BadRequest("filter must be a string, e.g. Rechnung* AND (Uster OR Winterthur) NOT Mahnung")
+    if len(value) > MAX_FILTER:
+        raise BadRequest(f"filter is longer than {MAX_FILTER} characters")
+    return value.strip() or None
 
 
 def limit_of(value: Any, default: int = 10) -> int:
@@ -161,6 +180,8 @@ class Results:
     meaning: bool          # False: keyword matches only (the encoder couldn't run)
     warning: str | None = None
     ms: dict[str, Any] | None = None
+    filter: str | None = None        # the keyword filter the hits are for
+    filter_note: str | None = None   # how DigUp read a filter it couldn't read as written ("unclosed quote: …")
 
 
 class DigUp:
@@ -174,14 +195,21 @@ class DigUp:
         self.client.close()
 
     def search(self, query: str, *, kinds: Any = None, folders: Any = None, limit: Any = 10,
-               code: bool | None = None, meaning: bool = True) -> Results:
-        if not isinstance(query, str) or not query.strip():
-            raise BadRequest("query is empty")
+               code: bool | None = None, meaning: bool = True, filter: Any = None) -> Results:
+        """`filter`: the keyword filter (FILTER_SYNTAX): only the files whose text has it, ranked by `query`, each hit
+        where its words are; `query` may be empty then (ranked by how well the filter's words match)."""
+        keywords = filter_of(filter)
+        if query is None:
+            query = ""
+        if not isinstance(query, str):
+            raise BadRequest("query must be a string")
+        if not query.strip() and not keywords:
+            raise BadRequest("query is empty (give a query, a filter, or both)")
         stripped = code_query(query)
         text = stripped if stripped is not None else query.strip()
         code = bool(code) or stripped is not None
-        if code and not text:
-            raise BadRequest('"code:" needs words after it')
+        if code and not text and not keywords:
+            raise BadRequest('"code:" needs words after it (or a filter)')
         kinds = None if code else kinds_of(kinds)
         folders = folders_of(folders)
         limit = limit_of(limit)
@@ -194,10 +222,13 @@ class DigUp:
             fields["kinds"] = kinds
         if folders:
             fields["folders"] = folders
+        if keywords:
+            fields["filter"] = keywords
         reply = self.client.request("search", **fields)
         hits, strong = self._kept(reply, kinds, folders, limit)
         return Results(query=text, code=code, hits=hits, strong=strong, meaning=bool(reply.get("meaning")),
-                       warning=reply.get("warning"), ms=reply.get("ms"))
+                       warning=reply.get("warning"), ms=reply.get("ms"), filter=keywords,
+                       filter_note=reply.get("filter_note"))
 
     def _kept(self, reply: dict[str, Any], kinds: list[str] | None, folders: list[str] | None,
               limit: int) -> tuple[list[dict[str, Any]], int]:
@@ -300,14 +331,15 @@ class DigUp:
                 from None
 
     def context(self, query: str, *, limit: Any = 5, max_chars: Any = 6000, kinds: Any = None, folders: Any = None,
-                code: bool | None = None) -> dict[str, Any]:
-        """For RAG: the top hits' indexed texts, numbered, each under its citation (path and page or time)."""
+                code: bool | None = None, filter: Any = None) -> dict[str, Any]:
+        """For RAG: the top hits' indexed texts, numbered, each under its citation (path and page or time). With
+        `filter`, only files with its words, each text the part where they are."""
         try:
             budget = max(200, min(int(max_chars if max_chars is not None else 6000), 200_000))
         except (TypeError, ValueError):
             raise BadRequest("max_chars must be a number") from None
         limit = limit_of(limit, 5)
-        results = self.search(query, kinds=kinds, folders=folders, limit=limit, code=code)
+        results = self.search(query, kinds=kinds, folders=folders, limit=limit, code=code, filter=filter)
         per_hit = max(400, budget // max(1, min(limit, len(results.hits) or 1)))
         parts, sources, others, used = [], [], [], 0
         for hit in results.hits:
@@ -329,9 +361,14 @@ class DigUp:
             parts.append(f"[{number}] {citation}\n{text}")
             used += len(text)
             sources.append({"n": number, "citation": citation, **compact(hit)})
-        return {"query": results.query, "code": results.code, "meaning": results.meaning,
-                "context": "\n\n".join(parts), "sources": sources, "other_matches": others,
-                "chars": used}
+        reply = {"query": results.query, "code": results.code, "meaning": results.meaning,
+                 "context": "\n\n".join(parts), "sources": sources, "other_matches": others,
+                 "chars": used}
+        if results.filter:
+            reply["filter"] = results.filter
+        if results.filter_note:
+            reply["filter_note"] = results.filter_note
+        return reply
 
 
 # MARK: Command lines

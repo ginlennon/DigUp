@@ -34,6 +34,8 @@ pub struct Options {
     /// Debug runs: the panel types this query in when it loads and reports what it showed (`debug_report`), hidden
     /// unless `debug_show`: a panel on screen takes the keyboard.
     pub debug_query: Option<String>,
+    /// Debug runs: the filter the panel types in under the query (alone, a search by the filter only).
+    pub debug_filter: Option<String>,
     /// Debug runs: quit once the report is in.
     pub debug_quit: bool,
     /// Debug runs: show the panel at launch and keep it up when it loses focus.
@@ -56,6 +58,7 @@ impl Options {
             offered: None,
             debug_setup: false,
             debug_query: None,
+            debug_filter: None,
             debug_quit: false,
             debug_show: false,
             background: false,
@@ -74,6 +77,7 @@ impl Options {
                 "--offer" => options.offered = Some(std::env::split_paths(&value()?).collect()),
                 "--debug-setup" => options.debug_setup = true,
                 "--debug-query" => options.debug_query = Some(value()?),
+                "--debug-filter" => options.debug_filter = Some(value()?),
                 "--debug-quit" => options.debug_quit = true,
                 "--debug-show" => options.debug_show = true,
                 "--background" => options.background = true,

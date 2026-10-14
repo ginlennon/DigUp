@@ -9,10 +9,13 @@ unless --cors names an origin.
 
     GET  /health                       → {"ok": true}
     GET  /status                       → the encoder, the vectors, the index, the folders
-    POST /search   {query, kinds?, folders?, limit?, code?}        → {hits: [...]}   (also GET /search?q=…)
+    POST /search   {query, kinds?, folders?, limit?, code?, filter?} → {hits: [...]}   (also GET /search?q=…&filter=…)
     GET  /segments/{id}?code=false     → {text}: a hit's indexed text
     POST /similar  {path, limit?, kinds?, folders?}               → {hits: [...]}
-    POST /context  {query, limit?, max_chars?, kinds?, folders?, code?} → {context, sources}: for RAG
+    POST /context  {query, limit?, max_chars?, kinds?, folders?, code?, filter?} → {context, sources}: for RAG
+
+`filter` is DigUp's keyword filter (Rechnung* AND (Uster OR Winterthur) NOT Mahnung): only the files whose text has
+it, ranked by the query, which may be empty then; `filter_note` in the reply when it was read as plain words.
     GET  /preview?path=…&kind=pdf|video|image&loc=…&pixels=…      → image/jpeg
     GET  /openapi.json                 → this API as OpenAPI 3.1
 """
@@ -33,7 +36,8 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from digup_client import DigUpError, HelperDied, HelperError, HelperNotFound, HelperTimeout
-from digup_tools import KINDS, BadRequest, DigUp, Forbidden, Results, Unsupported, add_helper_arguments, config_from, where
+from digup_tools import (FILTER_SYNTAX, KINDS, MAX_FILTER, BadRequest, DigUp, Forbidden, Results, Unsupported,
+                         add_helper_arguments, config_from, where)
 
 VERSION = "0.1.0"
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
@@ -48,6 +52,10 @@ def hits_json(results: Results) -> dict[str, Any]:
         "hits": [{"rank": index + 1, **hit, "where": where(hit), "strong": index < results.strong}
                  for index, hit in enumerate(results.hits)],
     }
+    if results.filter:
+        body["filter"] = results.filter
+    if results.filter_note:
+        body["filter_note"] = results.filter_note
     if results.warning:
         body["warning"] = results.warning
     if results.ms:
@@ -225,10 +233,12 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/search" and method in ("GET", "POST"):
             body = self.body() if method == "POST" else {
                 "query": query.get("q", query.get("query", "")), "kinds": query.get("kinds"),
-                "folders": query.get("folders"), "limit": query.get("limit"), "code": query.get("code")}
+                "folders": query.get("folders"), "limit": query.get("limit"), "code": query.get("code"),
+                "filter": query.get("filter")}
             results = digup.search(body.get("query", body.get("q", "")), kinds=body.get("kinds"),
                                    folders=body.get("folders"), limit=body.get("limit", 10),
-                                   code=truthy(body.get("code")), meaning=body.get("meaning", True) is not False)
+                                   code=truthy(body.get("code")), meaning=body.get("meaning", True) is not False,
+                                   filter=body.get("filter"))
             self.send_json(HTTPStatus.OK, hits_json(results))
         elif path.startswith("/segments/") and method == "GET":
             segment = unquote(path[len("/segments/"):])
@@ -248,7 +258,8 @@ class Handler(BaseHTTPRequestHandler):
             body = self.body()
             context = digup.context(body.get("query", body.get("q", "")), limit=body.get("limit", 5),
                                     max_chars=body.get("max_chars", 6000), kinds=body.get("kinds"),
-                                    folders=body.get("folders"), code=truthy(body.get("code")))
+                                    folders=body.get("folders"), code=truthy(body.get("code")),
+                                    filter=body.get("filter"))
             self.send_json(HTTPStatus.OK, context)
         elif path == "/preview" and method == "GET":
             image = digup.render(query.get("path", ""), kind=query.get("kind") or None, loc=query.get("loc"),
@@ -276,11 +287,23 @@ def openapi(host: str, token: bool) -> dict[str, Any]:
     folders = {"type": "array", "items": {"type": "string"},
                "description": "Only files inside these folders (absolute or ~/ paths; default: all searched folders)."}
     limit = {"type": "integer", "minimum": 1, "maximum": 200, "default": 10, "description": "How many results at most."}
+    keyword_filter = {
+        "type": "string", "maxLength": MAX_FILTER, "examples": ["Rechnung* AND (Uster OR Winterthur) NOT Mahnung",
+                                                                "\"Bahnhofstrasse 12\"", "*kaution*"],
+        "description": "Exact words the file's text must have: only those files appear, ranked by `query` (which may "
+                       "be empty then: ranked by how well these words match), each hit at the page, moment or lines "
+                       "where they are, marked «like this» in its excerpt. Looks at file and folder names, document "
+                       "and PDF text, text in screenshots, transcripts and code. " + FILTER_SYNTAX + " A filter that "
+                       "can't be parsed (an unclosed quote or bracket) is read as plain words, and the reply's "
+                       "filter_note says so."}
     error = {"description": "An error", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
     errors = {"400": error, "401": error, "502": error, "503": error, "504": error}
 
-    def json_body(schema: str) -> dict[str, Any]:
-        return {"required": True, "content": {"application/json": {"schema": {"$ref": f"#/components/schemas/{schema}"}}}}
+    def json_body(schema: str, example: dict[str, Any] | None = None) -> dict[str, Any]:
+        media: dict[str, Any] = {"schema": {"$ref": f"#/components/schemas/{schema}"}}
+        if example:
+            media["example"] = example
+        return {"required": True, "content": {"application/json": media}}
 
     def json_reply(schema: str, description: str) -> dict[str, Any]:
         return {"description": description,
@@ -304,8 +327,11 @@ def openapi(host: str, token: bool) -> dict[str, Any]:
                                "words. Describe what you look for in plain words. Each hit has the file's absolute "
                                "path, its kind, where in the file it matched (`where`: page, time, lines) and a "
                                "segment_id whose indexed text /segments/{segment_id} returns. Set code=true (or start "
-                               "the query with \"code:\") to search the code index.",
-                "requestBody": json_body("SearchRequest"),
+                               "the query with \"code:\") to search the code index. `filter` keeps the results to the "
+                               "files with these exact words (AND, OR, NOT, \"phrases\", word*, *word*); with it the "
+                               "query may be empty.",
+                "requestBody": json_body("SearchRequest", {"query": "invoice from the carpenter",
+                                                           "filter": "Rechnung* NOT Mahnung", "limit": 5}),
                 "responses": {"200": json_reply("SearchResults", "The matches, best first"), **errors},
             }},
             "/segments/{segment_id}": {"get": {
@@ -326,8 +352,9 @@ def openapi(host: str, token: bool) -> dict[str, Any]:
                 "summary": "Retrieve passages from local files for answering a question (RAG)",
                 "description": "Searches, then returns the top hits' indexed texts concatenated, each numbered and "
                                "headed by its citation (file path and page or time), within max_chars. Cite sources "
-                               "as [n].",
-                "requestBody": json_body("ContextRequest"),
+                               "as [n]. With `filter`, only files with those exact words, each passage the part "
+                               "where they are.",
+                "requestBody": json_body("ContextRequest", {"query": "what is the deposit?", "filter": "*kaution*"}),
                 "responses": {"200": json_reply("Context", "The passages and their sources"), **errors},
             }},
             "/similar": {"post": {
@@ -366,8 +393,9 @@ def openapi(host: str, token: bool) -> dict[str, Any]:
             }},
         },
         "components": {"schemas": {
-            "SearchRequest": {"type": "object", "required": ["query"], "properties": {
-                "query": {"type": "string", "description": "What to find, in plain words"},
+            "SearchRequest": {"type": "object", "properties": {
+                "query": {"type": "string", "description": "What to find, in plain words (a query, a filter, or both)"},
+                "filter": keyword_filter,
                 "kinds": kinds, "folders": folders, "limit": limit,
                 "code": {"type": "boolean", "default": False, "description": "Search the code index"},
             }},
@@ -375,8 +403,9 @@ def openapi(host: str, token: bool) -> dict[str, Any]:
                 "path": {"type": "string", "description": "An indexed file"},
                 "kinds": kinds, "folders": folders, "limit": limit,
             }},
-            "ContextRequest": {"type": "object", "required": ["query"], "properties": {
-                "query": {"type": "string", "description": "The question or topic"},
+            "ContextRequest": {"type": "object", "properties": {
+                "query": {"type": "string", "description": "The question or topic (a query, a filter, or both)"},
+                "filter": keyword_filter,
                 "limit": {**limit, "default": 5, "description": "How many hits to read"},
                 "max_chars": {"type": "integer", "default": 6000, "description": "The context's size at most"},
                 "kinds": kinds, "folders": folders,
@@ -407,6 +436,9 @@ def openapi(host: str, token: bool) -> dict[str, Any]:
                 "meaning": {"type": "boolean", "description": "false: keyword matches only"},
                 "strong": {"type": "integer"}, "count": {"type": "integer"},
                 "hits": {"type": "array", "items": {"$ref": "#/components/schemas/Hit"}},
+                "filter": {"type": "string", "description": "The filter the hits are for"},
+                "filter_note": {"type": "string", "description": "How a filter that couldn't be parsed was read "
+                                                                 "(\"unclosed quote: read as plain words\")"},
                 "warning": {"type": "string"},
             }},
             "Segment": {"type": "object", "properties": {
@@ -418,6 +450,7 @@ def openapi(host: str, token: bool) -> dict[str, Any]:
                 "other_matches": {"type": "array", "items": {"type": "object"},
                                   "description": "Matches without text (pictures, frames)"},
                 "chars": {"type": "integer"},
+                "filter": {"type": "string"}, "filter_note": {"type": "string"},
             }},
             "Status": {"type": "object", "additionalProperties": True},
             "Error": {"type": "object", "properties": {"error": {"type": "string"}}},
