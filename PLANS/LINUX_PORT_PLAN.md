@@ -1,9 +1,11 @@
 # PLAN — DigUp on Ubuntu 24.04 (GNOME/Wayland) with a Vulkan embedder on the Radeon iGPU
 
 **Status (2026-10-14):** Stages 0–3 **done**; Stage 2 done except the long soak (dropped: no soak tests); Stage 4
-(shell MVP) **mostly done** — hotkey via GNOME custom shortcut, panel, open at page/moment, settings, pause, GPU
-switch, start at login; Stage 5 (packaging) and the rest of Stage 6 open. Results: `docs/linux-port/VULKAN_RESULTS.md`,
-`docs/linux-port/EVAL_RESULTS.md`. Added thrusts: §C (robust embedder, on/off, folder-scoped search, integrations).
+(shell MVP) **done** — hotkey via GNOME custom shortcut, panel, open at page/moment, settings, pause, GPU
+switch, start at login; Stage 5: user install done (C6), .deb/AppImage open (D2); Stage 6: code search and CI done,
+the rest open (D5). Results: `docs/linux-port/VULKAN_RESULTS.md`,
+`docs/linux-port/EVAL_RESULTS.md`. Added thrusts: §C (robust embedder, on/off, folder-scoped search, integrations — built, plus user install and
+Linux CI); §D next round (transcripts, packages, upstream PRs, RapidOCR — PLAN ONLY).
 Evidence: `docs/linux-port/ANALYSIS.md`, `docs/linux-port/LINUX_EQUIVALENTS.md`. Goals: `LINUX_PORT.md`.
 ---
 
@@ -208,7 +210,8 @@ DIGUP_BACKENDS=Vendor/llama/cpu-only swift test --filter ReferenceVectorTests
 
 ### Stage 6 — v2 features (pick by use)
 Code search + editors; copy file; search window; power policy; index hours; SVG; speed calibration; update check;
-RapidOCR port (if A5 says so); GitHub Actions Linux CI (build + `swift test` + vector gate on CPU).
+RapidOCR port (if A5 says so, D4); GitHub Actions Linux CI (build + `swift test` + vector gate on CPU) — **CI done
+2026-10-14** (`.github/workflows/linux.yml`), code search done (C5).
 
 ### Ordering rationale
 Stages 1–2 de-risk the two things that can sink the port (Swift-on-Linux engine behaviour, Vulkan on RADV) before any
@@ -218,7 +221,7 @@ developed against `digup search` output at any time.
 
 ---
 
-# Part C — Second round (2026-10-14): robustness, control, scope, integrations — PLAN, partly in progress
+# Part C — Second round (2026-10-14): robustness, control, scope, integrations — built (C7 → D1)
 
 ### C1. A robust embedder (built in the shell: fallback.rs; untried on a real driver crash)
 Failure modes on a desktop GPU and the answer to each:
@@ -236,10 +239,10 @@ Decision rule: CPU fallback is per session (a reboot or driver update may fix it
 "Turn DigUp off": quit + start at login off (+ offer to remove the shortcut).
 
 ### C3. Search inside folders (built: scope.rs, the panel's `in:` chip; also Ctrl+L "More like this")
-Engine: `folders` on search / `--in DIR` (in progress). Panel: `in:Documents …` / `in:~/Pictures/2026 …` prefix,
+Engine: `folders` on search / `--in DIR`. Panel: `in:Documents …` / `in:~/Pictures/2026 …` prefix,
 resolved against the chosen folders (name or path), shown as a removable chip.
 
-### C4. Integrations (in progress)
+### C4. Integrations (built: integrations/ MCP server + HTTP API, Files scripts in integrations/desktop)
 `integrations/`: an MCP server (search_files, read_segment, search_code, find_similar, index_status) for coding agents,
 and a localhost-only HTTP API (`/search`, `/context` for RAG, `/segments/{id}`, `/similar`, `/preview`,
 `/openapi.json`) for RAG apps and scripts. Both run their own `digup search-service` over the same index (SQLite WAL:
@@ -258,10 +261,64 @@ ships; the only extra host library is `libcurl.so.4` (FoundationNetworking). pat
 llama.cpp libraries (theirs pointed at the build folder). ~420 MB; checked with `doctor` and `search` (Vulkan and
 `DIGUP_GPU=0`) under `env -i`. Open: `.deb`/AppImage, a fresh-account check of the whole flow.
 
-### C7. Idea (not started): transcripts for recordings
+### C7. Idea (not started; planned as D1): transcripts for recordings
 Found while testing the HTTP API's `/context`: audio and video soundtracks are embedded (searchable by meaning) but
 have no text, so exact words spoken in a podcast aren't matched and RAG gets nothing for a recording. A local
 whisper.cpp pass (ggml, also runs on Vulkan) per 30 s window would add `transcript` segments to the keyword index and
 to `text`. Null hypothesis: meaning search already finds the right moment (the evals' audio queries are 1.00), so
 transcripts only pay off for exact words (names, numbers) and RAG. Decision rule: worth it if it adds exact-word
 hits on spoken names/numbers without more than ~1.5× the audio indexing time on the 860M.
+
+---
+
+# Part D — Next round (noted 2026-10-14): PLAN ONLY — not implemented
+
+Ranked by expected use. Each is a bigger feature: pick one, plan it in detail, then build. Upstream (ARahim3/DigUp)
+is still at f9b8106, so nothing here has to be rebased yet.
+
+### D1. Transcripts for recordings (= C7, the first candidate)
+What: whisper.cpp (ggml, Vulkan build like llama.cpp, `build-whisper.sh` beside `build-llama.sh`) transcribes each
+30 s audio window (audio files and video soundtracks); the text goes into the keyword index and into the segment's
+`text`, so exact spoken words match and `/context` / `read_segment` return text for recordings.
+Steps: (1) spike: whisper.cpp b-latest Vulkan on the 860M, `base`/`small` multilingual, real-time factor on the
+testbed's piper voices; (2) engine: `transcript` text on audio segments (schema field exists for text segments), a
+language setting (auto by default); (3) shell: "Transcribe recordings" toggle (off on battery); (4) evals: add
+spoken-name / spoken-number queries to `evals/`.
+Null hypothesis and decision rule: as C7 — meaning search already finds the moment, so this pays off only if it adds
+exact-word hits on spoken names/numbers at ≤ ~1.5× the audio indexing time. Risk: model size (small ≈ 466 MB) on top
+of the 865 MB embedder; a second ggml in one process (keep whisper in its own helper process).
+
+### D2. Packages others can install without building
+What: a `.deb` (Tauri bundler or `dpkg-deb` from the install-user.sh layout) and/or an AppImage, built in CI on the
+oldest supported Ubuntu (22.04 container) and attached to GitHub releases; an update check (GitHub releases API,
+notify only). Steps: (1) layout from C6 into `/opt/digup` + `/usr/share/applications`; (2) glibc floor check (build
+on 22.04, run on 24.04); (3) release workflow on tag; (4) fresh-account check: install → setup → model download →
+search. Open question: ship ffmpeg inside (284 MB, LGPL — keep the licence + source pointer) or depend on the
+fetch script. Decision rule: worth it as soon as anyone other than the author wants to run it.
+
+### D3. Offer the generic fixes upstream
+Candidates (each a small, platform-neutral engine change; upstream's CONTRIBUTING asks for an issue first):
+- index helper hanging at exit when stdin stays open (glibc `exit()` flush vs the `readLine` thread) — `fe334fc`;
+- several search helpers overwriting each other's previews / sharing one query log — `553a354`, `6fcc098`;
+- a missing ffprobe marking audio and video as silent instead of failing them — `598d4ed`;
+- retry the query encoder after the model has downloaded — `22483eb`;
+- features that may interest the Mac app too: `--in` folder scope (`c594143`), `digup similar` (`eee2470`),
+  `digup doctor` (`697669b`), `DIGUP_GPU` (`b6a714e`).
+Steps: open one issue listing them, then one PR per fix as upstream prefers. Keeps our diff small (A7).
+
+### D4. RapidOCR vs tesseract (A5's decision rule)
+uv / Python 3.13 sidecar with `rapidocr-onnxruntime` over the testbed's screenshots and scanned PDFs plus a degraded
+set (blur, downscale, JPEG); measure keyword-query hit rate and OCR time. Replace tesseract only if ≥ +10 points at
+≤ 2× time; then port to the ONNX Runtime C API. Bonus if it wins: no per-language apt packs.
+
+### D5. Smaller items and known limitations
+- GPU→CPU fallback (C1) has only met simulated failures; keep an eye on the shell log after a real Vulkan crash.
+- `install-user.sh --uninstall` still calls the checkout's `gnome-shortcut.sh`; copy the shortcut logic into the
+  installed tree so uninstall works without the checkout.
+- One `Gtk-CRITICAL gtk_widget_get_scale_factor` at start (likely the tray); harmless, find the source.
+- Exact-word OCR for Arabic/Bengali needs `tesseract-ocr-ara/-ben`; offer them in `setup.sh` (or D4 removes the need).
+- Suspend/resume with the helper mid-file on amdgpu: check once by hand (not a soak).
+- Remaining Stage 6 items: copy file (Ctrl+C), search window, power policy (battery → pause), index hours, SVG via
+  `rsvg-convert`, speed calibration for setup estimates.
+- Later, by decision: the "middle way" (Linux-only packaging branch) or a hard Linux fork without the Mac parts —
+  only if keeping one codebase with upstream starts to cost more than it saves.
