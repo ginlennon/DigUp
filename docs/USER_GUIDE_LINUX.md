@@ -16,15 +16,15 @@ This guide is for the Linux port (tested on Ubuntu 24.04 with GNOME). Setup is i
 | Ctrl+↩ | shows the file in Files, selected |
 | Esc | closes the panel |
 
-The tray icon shows what DigUp is doing ("Indexing 120 of 482", "Up to date · 482 files") and has Pause/Resume,
-Index Now, Settings… and Quit.
+The tray icon shows what DigUp is doing ("Indexing 120 of 482", "Transcribing 3 of 12" when transcripts are on,
+"Up to date · 482 files") and has Pause/Resume, Index Now, Settings… and Quit.
 
 **How to ask.** Describe what you'd see or hear, as you'd tell a friend: "a receipt where the card was declined",
 "the bit where they talk about the storm". Type exact things exactly: an invoice number, an error code, a name.
 DigUp does both at once: the meaning of your words, and the words themselves (in file names, document text, and
 the text inside screenshots and scans). Results that are clearly weaker are folded under "N weaker matches".
 
-## 19 ways to use it
+## 20 ways to use it
 
 The queries below were tried on DigUp's own test files (`scripts/linux/make-testbed.sh`), so you can try them
 there before pointing DigUp at your own folders.
@@ -46,6 +46,19 @@ there before pointing DigUp at your own folders.
    shot, and listens to the soundtrack too.
 7. **Notes, whatever the format.** txt, md, rtf, docx, odt and html are all read as text. *"a recipe with chocolate
    and strawberries"* finds the cake recipe whether it's a note, a PDF page or a spoken recording.
+20. **What was said in a recording.** Turn on Settings → Indexing → "Transcribe recordings" and DigUp also writes
+    down what's said in recordings and videos (with Whisper, on this computer), so the exact words are found too: a
+    name, a place, a number someone said in a meeting. On the European test files (`synthetic/lang/eu`),
+    *"Brunner"* finds the voice memo where a carpenter asks Frau Brunner to pay, *"Villeurbanne"* the French one
+    about a flat viewing, and *"Uster"* the moment 25 seconds in where a delivery there is mentioned. The result shows
+    the line that was said, your word in bold, next to the moment ("Said at 0:25"), and ↩ opens it there. RAG
+    clients get the words too: `/context` and the MCP server's `read_segment` return what was said in that stretch.
+    It's off by default: transcripts come after everything else is indexed and take about 7 minutes per hour of
+    recordings on a Radeon 860M, and their model is a 575 MB download (without the GPU a smaller one, 489 MB, less
+    exact). Songs (artist and album tags) are skipped unless "Also transcribe music" is on too. Names and words come
+    out more reliably than codes ("RE-2041" may be heard as "RE 2041", or not at all). From the terminal:
+    `digup index ~/Recordings --transcripts gpu` (`off` takes them out again; without the option they stay as they
+    are), and `digup transcribe memo.m4a` prints what Whisper hears.
 
 ### Beyond one language
 
@@ -122,9 +135,10 @@ there before pointing DigUp at your own folders.
   search is on), datasets, keys and password files. It never changes, moves or uploads your files.
 - **How long:** the first pass is the slow part (on a Radeon 860M: about 10 minutes for ~500 everyday files); after
   that a new file is searchable a few seconds after it lands.
-- **Where things live:** index `~/.local/share/digup/index`, model `~/.local/share/digup/Models` (865 MB),
+- **Where things live:** index `~/.local/share/digup/index`, model `~/.local/share/digup/Models` (865 MB; the
+  transcripts' model, once they're on, in its `whisper` folder),
   settings `~/.config/com.abdurrahim.DigUp/settings.json`, logs `~/.local/share/com.abdurrahim.DigUp/logs`.
-- **Health check:** Settings → About → Check DigUp, or `digup doctor`, checks the model, the GPU, ffmpeg, tesseract and the index, and embeds two
+- **Health check:** Settings → About → Check DigUp, or `digup doctor`, checks the model, the GPU, ffmpeg, tesseract, transcripts and the index, and embeds two
   reference sentences to prove the vectors are right (`--deep` also checks the model files' SHA-256).
-- **Private:** DigUp goes online only to download the model once. No account, no telemetry. The HTTP API and the
+- **Private:** DigUp goes online only to download the model once (and the transcripts' model, if you turn them on). No account, no telemetry. The HTTP API and the
   MCP server listen on this machine only.

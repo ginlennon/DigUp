@@ -1,8 +1,8 @@
 # PLAN — Transcripts for recordings (D1), with the European-language testbed it needs
 
 **Status (2026-10-14): approved by the user, default OFF. Stages 0 (European testbed + eval, baseline), 1
-(whisper-cli in the build, models, doctor) and 2 (the engine's transcript pass, CLI) built; Stage 4 (shell) next;
-Stage 3 and 5 not implemented.** Engine chosen by measurement:
+(whisper-cli in the build, models, doctor), 2 (the engine's transcript pass, CLI) and 4 (shell: setting, model
+download, tray, panel, user guide) built, Stage 4 waiting for the user's own check; Stage 3 and 5 not implemented.** Engine chosen by measurement:
 [docs/linux-port/ASR_SPIKE.md](../docs/linux-port/ASR_SPIKE.md). Parent plan: [LINUX_PORT_PLAN.md](./LINUX_PORT_PLAN.md)
 Part D. Languages in focus: German and English first, then French, Spanish, Italian, Portuguese; Bengali and Arabic
 (upstream's multilingual set) become tier 2.
@@ -183,7 +183,8 @@ If (1) holds but (3) doesn't: offer greedy decoding (~1.5× faster) as the "fast
     GPU the embedder is closed first. New events: `transcript` (as `file`'s, + `audio_seconds`), `summary` with
     `"transcripts": true`; counts gain `transcripts_done` / `transcripts_waiting` while on. The watchdog gives each
     chunk its time limit (`Indexer.nowTranscribing`); a stop there fails the transcript only (`StoppedFile.transcript`).
-  - *CLI.* `digup index … --transcripts gpu|cpu|off [--transcribe-music]` (off, the default, removes them),
+  - *CLI.* `digup index … --transcripts gpu|cpu|off [--transcribe-music]` (off removes them; since Stage 4, without
+    the option they're left as they are),
     `digup transcribe <file> [--cpu] [--json]`, `digup status` counts when on.
 - **Check (2026-10-14, Radeon 860M, Vulkan, turbo q5_0, VAD):** the spike's 69 clips into a scratch index: pass 1
   21 s (62 done, 7 skipped as silent: the silence probe and 6 FLEURS clips at −62…−66 dB); pass 2 200 s for ~19 min
@@ -215,6 +216,42 @@ If (1) holds but (3) doesn't: offer greedy decoding (~1.5× faster) as the "fast
 - MCP `read_segment` / HTTP `/context` return transcripts (nothing to change if A3 holds — test it); user guide case
   ("the meeting where someone said the invoice number"); README numbers.
 - **Check:** the user tries it on their own recordings.
+- **Built (2026-10-14); the user's own check is still to come.** What was decided on the way:
+  - *Setting.* `transcripts` and `transcribeMusic` in settings.json, both false by default. The index helper is always
+    told: `--transcripts gpu` when on and the GPU is in use (Settings' "Use the GPU", and no GPU fallback this
+    session), `cpu` when on otherwise, `off` when off (which takes them out); `--transcribe-music` with it. A change
+    is a change of the helper's arguments, so it starts over, as with the other indexing settings
+    (`shell/src-tauri/src/transcripts.rs`).
+  - *The model.* Turning them on runs `digup download-model --transcripts` (`--small` when the CPU is in use), which
+    says "done" at once when the files are there; its progress shows in Settings in setup's words ("Downloading the
+    model · 41% of 575 MB"), with Cancel. Cancel turns them off; a failed download turns them off and says why. Once
+    it's in, the index helper starts over (one started before has no transcriber). The GPU switch fetches the other
+    model if it's missing; a GPU fallback doesn't (a session's fallback isn't worth 489 MB: without the small model
+    the helper leaves the transcripts as they are). At start, with them on, the same check runs, so a download cut off
+    by quitting is picked up (quitting isn't a failure: they stay on).
+  - *whisper-cli missing.* The shell looks for it where the helper does (`$DIGUP_WHISPER`, beside the helper, a dev
+    build's Vendor/whisper/bin, PATH) rather than asking `digup doctor` (a second and the model on the GPU each time
+    Settings opens); the checkbox is then disabled with "Not installed in this build". Check DigUp shows doctor's
+    whisper and transcripts lines as they are.
+  - *Tray and panel.* Each `transcript` event says "Transcribing 3 of 12" (and the panel's activity line), then
+    "Up to date · N files" as before. An audio hit whose window has a transcript (`info.transcript` = done, segment
+    `audio`) shows its excerpt under the reason, the words found in bold; with words found the reason says "Said at
+    0:25", else "Matches what's heard at 2:05". Hits without one look as before.
+  - *Engine.* `digup index` without `--transcripts` now leaves an index's transcripts alone (only `off` removes them),
+    so a run by hand doesn't undo the app's; `index-service` without it still means off. And `download-model
+    --transcripts` had stopped working when Stage 2 made `--transcripts` take a value (it read the next argument, or
+    failed "needs a value"): for `download-model` it's a flag again.
+- **Check (2026-10-14, dev shell on a private D-Bus session and XDG folders, temp index/settings/models, roots =
+  `synthetic/lang/eu`):** settings on with the VAD missing → the shell fetched it (0.9 MB), restarted the index
+  helper; pass 1 (35 files, 39 s) said "Indexing n of 35", pass 2 "Transcribing 1 of 14" … "14 of 14" (128 s),
+  then "Up to date · 34 files". The panel (`--debug-query`): "Brunner" → the German invoice memo, "Said at 0:00" and
+  its line; "Uster" → "Said at 0:25", footer "↩ Open at 0:25"; "Villeurbanne" → the French memo; "Kassier Peter
+  Huber" → the 162 s clip, "Matches what's heard at 2:05" with that window's words. `/context` (digup-http) returns
+  the memo's transcript. Off → restarted with `--transcripts off`, the index had none left. GPU off → `cpu`, whisper
+  small, 13 done (same 128 s here: 8 threads), "Villeurbanne" found. Quitting during a download kept them on and left
+  no download running. Settings' rows (off, CPU text, not installed, downloading, retrying, failed, on with music,
+  turning on → download → done, failing, Cancel) checked in headless Chrome with a stand-in for Tauri's API: the
+  real window wasn't clicked.
 
 ### Stage 5 — optional: CPU transcripts with Parakeet v3
 Only if transcripts with the GPU off turn out to matter: sherpa-onnx C API (Apache-2.0) + Parakeet v3 int8 (CC-BY-4.0,
