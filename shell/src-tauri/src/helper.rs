@@ -221,9 +221,37 @@ impl SearchService {
 
 /// `digup index-service`: syncs the index with the folders, indexes what's new, and exits once it's done. `run` starts
 /// it, asks the running one to sync again, or, when the folders changed (another launch), starts it over with them.
+///
+/// When it's gone, the shell's own last event is {"event": "exit", "code": its exit code, "again": …}; "again" is true
+/// when a sync asked of it never started (asked while it was on its way out), so the caller runs it again, as the Mac
+/// app does (`syncWantedAt` in Engine.swift).
 pub struct IndexService {
-    running: Mutex<Option<(Process, ChildStdin, Vec<String>)>>,
+    running: Mutex<Option<Indexing>>,
     on_event: EventSink,
+}
+
+struct Indexing {
+    process: Process,
+    stdin: ChildStdin,
+    args: Vec<String>,
+    progress: Arc<Mutex<Progress>>,
+}
+
+/// What the thread reading an index helper's events knows of it that `run` needs.
+#[derive(Default)]
+struct Progress {
+    /// It said "exit": it's on its way out, and a sync sent now would go nowhere. (Before the fix in
+    /// IndexService.swift's `readCommands`, a helper on Linux hung right there for good, looking alive.)
+    leaving: bool,
+    /// It has synced once: it got past its start (one that fails before that isn't started over and over).
+    synced: bool,
+    /// When a sync was last asked of it that it hasn't started yet, in seconds since 1970 like its sync events'
+    /// "started".
+    wanted: Option<f64>,
+}
+
+fn seconds_now() -> f64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |since| since.as_secs_f64())
 }
 
 impl IndexService {
@@ -233,38 +261,68 @@ impl IndexService {
 
     pub fn run(&self, launch: &Launch) -> Result<(), String> {
         let mut running = self.running.lock().unwrap();
-        if let Some((process, stdin, args)) = running.as_mut() {
-            if process.is_running() {
-                if *args == launch.args {
-                    return writeln!(stdin, "sync").and_then(|_| stdin.flush()).map_err(|error| error.to_string());
-                }
-                let (process, stdin, _) = running.take().unwrap();
-                if let Some(child) = process.take() {
-                    stop(child, stdin, "stop");
+        if let Some(indexing) = running.as_mut() {
+            let leaving = indexing.progress.lock().unwrap().leaving;
+            if !leaving && indexing.args == launch.args && indexing.process.is_running() {
+                indexing.progress.lock().unwrap().wanted = Some(seconds_now());
+                let stdin = &mut indexing.stdin;
+                return writeln!(stdin, "sync").and_then(|_| stdin.flush()).map_err(|error| error.to_string());
+            }
+        }
+        if let Some(indexing) = running.take() {
+            // The new one does what this one was asked.
+            let leaving = std::mem::take(&mut *indexing.progress.lock().unwrap()).leaving;
+            if let Some(mut child) = indexing.process.take() {
+                if leaving {
+                    // It's done (or stuck on its way out): nothing to wait for.
+                    let _ = child.kill();
+                    let _ = child.wait();
+                } else {
+                    stop(child, indexing.stdin, "stop");
                 }
             }
         }
         let (child, stdin, stdout) = launch.spawn()?;
         let process = Process::new(child);
-        let (on_event, reaped) = (self.on_event.clone(), process.clone());
+        // Its first sync is the one asked for now.
+        let progress = Arc::new(Mutex::new(Progress { wanted: Some(seconds_now()), ..Progress::default() }));
+        let (on_event, reaped, known) = (self.on_event.clone(), process.clone(), progress.clone());
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
                 let Ok(line) = line else { break };
                 if let Ok(event) = serde_json::from_str::<Value>(&line) {
+                    let mut progress = known.lock().unwrap();
+                    match event["event"].as_str() {
+                        Some("exit") => progress.leaving = true,
+                        Some("sync") if event["code"] != true => {
+                            progress.synced = true;
+                            let started = event["started"].as_f64().unwrap_or(f64::MAX);
+                            if progress.wanted.is_some_and(|wanted| started >= wanted) {
+                                progress.wanted = None;
+                            }
+                        }
+                        _ => {}
+                    }
+                    drop(progress);
                     on_event(event);
                 }
             }
-            reaped.reap();
-            on_event(json!({"event": "exit"}));
+            let code = reaped.reap();
+            let again = {
+                let progress = known.lock().unwrap();
+                progress.synced && progress.wanted.is_some() && code == Some(0)
+            };
+            on_event(json!({"event": "exit", "code": code, "again": again}));
         });
-        *running = Some((process, stdin, launch.args.clone()));
+        *running = Some(Indexing { process, stdin, args: launch.args.clone(), progress });
         Ok(())
     }
 
     pub fn stop(&self) {
-        if let Some((process, stdin, _)) = self.running.lock().unwrap().take() {
-            if let Some(child) = process.take() {
-                stop(child, stdin, "stop");
+        if let Some(indexing) = self.running.lock().unwrap().take() {
+            indexing.progress.lock().unwrap().wanted = None;
+            if let Some(child) = indexing.process.take() {
+                stop(child, indexing.stdin, "stop");
             }
         }
     }
@@ -325,7 +383,9 @@ mod tests {
 
     /// A stand-in for `digup`: a shell script that logs each line it's sent (to `$FAKE_LOG`) and behaves as
     /// `$FAKE_MODE` says. "serve": a sync event at the start and one for each "sync", exits on "stop" or EOF.
-    /// "quit": a sync event and an exit event, then exits at once (a helper with nothing to do).
+    /// "quit": a sync event and an exit event, then exits at once (a helper with nothing to do). "hang": says it exits
+    /// and doesn't (a helper before the readLine fix). "late": exits half a second after its sync, reading nothing (a
+    /// sync sent then comes too late).
     pub(super) fn fake_helper(folder: &Path, mode: &str) -> Launch {
         std::fs::create_dir_all(folder).unwrap();
         let script = folder.join("fake-digup");
@@ -335,6 +395,8 @@ echo "start $*" >> "$FAKE_LOG"
 synced
 case "$FAKE_MODE" in
 quit) echo '{"event": "exit"}'; exit 0 ;;
+hang) echo '{"event": "exit"}'; exec sleep 30 ;;
+late) sleep 0.5; echo '{"event": "exit"}'; exit 0 ;;
 esac
 while read -r line; do
     echo "$line" >> "$FAKE_LOG"
@@ -412,8 +474,9 @@ done
         let (seen, sink) = events();
         let service = IndexService::new(sink);
         service.run(&launch).unwrap();
-        let pid = service.running.lock().unwrap().as_ref().unwrap().0.id().unwrap();
+        let pid = service.running.lock().unwrap().as_ref().unwrap().process.id().unwrap();
         wait_for("its exit", || seen.lock().unwrap().iter().filter(|event| event["event"] == "exit").count() == 2);
+        assert_eq!(seen.lock().unwrap().last().unwrap()["again"], false, "nothing was asked of it after its start");
         assert!(reaped(pid), "no <defunct> left behind");
         // The next run starts another one rather than writing to the one that's gone.
         service.run(&launch).unwrap();
@@ -429,6 +492,39 @@ done
         let _ = search.send(1, &json!({"op": "status"}));
         let pid = search.running.lock().unwrap().as_ref().unwrap().process.id().unwrap();
         wait_for("the search service to be reaped", || reaped(pid));
+        let _ = std::fs::remove_dir_all(folder);
+    }
+
+    #[test]
+    fn a_helper_that_said_exit_gets_no_more_syncs() {
+        let folder = folder("hang");
+        let launch = fake_helper(&folder, "hang");
+        let (seen, sink) = events();
+        let service = IndexService::new(sink);
+        service.run(&launch).unwrap();
+        let pid = service.running.lock().unwrap().as_ref().unwrap().process.id().unwrap();
+        wait_for("its exit event", || seen.lock().unwrap().iter().any(|event| event["event"] == "exit"));
+        // Still there, but done: a sync written to it would be lost. A new one starts instead, and it's ended.
+        service.run(&launch).unwrap();
+        wait_for("the stuck one to be gone", || reaped(pid));
+        wait_for("the new one", || log(&folder).len() == 2);
+        assert_eq!(log(&folder), ["start index-service /a", "start index-service /a"], "no sync went to the old one");
+        service.stop();
+        let _ = std::fs::remove_dir_all(folder);
+    }
+
+    #[test]
+    fn a_sync_asked_while_it_was_leaving_runs_it_again() {
+        let folder = folder("late");
+        let launch = fake_helper(&folder, "late");
+        let (seen, sink) = events();
+        let service = IndexService::new(sink);
+        service.run(&launch).unwrap();
+        wait_for("its first sync", || seen.lock().unwrap().iter().any(|event| event["event"] == "sync"));
+        service.run(&launch).unwrap();   // it never reads this one
+        wait_for("its end", || seen.lock().unwrap().iter().any(|event| event.get("code").is_some()));
+        let last = seen.lock().unwrap().last().unwrap().clone();
+        assert_eq!((last["code"].as_i64(), last["again"].as_bool()), (Some(0), Some(true)));
         let _ = std::fs::remove_dir_all(folder);
     }
 }

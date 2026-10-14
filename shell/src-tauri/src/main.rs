@@ -884,7 +884,13 @@ fn index_event(app: &AppHandle, event: Value) {
         }
         "waiting" => say("Waiting for the model"),
         "error" => say(&format!("Indexing: {}", event["message"].as_str().unwrap_or("error"))),
-        "exit" => reload(app, true),
+        "exit" => {
+            reload(app, true);
+            // A sync asked for while it was on its way out still has to happen.
+            if event["again"] == true {
+                run_index(app);
+            }
+        }
         _ => {}
     }
     let _ = app.emit("helper", json!({"from": "index", "event": event}));
