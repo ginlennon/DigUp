@@ -27,6 +27,8 @@ import Foundation
 ///   {"op":"reload"}                           → {"ok":true,"vectors":n,"code_vectors":n}: after indexing changed the index
 ///   {"op":"folders","roots":[…],"skipped":[…],"types":[…],"code_roots":[…],"code_skipped":[…]} → {"ok":true}
 ///   {"op":"prewarm"}                          → {"ok":true}: starts the encoder and loads the vectors (the panel opening)
+///   {"op":"reload_encoder"}                   → {"ok":true,"encoder":…}: an encoder that was unavailable is tried again
+///                                               (the model has just downloaded); otherwise nothing changes
 ///   {"op":"status"}                           → {"encoder":"stopped|starting|ready|unavailable","vectors":n,…}
 ///   {"op":"quit"}                             → {"ok":true}, then exit
 /// It says {"event":"ready","index":…,"log":…} first: `log` is where its query encoder (llama.cpp) writes its warnings
@@ -213,6 +215,14 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             _ = runningEncoder()
             if !searcher.vectorsLoaded { try searcher.reload() }
             return ["ok": true, "encoder": encoderState, "vectors": searcher.vectorCount]
+        case "reload_encoder":
+            // "unavailable" sticks, so a missing model isn't looked for again with every query. Once the shell has the
+            // model it says so, and the encoder starts now, as for the panel opening (it goes again when idle).
+            guard encoderState == "unavailable" else { return ["ok": true, "encoder": encoderState] }
+            encoderState = "stopped"
+            lastQuery = Date()
+            _ = runningEncoder()
+            return ["ok": true, "encoder": encoderState]
         case "status":
             return ["encoder": encoderState, "vectors": searcher.vectorsLoaded ? searcher.vectorCount : 0,
                     "code_vectors": codeSearcher?.vectorsLoaded == true ? codeSearcher!.vectorCount : 0,

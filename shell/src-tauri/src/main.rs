@@ -1334,6 +1334,14 @@ fn model_event(app: &AppHandle, event: Value) {
             set_status(app, "Paused");
         }
         run_index(app);
+        // A search helper that started before the model was there has no encoder ("unavailable" sticks): it tries
+        // again now. It does nothing when its encoder wasn't unavailable (the model was there all along).
+        tauri::async_runtime::spawn(async move {
+            let reply = shell.search.ask(json!({"op": "reload_encoder"})).await;
+            if cfg!(debug_assertions) {
+                log!("search: reload_encoder {reply:?}");
+            }
+        });
     }
 }
 
