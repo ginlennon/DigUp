@@ -22,8 +22,8 @@ import Foundation
 ///   {"op":"render","path":…,"kind":"pdf|video|image","loc":n,"pixels":n} → {"image":path}: a JPEG for a preview or a
 ///                                               thumbnail (a PDF's page `loc`, a video's frame at `loc` seconds, or a
 ///                                               picture a web view can't show, such as HEIC), made beside the requests
-///                                               (typing never waits on one) and kept in <index>/previews until the
-///                                               next start
+///                                               (typing never waits on one) and kept in <index>/previews until this
+///                                               helper's next start (see `previewPrefix`)
 ///   {"op":"reload"}                           → {"ok":true,"vectors":n,"code_vectors":n}: after indexing changed the index
 ///   {"op":"folders","roots":[…],"skipped":[…],"types":[…],"code_roots":[…],"code_skipped":[…]} → {"ok":true}
 ///   {"op":"prewarm"}                          → {"ok":true}: starts the encoder and loads the vectors (the panel opening)
@@ -67,8 +67,8 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
         self.idleSeconds = idleSeconds
         log = index.appendingPathComponent("worker-query.log")
         previews = index.appendingPathComponent("previews")
-        try? FileManager.default.removeItem(at: previews)
         try FileManager.default.createDirectory(at: previews, withIntermediateDirectories: true)
+        Self.clearPreviews(in: previews)
         try openCode()
     }
 
@@ -250,10 +250,35 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
         if let done = renderLock.withLock({ rendered[key] }), FileManager.default.fileExists(atPath: done) {
             return ["image": done]
         }
-        let image = try PreviewImages.make(PreviewImages.Kind(rawValue: kind) ?? .image, of: path, at: loc,
+        var image = try PreviewImages.make(PreviewImages.Kind(rawValue: kind) ?? .image, of: path, at: loc,
                                            pixels: pixels, in: previews)
+        // Renamed in place to carry this helper's mark: a moment without it is safe, as only a day's age clears it.
+        let mine = previews.appendingPathComponent(Self.previewPrefix + (image as NSString).lastPathComponent)
+        if (image as NSString).deletingLastPathComponent == previews.path,
+           (try? FileManager.default.moveItem(atPath: image, toPath: mine.path)) != nil {
+            image = mine.path
+        }
         renderLock.withLock { rendered[key] = image }
         return ["image": image]
+    }
+
+    /// What starts the names of the previews this helper renders. Several search helpers can share an index (the app's,
+    /// an MCP server's, an HTTP API's), and each clears only its own at its start, so none takes away the pictures
+    /// another one's shell is showing. A process id comes back only once its process is gone, so what a helper finds
+    /// with its own mark is an earlier one's. They all stay in the one folder, which shells may only read flat.
+    static let previewPrefix = "p\(ProcessInfo.processInfo.processIdentifier)-"
+
+    /// Clears this helper's previews (`previewPrefix`) and anyone's over a day old: what helpers that ended left.
+    static func clearPreviews(in folder: URL, now: Date = Date()) {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+        for name in names {
+            let path = folder.appendingPathComponent(name).path
+            let modified = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date)
+                ?? .distantPast
+            if name.hasPrefix(previewPrefix) || now.timeIntervalSince(modified) > 86_400 {
+                try? FileManager.default.removeItem(atPath: path)
+            }
+        }
     }
 
     // MARK: The query encoder
