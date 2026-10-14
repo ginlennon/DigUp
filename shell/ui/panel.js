@@ -41,10 +41,13 @@ const state = {
   generation: 0,
   finalGeneration: -1,   // the generation whose meaning results are showing: late keyword results don't replace them
   timer: null,
-  phase: "empty",        // empty | words | meaning | wordsOnly | codeHint | scopeHint | scopeProblem
+  phase: "empty",        // empty | words | meaning | wordsOnly | codeHint | scopeHint | scopeProblem | similarWaiting
+                         // | similar
   text: "",              // what was searched (without "code:")
   scope: null,           // the folder searched in ({path, name, ambiguous}), or null: all of them
   scopeProblem: null,    // what the panel says when in: names no chosen folder
+  like: null,            // the file whose similar files are showing ({path, name}), or null
+  before: "",            // what the field had before them
   isCode: false,
   strong: [],
   weaker: [],
@@ -130,8 +133,52 @@ async function takeScope(match, generation) {
 function removeScope() {
   state.scope = null;
   renderChips();
-  queryChanged();
+  if (state.like) findSimilar();
+  else queryChanged();
   $query.focus();
+}
+
+// MARK: More like this
+
+/// Ctrl+L (or More Like This) on a result: the files most like it, by meaning alone (search-service's `similar`), in the
+/// folder chip's folder if there is one. A "Like <name>" chip stands for it; Esc, Backspace at the field's start or the
+/// chip's × go back to the query before, and typing searches what's typed.
+function moreLike(hit) {
+  // Code search's results aren't in the index `similar` looks through.
+  if (!hit || state.isCode) return;
+  if (!state.like) state.before = $query.value;
+  state.like = { path: hit.path, name: nameOf(hit.path) };
+  $query.value = "";
+  renderChips();
+  findSimilar();
+}
+
+function findSimilar() {
+  const generation = ++state.generation;
+  clearTimeout(state.timer);
+  state.navigated = false;
+  state.error = null;
+  state.isCode = false;
+  show({ hits: [], strong: 0 }, "", "similarWaiting");
+  const folders = state.scope ? [state.scope.path] : undefined;
+  ask({ op: "similar", path: state.like.path, limit: 40, folders })
+    .then((reply) => {
+      if (generation !== state.generation) return;
+      state.finalGeneration = generation;
+      show(reply, "", "similar");
+    })
+    .catch(failed);
+}
+
+/// Leaves the similar files: back to the query typed before them (`back`), or on to what's being typed now.
+function leaveLike(back) {
+  state.like = null;
+  renderChips();
+  if (back) {
+    $query.value = state.before ?? "";
+    $query.setSelectionRange($query.value.length, $query.value.length);
+    queryChanged();
+  }
 }
 
 function show(reply, text, phase) {
@@ -311,6 +358,12 @@ function renderPreview() {
     } else if (state.phase === "scopeHint") {
       $preview.append(message("Search inside a folder", "Name one of your folders, or a folder right inside one, "
         + "then what you're looking for: in:Documents invoice, in:~/Pictures/2026 beach, in:\"Big Folder\" notes."));
+    } else if (state.phase === "similarWaiting") {
+      $preview.append(message(`Looking for files like ${state.like.name}…`,
+        "A file that isn't in the index yet is read first, which takes a few seconds."));
+    } else if (state.phase === "similar") {
+      $preview.append(message(`Nothing much like ${state.like.name}${inside}`,
+        "Press Esc to go back to your search."));
     } else if (state.phase === "scopeProblem") {
       $preview.append(message(state.scopeProblem, "in: looks among the folders DigUp searches (Settings) and the "
         + "folders right inside them, or takes a path: in:~/Documents/Trips."));
@@ -413,6 +466,12 @@ function facts(hit) {
   const reveal = element("button", "", `Show in ${FILE_MANAGER}`);
   reveal.onclick = revealSelected;
   buttons.append(open, reveal);
+  if (!state.isCode) {
+    const like = element("button", "", "More Like This");
+    like.title = `${MOD}L`;
+    like.onclick = () => moreLike(hit);
+    buttons.append(like);
+  }
   box.append(buttons);
   return box;
 }
@@ -427,14 +486,18 @@ function renderFooter() {
   else if (state.phase === "codeHint") summary = "Searching your code";
   else if (state.phase === "scopeHint") summary = "Searching inside a folder";
   else if (state.phase === "scopeProblem") summary = "No folder to search in";
+  else if (state.phase === "similarWaiting") summary = "Looking for similar files…";
   else summary = `${strong} ${strong === 1 ? "result" : "results"}` + (weaker ? ` · ${weaker} weaker` : "");
   // Results while indexing are partial: say so where they're counted.
   if (state.indexing && !state.error) summary += ` · still indexing (${state.indexing.done} of ${state.indexing.total})`;
   $summary.textContent = summary;
-  $keys.textContent = `↩ ${openTitle(selectedHit())}   ${MOD}↩ Show in ${FILE_MANAGER}`;
+  const hit = selectedHit();
+  $keys.textContent = `↩ ${openTitle(hit)}   ${MOD}↩ Show in ${FILE_MANAGER}`
+    + (hit && !state.isCode ? `   ${MOD}L More like this` : "");
 }
 
-/// The chips before the field: the folder searched in, removed with its × or with Backspace at the field's start.
+/// The chips before the field: the folder searched in, and the file whose similar files are showing; removed with their
+/// × or (the last one) with Backspace at the field's start.
 function renderChips() {
   const chips = [];
   if (state.scope) {
@@ -442,6 +505,7 @@ function renderChips() {
     const name = state.scope.ambiguous ? tilde(state.scope.path) : state.scope.name;
     chips.push(chip(`in ${name}`, tilde(state.scope.path), removeScope));
   }
+  if (state.like) chips.push(chip(`Like ${state.like.name}`, tilde(state.like.path), () => leaveLike(true)));
   $chips.replaceChildren(...chips);
   $chips.hidden = !chips.length;
 }
@@ -493,6 +557,10 @@ function span(hit) {
 
 /// Why it's here, in a few words: "Matches the picture", "Matches the frame at 0:06".
 function reasonOf(hit) {
+  if (state.phase === "similar" && state.like) {
+    const place = placeOf(hit);
+    return `Like ${state.like.name}` + (place ? ` at ${place}` : "");
+  }
   const meaning = (hit.z ?? 0) >= 2, words = hit.keyword_rank != null;
   if (!meaning) return words ? "Has your words" : "Matches its name";
   const at = hit.loc != null ? clock(hit.loc) : "";
@@ -627,15 +695,26 @@ ICONS.screenshot = ICONS.image;
 
 // MARK: Keys and events
 
-$query.addEventListener("input", queryChanged);
+$query.addEventListener("input", () => {
+  // Typing over similar files searches what's typed.
+  if (state.like) leaveLike(false);
+  queryChanged();
+});
 
 document.addEventListener("keydown", (event) => {
   if (event.isComposing) return; // an input method is composing: its keys
   const modifier = isMac ? event.metaKey : event.ctrlKey;
+  if (modifier && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "l") {
+    event.preventDefault();
+    moreLike(selectedHit());
+    return;
+  }
   switch (event.key) {
     case "Escape":
       event.preventDefault();
-      invoke("hide_panel").catch(() => {});
+      // Similar files go back to the search before them; else the panel steps away.
+      if (state.like) leaveLike(true);
+      else invoke("hide_panel").catch(() => {});
       break;
     case "ArrowDown":
     case "ArrowUp":
@@ -650,8 +729,12 @@ document.addEventListener("keydown", (event) => {
       else openSelected();
       break;
     case "Backspace":
-      // At the field's very start (nothing selected): the chip before it goes.
-      if ($query.selectionStart === 0 && $query.selectionEnd === 0 && state.scope) {
+      // At the field's very start (nothing selected): the chip before it goes, the last one first.
+      if ($query.selectionStart !== 0 || $query.selectionEnd !== 0) break;
+      if (state.like) {
+        event.preventDefault();
+        leaveLike(true);
+      } else if (state.scope) {
         event.preventDefault();
         removeScope();
       }
@@ -708,6 +791,7 @@ function report() {
       report: {
         query: $query.value,
         scope: state.scope && state.scope.path,
+        like: state.like && state.like.path,
         phase: state.phase,
         groups: state.groups.map((group) => ({ title: group.title, rows: group.rows.map((hit) => nameOf(hit.path)) })),
         weaker: state.weaker.length,

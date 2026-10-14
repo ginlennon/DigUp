@@ -200,7 +200,7 @@ fn time_of_day() -> String {
 #[tauri::command]
 async fn ask(shell: State<'_, Arc<Shell>>, request: Value) -> Result<Value, String> {
     let op = request.get("op").and_then(Value::as_str).unwrap_or_default();
-    if !["search", "embed_ahead", "text", "render", "prewarm", "status"].contains(&op) {
+    if !["search", "similar", "embed_ahead", "text", "render", "prewarm", "status"].contains(&op) {
         return Err(format!("not a question the panel asks: {op}"));
     }
     shell.search.ask(request).await

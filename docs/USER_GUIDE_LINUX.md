@@ -83,9 +83,11 @@ there before pointing DigUp at your own folders.
     ```
     pastes into a spreadsheet as a list of every recording, page and note on it.
 
-19. **More like this.** `digup similar ~/Pictures/IMG_2041.jpg` finds the photos, frames and pages most like a given
-    file: the other shots of the same scene, the other copy of a document, the scan of a printout. A file already
-    in the index needs no model at all; any other file is read and embedded on the spot.
+19. **More like this.** In the panel, Ctrl+L on a result (or its More Like This button) shows the photos, frames and
+    pages most like it: the other shots of the same scene, the other copy of a document, the scan of a printout. A
+    "Like IMG_2041.jpg" chip stands for it; Esc goes back to your search. From the terminal:
+    `digup similar ~/Pictures/IMG_2041.jpg`. A file already in the index needs no model at all; any other file is
+    read and embedded on the spot.
 
 ### Keeping it out of your way
 
