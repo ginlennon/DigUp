@@ -220,7 +220,7 @@ developed against `digup search` output at any time.
 
 # Part C — Second round (2026-10-14): robustness, control, scope, integrations — PLAN, partly in progress
 
-### C1. A robust embedder
+### C1. A robust embedder (built in the shell: fallback.rs; untried on a real driver crash)
 Failure modes on a desktop GPU and the answer to each:
 | Failure | Seen as | Answer |
 |---|---|---|
@@ -230,12 +230,12 @@ Failure modes on a desktop GPU and the answer to each:
 | Broken install (missing model, libs, ffmpeg) | helper errors | `digup doctor --json` at first launch and from Settings → About ("Check DigUp") |
 Decision rule: CPU fallback is per session (a reboot or driver update may fix it); never silently persistent.
 
-### C2. On/off
+### C2. On/off (built: options.rs `Command`, control.rs, Settings → Turn off)
 `digup-shell --toggle | --show | --pause | --resume | --settings | --quit` handed to the running instance
 (single-instance passes argv), so keyboard shortcuts, scripts and other apps can control DigUp. Settings gets
 "Turn DigUp off": quit + start at login off (+ offer to remove the shortcut).
 
-### C3. Search inside folders
+### C3. Search inside folders (built: scope.rs, the panel's `in:` chip; also Ctrl+L "More like this")
 Engine: `folders` on search / `--in DIR` (in progress). Panel: `in:Documents …` / `in:~/Pictures/2026 …` prefix,
 resolved against the chosen folders (name or path), shown as a removable chip.
 
@@ -245,7 +245,7 @@ and a localhost-only HTTP API (`/search`, `/context` for RAG, `/segments/{id}`, 
 `/openapi.json`) for RAG apps and scripts. Both run their own `digup search-service` over the same index (SQLite WAL:
 several readers are fine), so they work whether or not the desktop app is running.
 
-### C5. Code search in the app
+### C5. Code search in the app (built: Settings → Code search, editors.rs, watcher.rs's "sync code")
 Settings → Code: code folders (passed as `--code-root` to both helpers), editor choice (VS Code `-g f:l`, Zed,
 Sublime, Geany, JetBrains `--line`), `code:` in the panel.
 
