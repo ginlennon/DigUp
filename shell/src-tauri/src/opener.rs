@@ -9,7 +9,7 @@
 //! - Firefox (pdf.js): `file:///…#page=N&search=word`; Chrome and Chromium: `#page=N` (their viewer has no search)
 //! - VLC `--start-time=S`, mpv `--start=S`, Celluloid `--mpv-start=S` (mpv's option, passed through)
 //! - Totem, which has no start option: it opens the file, and is then told the moment over MPRIS (D-Bus), once its
-//!   player is there and has the file
+//!   player is there, has the file and is playing it (checked, and told again if it didn't go there)
 //! - VS Code (and its forks) `-g file:line`, Geany `--line=N`, Kate `-l N`, gedit `+N`, Zed and Sublime `file:line`
 //!
 //! Which app and which arguments are pure functions (`plan`), tested below with made-up .desktop folders.
@@ -435,31 +435,47 @@ pub fn run(plan: &Plan) -> Result<(), String> {
 }
 
 /// What an MPRIS player says about itself (`gdbus call … Properties.GetAll org.mpris.MediaPlayer2.Player`, in GVariant
-/// text): whether it can seek now, the track's length (µs) and id.
+/// text): whether it can seek now, the track's length (µs) and id, and where it is (µs).
 #[derive(Debug, Default, PartialEq)]
 pub struct Player {
     pub can_seek: bool,
     pub length: Option<i64>,
     pub track: Option<String>,
+    pub position: Option<i64>,
+}
+
+/// The number after `<` (and a type: "int64 ", "@x "), as GVariant text writes one: `<int64 18000000>`.
+fn variant_number(rest: &str) -> Option<i64> {
+    let rest = rest.trim_start_matches("int64 ").trim_start_matches("uint64 ").trim_start_matches("@x ");
+    let digits = rest.strip_prefix('-').unwrap_or(rest);
+    let end = rest.len() - digits.len() + digits.chars().take_while(char::is_ascii_digit).count();
+    rest[..end].parse().ok()
 }
 
 pub fn parse_player(text: &str) -> Player {
     let after = |key: &str| text.find(key).map(|at| &text[at + key.len()..]);
-    let length = after("'mpris:length': <").and_then(|rest| {
-        let rest = rest.trim_start_matches("int64 ").trim_start_matches("uint64 ").trim_start_matches("@x ");
-        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-        digits.parse().ok()
-    });
     let track = after("'mpris:trackid': <").and_then(|rest| {
         let rest = rest.strip_prefix("objectpath ").unwrap_or(rest).strip_prefix('\'')?;
         rest.find('\'').map(|end| rest[..end].to_string())
     });
-    Player { can_seek: text.contains("'CanSeek': <true>"), length, track }
+    Player {
+        can_seek: text.contains("'CanSeek': <true>"),
+        length: after("'mpris:length': <").and_then(variant_number),
+        track,
+        position: after("'Position': <").and_then(variant_number),
+    }
 }
 
-/// Whether to tell the player the moment now: it can seek, and it has our recording (its length is the one the index
-/// knows; Totem's MPRIS doesn't say the file). A recording whose length reads differently there gets the moment after
-/// a few seconds anyway.
+/// The position in `Properties.Get … Position`'s answer: `(<int64 2200000>,)`.
+pub fn parse_position(text: &str) -> Option<i64> {
+    variant_number(&text[text.find('<')? + 1..])
+}
+
+/// Whether to tell the player the moment now: it can seek, it has our recording (its length is the one the index
+/// knows; Totem's MPRIS doesn't say the file), and it has started playing it. Totem says "Playing" with the right
+/// length at once, while its pipeline is still starting, and a position set then is lost (seen with Totem 43 on
+/// GNOME 46: SetPosition answered fine and it stayed at the start); once the position moves, it takes one. A recording
+/// whose length reads differently there, or that doesn't start by itself, gets the moment after a few seconds anyway.
 pub fn ready_to_seek(player: &Player, duration: Option<f64>, waited: Duration) -> bool {
     if !player.can_seek {
         return false;
@@ -468,41 +484,89 @@ pub fn ready_to_seek(player: &Player, duration: Option<f64>, waited: Duration) -
         (Some(length), Some(duration)) => (length as f64 / 1e6 - duration).abs() < 1.5,
         _ => waited >= Duration::from_secs(1),
     };
-    ours || waited >= Duration::from_secs(4)
+    let playing = player.position.is_some_and(|position| position > 0);
+    (ours || waited >= Duration::from_secs(4)) && (playing || waited >= Duration::from_secs(6))
 }
 
-/// Waits (up to ten seconds) for the player on `bus` to have the recording, then sets its position. gdbus rather than
-/// a D-Bus crate: two calls don't earn a dependency.
+/// The player went there: a little after the moment (it plays on) or right at it, not back at the start.
+pub fn landed(position: Option<i64>, seconds: f64) -> bool {
+    position.is_some_and(|position| (position as f64 / 1e6 - seconds).abs() < 1.0)
+}
+
+/// How each try tells the player the moment: SetPosition, and then once more; then, should it still not be there,
+/// Pause, Seek back past the start, Seek forward to the moment, Play (which Totem takes when SetPosition doesn't).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Telling {
+    SetPosition,
+    SeekFromStart,
+}
+
+pub const TRIES: [Telling; 3] = [Telling::SetPosition, Telling::SetPosition, Telling::SeekFromStart];
+
+const MPRIS_PATH: &str = "/org/mpris/MediaPlayer2";
+
+/// A method of the player on `bus` (gdbus rather than a D-Bus crate: a few calls don't earn a dependency). Its answer
+/// in GVariant text, if it answered.
+fn call(bus: &str, method: &str, args: &[String]) -> Option<String> {
+    let output = Command::new("gdbus")
+        .args(["call", "--session", "--dest", bus, "--object-path", MPRIS_PATH, "--method", method])
+        .args(args)
+        .stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn tell(bus: &str, how: Telling, track: &str, seconds: f64) {
+    let player = "org.mpris.MediaPlayer2.Player";
+    let micros = (seconds * 1e6) as i64;
+    match how {
+        Telling::SetPosition => {
+            call(bus, &format!("{player}.SetPosition"), &[format!("objectpath '{track}'"), format!("int64 {micros}")]);
+        }
+        Telling::SeekFromStart => {
+            call(bus, &format!("{player}.Pause"), &[]);
+            call(bus, &format!("{player}.Seek"), &["int64 -1000000000000".to_string()]);
+            call(bus, &format!("{player}.Seek"), &[format!("int64 {micros}")]);
+            call(bus, &format!("{player}.Play"), &[]);
+        }
+    }
+}
+
+/// Waits (up to ten seconds) for the player on `bus` to be playing the recording, then sets its position, and checks
+/// it went there (`TRIES`).
 fn seek_when_ready(bus: &str, seconds: f64, duration: Option<f64>) {
     let started = Instant::now();
-    let path = "/org/mpris/MediaPlayer2";
-    while started.elapsed() < Duration::from_secs(10) {
-        std::thread::sleep(Duration::from_millis(250));
-        let Ok(output) = Command::new("gdbus")
-            .args(["call", "--session", "--dest", bus, "--object-path", path, "--method",
-                   "org.freedesktop.DBus.Properties.GetAll", "org.mpris.MediaPlayer2.Player"])
-            .stdin(Stdio::null()).stderr(Stdio::null()).output() else { return };
-        // Not there yet (the player is starting): ask again.
-        if !output.status.success() {
-            continue;
+    let mut ready = None;
+    while ready.is_none() && started.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(200));
+        // No answer: not there yet (the player is starting), ask again.
+        let Some(text) = call(bus, "org.freedesktop.DBus.Properties.GetAll", &["org.mpris.MediaPlayer2.Player".into()])
+        else { continue };
+        let player = parse_player(&text);
+        if ready_to_seek(&player, duration, started.elapsed()) {
+            ready = Some(player);
         }
-        let player = parse_player(&String::from_utf8_lossy(&output.stdout));
-        if !ready_to_seek(&player, duration, started.elapsed()) {
-            continue;
-        }
-        let track = player.track.unwrap_or_else(|| "/org/mpris/MediaPlayer2/TrackList/NoTrack".into());
-        let set = Command::new("gdbus")
-            .args(["call", "--session", "--dest", bus, "--object-path", path, "--method",
-                   "org.mpris.MediaPlayer2.Player.SetPosition"])
-            .arg(format!("objectpath '{track}'"))
-            .arg(format!("int64 {}", (seconds * 1e6) as i64))
-            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
-        if cfg!(debug_assertions) {
-            log!("open: {bus} told {seconds:.1} s after {:.1} s: {set:?}", started.elapsed().as_secs_f64());
-        }
-        return;
     }
-    log_error!("digup-shell: {bus} didn't come up to be told the moment");
+    let Some(player) = ready else {
+        log_error!("digup-shell: {bus} didn't come up to be told the moment");
+        return;
+    };
+    let track = player.track.unwrap_or_else(|| "/org/mpris/MediaPlayer2/TrackList/NoTrack".into());
+    let mut position = None;
+    for (number, how) in TRIES.iter().enumerate() {
+        tell(bus, *how, &track, seconds);
+        std::thread::sleep(Duration::from_millis(300));
+        position = call(bus, "org.freedesktop.DBus.Properties.Get",
+                        &["org.mpris.MediaPlayer2.Player".into(), "Position".into()])
+            .as_deref().and_then(parse_position);
+        if landed(position, seconds) {
+            if cfg!(debug_assertions) {
+                log!("open: {bus} at {seconds:.1} s after {} tries ({how:?}), {:.1} s after it started",
+                     number + 1, started.elapsed().as_secs_f64());
+            }
+            return;
+        }
+    }
+    log_error!("digup-shell: {bus} didn't go to {seconds:.1} s (it's at {:?} µs after {} tries)", position, TRIES.len());
 }
 
 #[cfg(test)]
@@ -638,12 +702,38 @@ mod tests {
                      'mpris:length': <int64 18000000>, 'xesam:title': <'zebra'>}>, 'CanSeek': <true>, 'Position': <int64 0>},)";
         let player = parse_player(totem);
         assert_eq!(player, Player { can_seek: true, length: Some(18_000_000),
-                                    track: Some("/org/mpris/MediaPlayer2/TrackList/NoTrack".into()) });
-        assert!(ready_to_seek(&player, Some(18.2), Duration::from_millis(250)));
-        assert!(!ready_to_seek(&player, Some(240.0), Duration::from_secs(2)), "still the recording it had before");
-        assert!(ready_to_seek(&player, Some(240.0), Duration::from_secs(4)));
+                                    track: Some("/org/mpris/MediaPlayer2/TrackList/NoTrack".into()), position: Some(0) });
+        assert!(!ready_to_seek(&player, Some(18.2), Duration::from_millis(250)), "it hasn't started playing");
+        assert!(ready_to_seek(&player, Some(18.2), Duration::from_secs(6)), "one that doesn't start gets it anyway");
+        let playing = Player { position: Some(250_000), ..player };
+        assert!(ready_to_seek(&playing, Some(18.2), Duration::from_millis(600)));
+        assert!(!ready_to_seek(&playing, Some(240.0), Duration::from_secs(2)), "still the recording it had before");
+        assert!(ready_to_seek(&playing, Some(240.0), Duration::from_secs(4)));
         let starting = parse_player("({'CanSeek': <false>, 'Metadata': <@a{sv} {}>},)");
         assert_eq!(starting, Player::default());
-        assert!(!ready_to_seek(&starting, None, Duration::from_secs(5)));
+        assert!(!ready_to_seek(&starting, None, Duration::from_secs(7)));
+    }
+
+    #[test]
+    fn totem_just_after_launch() {
+        // What Totem 43 says at once (GNOME 46): playing, the right length, no track id, at the start.
+        let totem = "({'CanQuit': <true>, 'PlaybackStatus': <'Playing'>, 'Metadata': <{'mpris:length': <int64 18083333>, \
+                     'xesam:trackNumber': <0>}>, 'CanSeek': <true>, 'Position': <int64 0>, 'Rate': <1.0>},)";
+        let player = parse_player(totem);
+        assert_eq!((player.track, player.length, player.position), (None, Some(18_083_333), Some(0)));
+        assert!(!ready_to_seek(&parse_player(totem), Some(18.08), Duration::from_millis(400)));
+        let later = totem.replace("'Position': <int64 0>", "'Position': <int64 1450000>");
+        assert!(ready_to_seek(&parse_player(&later), Some(18.08), Duration::from_millis(1600)));
+    }
+
+    #[test]
+    fn where_the_player_went() {
+        assert_eq!(parse_position("(<int64 2200000>,)"), Some(2_200_000));
+        assert_eq!(parse_position("(<@x -5>,)"), Some(-5));
+        assert_eq!(parse_position("Error: no such object"), None);
+        assert!(landed(Some(6_800_000), 6.5), "it plays on after the seek");
+        assert!(!landed(Some(300_000), 6.5), "still at the start: told again");
+        assert!(!landed(None, 6.5));
+        assert_eq!(TRIES, [Telling::SetPosition, Telling::SetPosition, Telling::SeekFromStart]);
     }
 }
