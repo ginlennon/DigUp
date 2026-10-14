@@ -1,5 +1,6 @@
 //! What the shell is told at launch: where the helper, the index and the model are, and, in dev runs, folders and a
-//! hotkey that stand in for the settings'.
+//! hotkey that stand in for the settings'; and what to do (`Command`: `--toggle`, `--pause`…), which a second launch
+//! hands to the running DigUp, so shortcuts, scripts and other apps can control it.
 
 use std::path::PathBuf;
 
@@ -24,6 +25,8 @@ pub struct Options {
     pub hotkey: Option<String>,
     /// The settings file, instead of the one in the app's config folder (a fresh first launch in tests).
     pub settings: Option<PathBuf>,
+    /// What to do: what the running DigUp is asked to do, or this one once it's up.
+    pub command: Option<Command>,
     /// The folders setup offers, instead of the usual ones (Documents, Pictures…): dev runs never offer real folders.
     pub offered: Option<Vec<PathBuf>>,
     /// Debug runs: setup clicks through by itself (all offered folders, the default hotkey).
@@ -49,6 +52,7 @@ impl Options {
             roots: Vec::new(),
             hotkey: None,
             settings: None,
+            command: None,
             offered: None,
             debug_setup: false,
             debug_query: None,
@@ -66,14 +70,17 @@ impl Options {
                 // Separated as PATH is: ":" here, ";" on Windows.
                 "--roots" => options.roots = std::env::split_paths(&value()?).collect(),
                 "--hotkey" => options.hotkey = Some(value()?),
-                "--settings" => options.settings = Some(value()?.into()),
+                "--settings-file" => options.settings = Some(value()?.into()),
                 "--offer" => options.offered = Some(std::env::split_paths(&value()?).collect()),
                 "--debug-setup" => options.debug_setup = true,
                 "--debug-query" => options.debug_query = Some(value()?),
                 "--debug-quit" => options.debug_quit = true,
                 "--debug-show" => options.debug_show = true,
                 "--background" => options.background = true,
-                _ => return Err(format!("unknown argument {arg}")),
+                _ => match Command::of(&arg) {
+                    Some(command) => options.command = Some(command),
+                    None => return Err(format!("unknown argument {arg}")),
+                },
             }
         }
         // On a Mac the shell is only tried out: the helper's default index there is the Mac app's.
@@ -81,6 +88,52 @@ impl Options {
             return Err("pass --index: on a Mac the default index belongs to the DigUp app".into());
         }
         Ok(options)
+    }
+}
+
+/// What a launch asks of DigUp: `digup-shell --toggle` and so on. A launch while DigUp runs hands its arguments to the
+/// running one (single instance), which does it; the GNOME shortcut runs `--toggle`, so the same keys close the panel.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Command {
+    /// The panel: shown when it's hidden, hidden when it's shown.
+    Toggle,
+    Show,
+    Hide,
+    /// Pause Indexing / Resume Indexing.
+    Pause,
+    Resume,
+    /// The settings window.
+    Settings,
+    Quit,
+    /// Index Now: a sync (unless indexing is paused).
+    IndexNow,
+}
+
+impl Command {
+    pub fn of(arg: &str) -> Option<Command> {
+        Some(match arg {
+            "--toggle" => Command::Toggle,
+            "--show" => Command::Show,
+            "--hide" => Command::Hide,
+            "--pause" => Command::Pause,
+            "--resume" => Command::Resume,
+            "--settings" => Command::Settings,
+            "--quit" => Command::Quit,
+            "--index-now" => Command::IndexNow,
+            _ => return None,
+        })
+    }
+
+    /// The command in a launch's arguments (the last, if there are several), as the running DigUp gets them: the
+    /// program first, then everything it was started with (a dev launcher's --helper and such too).
+    pub fn in_args(args: &[String]) -> Option<Command> {
+        args.iter().skip(1).rev().find_map(|arg| Command::of(arg))
+    }
+
+    /// Worth starting DigUp for when it isn't running. Quitting, hiding, pausing or resuming one that isn't there
+    /// isn't: the launch says so and ends (a pause or resume is kept in the settings for its next start).
+    pub fn starts_app(&self) -> bool {
+        matches!(self, Command::Toggle | Command::Show | Command::Settings | Command::IndexNow)
     }
 }
 
@@ -99,6 +152,22 @@ impl Options {
             return self.models.clone();
         }
         helper_folder().map(|folder| folder.join("Models"))
+    }
+
+    /// The settings file: the one given, else the one a DigUp with this identifier keeps in its config folder (as
+    /// Tauri's app_config_dir has it: $XDG_CONFIG_HOME/<identifier> or ~/.config/<identifier> on Linux,
+    /// %APPDATA%\<identifier> on Windows). For a launch that doesn't start the app.
+    pub fn settings_file(&self, identifier: &str) -> Option<PathBuf> {
+        if self.settings.is_some() {
+            return self.settings.clone();
+        }
+        let config = if cfg!(windows) {
+            std::env::var_os("APPDATA").map(PathBuf::from)
+        } else {
+            std::env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()).map(PathBuf::from)
+                .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        };
+        config.map(|config| config.join(identifier).join("settings.json"))
     }
 }
 
@@ -122,4 +191,27 @@ fn default_helper() -> PathBuf {
     };
     let inside = folder.join("helper").join(name);
     if inside.is_file() { inside } else { folder.join(name) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|arg| arg.to_string()).collect()
+    }
+
+    #[test]
+    fn commands_from_a_second_launch() {
+        assert_eq!(Command::in_args(&args(&["digup-shell", "--toggle"])), Some(Command::Toggle));
+        // The dev launcher passes its own arguments first.
+        assert_eq!(Command::in_args(&args(&["digup-shell", "--helper", "/x/digup", "--hotkey", "Control+Alt+Space",
+                                            "--index-now"])), Some(Command::IndexNow));
+        assert_eq!(Command::in_args(&args(&["digup-shell", "--pause", "--resume"])), Some(Command::Resume), "the last");
+        assert_eq!(Command::in_args(&args(&["digup-shell"])), None);
+        assert_eq!(Command::in_args(&args(&["digup-shell", "--background"])), None);
+        assert_eq!(Command::in_args(&args(&["--quit"])), None, "the program's own name isn't an argument");
+        assert!(Command::Settings.starts_app() && Command::Toggle.starts_app() && Command::IndexNow.starts_app());
+        assert!(!Command::Quit.starts_app() && !Command::Pause.starts_app() && !Command::Hide.starts_app());
+    }
 }

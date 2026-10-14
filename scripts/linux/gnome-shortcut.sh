@@ -1,8 +1,10 @@
 #!/bin/bash
-# Adds (or updates) a GNOME custom keyboard shortcut that opens DigUp's search panel: it runs digup-shell, and a second
-# digup-shell hands over to the running one (single instance), which shows the panel. Apps can't grab keys globally on
-# Wayland, and GNOME 46 has no GlobalShortcuts portal yet, so this is the way there. Other custom shortcuts are kept.
+# Adds (or updates) a GNOME custom keyboard shortcut that opens DigUp's search panel: it runs digup-shell --toggle, and
+# a second digup-shell hands over to the running one (single instance), which shows the panel or hides it. Apps can't
+# grab keys globally on Wayland, and GNOME 46 has no GlobalShortcuts portal yet, so this is the way there. Other custom
+# shortcuts are kept.
 #   scripts/linux/gnome-shortcut.sh [binding] [command]     default: <Control><Alt>space, this checkout's dev launcher
+#                                                           with --toggle
 #   scripts/linux/gnome-shortcut.sh --remove
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -16,7 +18,7 @@ if [[ "${1:-}" == --remove ]]; then
   echo "removed"; exit 0
 fi
 BINDING="${1:-<Control><Alt>space}"
-COMMAND="${2:-$REPO/scripts/linux/dev-run-shell.sh}"
+COMMAND="${2:-$REPO/scripts/linux/dev-run-shell.sh --toggle}"
 new=$(python3 -I -c 'import ast,sys; l=ast.literal_eval(sys.argv[1].replace("@as ","")); l+=[sys.argv[2]] if sys.argv[2] not in l else []; print(l)' "$list" "$KEY")
 gsettings set $SCHEMA custom-keybindings "$new"
 gsettings set "$SCHEMA.custom-keybinding:$KEY" name "DigUp search"

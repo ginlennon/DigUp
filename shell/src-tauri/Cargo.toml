@@ -22,6 +22,10 @@ tokio = { version = "1", features = ["sync"] }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Whether DigUp is running (its single-instance name on the session bus): the same zbus the single-instance plugin uses.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = "5.9"
+
 [profile.release]
 codegen-units = 1
 lto = true

@@ -128,8 +128,10 @@ languages, code and scripts.
 ## How it differs from the Mac app
 
 - **The hotkey.** Wayland doesn't let apps grab keys globally, and GNOME 46 has no shortcut portal yet, so the hotkey
-  is a GNOME custom shortcut that runs the shell again; the running one shows its panel. On other desktops, bind
-  `scripts/linux/dev-run-shell.sh` to a key in their keyboard settings.
+  is a GNOME custom shortcut that runs the shell again with `--toggle`; the running one shows its panel, or hides it.
+  On other desktops, bind `scripts/linux/dev-run-shell.sh --toggle` to a key in their keyboard settings. The same
+  way, `--show`, `--hide`, `--pause`, `--resume`, `--index-now`, `--settings` and `--quit` control a running DigUp
+  from scripts (without one running, `--quit`/`--hide` just say so, and `--pause`/`--resume` apply at its next start).
 - **The tray** needs an AppIndicator host. Ubuntu's GNOME has one built in; plain GNOME needs the AppIndicator
   extension.
 - **OCR** is tesseract, not Apple's Vision: fine on clean screenshots, weaker on blurry text, and only in the

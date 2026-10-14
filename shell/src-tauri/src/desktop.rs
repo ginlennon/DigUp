@@ -1,9 +1,9 @@
 //! What Settings sets up in a Linux desktop: the GNOME shortcut that opens the panel, and starting at login.
 //!
 //! - The shortcut: apps can't grab keys globally on Wayland, and GNOME 46 has no GlobalShortcuts portal, so the hotkey
-//!   is a GNOME custom shortcut that runs this program again; the running shell (single instance) shows its panel. It's
-//!   written with gsettings as scripts/linux/gnome-shortcut.sh writes it: our path is added to the list of custom
-//!   shortcuts, the others are kept.
+//!   is a GNOME custom shortcut that runs this program again with `--toggle`; the running shell (single instance)
+//!   shows its panel, or hides it when it's up. It's written with gsettings as scripts/linux/gnome-shortcut.sh writes
+//!   it: our path is added to the list of custom shortcuts, the others are kept (and kept when ours is removed).
 //! - Starting at login: ~/.config/autostart/digup.desktop (the XDG autostart spec), with `--background` so a login
 //!   shows nothing but the tray. A file this small doesn't need tauri-plugin-autostart.
 //!
@@ -106,6 +106,18 @@ pub fn with_ours(list: &[String]) -> String {
     format!("[{}]", paths.iter().map(|path| gvariant_string(path)).collect::<Vec<_>>().join(", "))
 }
 
+/// The list of custom shortcuts without ours, in gsettings' text form (the others are kept as they are).
+pub fn without_ours(list: &[String]) -> String {
+    let paths: Vec<String> = list.iter().filter(|path| *path != KEYBINDING).map(|path| gvariant_string(path)).collect();
+    if paths.is_empty() { "@as []".to_string() } else { format!("[{}]", paths.join(", ")) }
+}
+
+/// What our GNOME shortcut runs: DigUp with `--toggle`, so the keys that open the panel close it too (the running
+/// DigUp gets the arguments: main.rs's `act`).
+pub fn shortcut_command(launcher: &str) -> String {
+    format!("{} --toggle", shell_word(launcher))
+}
+
 /// A path for a shell-like command line (GNOME splits the shortcut's command as a shell would): quoted only if needed.
 pub fn shell_word(word: &str) -> String {
     if !word.is_empty() && word.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+:@%=,".contains(c)) {
@@ -155,6 +167,17 @@ pub fn set_up_gnome_shortcut(accelerator: &str, command: &str) -> Result<(), Str
     gsettings(&["set", &ours, "name", &gvariant_string("DigUp search")])?;
     gsettings(&["set", &ours, "command", &gvariant_string(command)])?;
     gsettings(&["set", &ours, "binding", &gvariant_string(&gnome_binding(accelerator))])?;
+    Ok(())
+}
+
+/// Removes our GNOME shortcut (Settings' "Turn DigUp off"): our path leaves the list and its keys are reset; the
+/// person's other custom shortcuts aren't touched.
+pub fn remove_gnome_shortcut() -> Result<(), String> {
+    let list = gvariant_strings(&gsettings(&["get", SCHEMA, "custom-keybindings"])?);
+    if list.iter().any(|path| path == KEYBINDING) {
+        gsettings(&["set", SCHEMA, "custom-keybindings", &without_ours(&list)])?;
+    }
+    gsettings(&["reset-recursively", &format!("{SCHEMA}.custom-keybinding:{KEYBINDING}")])?;
     Ok(())
 }
 
@@ -244,6 +267,11 @@ mod tests {
                     '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/digup/']");
         // Ours is there once, however often it's set up.
         assert_eq!(with_ours(&gvariant_strings(&with_ours(&[]))), format!("['{KEYBINDING}']"));
+        // Taking ours out keeps the others, in their order.
+        let both = gvariant_strings(&with_ours(&list));
+        assert_eq!(without_ours(&both), "['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/']");
+        assert_eq!(without_ours(&gvariant_strings(&with_ours(&[]))), "@as []");
+        assert_eq!(without_ours(&list), without_ours(&both), "not there: nothing changes");
         assert!(gvariant_strings("@as []").is_empty());
         assert_eq!(gvariant_strings(r"'it\'s'"), ["it's"]);
         assert_eq!(gvariant_string(r"a'b\c"), r"'a\'b\\c'");
@@ -253,6 +281,7 @@ mod tests {
     fn commands_quoted_where_needed() {
         assert_eq!(shell_word("/home/me/bin/digup-shell"), "/home/me/bin/digup-shell");
         assert_eq!(shell_word("/home/me/My Apps/digup-shell"), "'/home/me/My Apps/digup-shell'");
+        assert_eq!(shortcut_command("/home/me/My Apps/digup-shell"), "'/home/me/My Apps/digup-shell' --toggle");
         assert_eq!(exec_word("/opt/DigUp/digup-shell"), "/opt/DigUp/digup-shell");
         assert_eq!(exec_word("/home/me/My $Apps/digup"), r#""/home/me/My \$Apps/digup""#);
         assert!(autostart_entry("/opt/DigUp/digup-shell").contains("\nExec=/opt/DigUp/digup-shell --background\n"));

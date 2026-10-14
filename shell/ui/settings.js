@@ -37,6 +37,7 @@ function render() {
 
   renderShortcut();
   $("login").checked = info.startsAtLogin;
+  renderTurnOff();
 
   $("version").textContent = `DigUp ${info.version}`;
   for (const name of ["index", "models", "logs", "settings"]) {
@@ -198,6 +199,34 @@ function renderShortcut() {
     $("set-up-shortcut").textContent = "Set Up the Shortcut";
   }
 }
+
+// MARK: Turning it off
+
+/// Turn DigUp off: no start at login, and quit. The GNOME shortcut would start it again, so it says so and offers to
+/// remove it too.
+function renderTurnOff() {
+  const shortcut = info.gnome && info.shortcut && info.shortcut.installed;
+  $("off-shortcut-row").hidden = !shortcut;
+  $("off-text").textContent = "Quits DigUp and its helpers, and it no longer starts when you log in."
+    + (shortcut ? ` Its shortcut (${info.shortcut.keys || info.hotkey}) stays and starts it again, unless you remove `
+      + "it too." : "");
+}
+
+$("turn-off").addEventListener("click", () => {
+  const button = $("turn-off");
+  // Asks once more first, as removing a folder does.
+  if (!button.classList.contains("confirm")) {
+    button.classList.add("confirm");
+    button.textContent = "Turn Off Now?";
+    setTimeout(() => {
+      button.classList.remove("confirm");
+      button.textContent = "Turn DigUp Off";
+    }, 4000);
+    return;
+  }
+  const removeShortcut = !$("off-shortcut-row").hidden && $("off-shortcut").checked;
+  run("turn_off", { removeShortcut }, button);
+});
 
 // MARK: Helpers
 

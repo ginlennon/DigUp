@@ -10,7 +10,7 @@ This guide is for the Linux port (tested on Ubuntu 24.04 with GNOME). Setup is i
 
 | Key (in the panel) | What it does |
 |---|---|
-| **Ctrl+Alt+Space** | opens the search panel from anywhere (a GNOME shortcut; change it in Settings → Keyboard) |
+| **Ctrl+Alt+Space** | opens the search panel from anywhere, and closes it again (a GNOME shortcut; change it in Settings → Keyboard) |
 | ↓ ↑ | moves through the results |
 | ↩ | opens the result: PDFs at the page with your word found, videos and recordings at the moment, the rest in its default app |
 | Ctrl+↩ | shows the file in Files, selected |
@@ -102,9 +102,12 @@ there before pointing DigUp at your own folders.
     you resume. It stays paused across restarts.
 17. **CPU or GPU.** Settings → Indexing → "Use the GPU". On an AMD or Intel GPU (Vulkan) indexing is about 2.7× faster
     than on the CPU; turn it off on battery or if your graphics driver misbehaves. Searching is fast either way.
-18. **Turn it off completely.** Tray → Quit stops DigUp and its helpers. To keep it off: Settings → Start at login
-    off, and remove the shortcut with `scripts/linux/gnome-shortcut.sh --remove`. To remove its data:
-    `rm -rf ~/.local/share/digup ~/.config/com.abdurrahim.DigUp`.
+18. **Turn it off completely.** Tray → Quit stops DigUp and its helpers. To keep it off: Settings → Turn off → "Turn
+    DigUp Off" quits it and stops it starting at login; the shortcut stays (pressing it starts DigUp again) unless you
+    also tick "Also remove the shortcut", which removes only DigUp's own GNOME shortcut. From a script or another
+    shortcut: `digup-shell --quit`, `--pause`, `--resume`, `--index-now`, `--settings`, `--show`, `--hide`,
+    `--toggle` (without DigUp running, `--quit` just says so and `--pause`/`--resume` apply at its next start). To
+    remove its data: `rm -rf ~/.local/share/digup ~/.config/com.abdurrahim.DigUp`.
 
 ## Good to know
 

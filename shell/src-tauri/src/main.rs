@@ -15,6 +15,7 @@ macro_rules! log_error {
     ($($arg:tt)*) => { eprintln!("{} {}", $crate::time_of_day(), format_args!($($arg)*)) };
 }
 
+mod control;
 mod desktop;
 mod helper;
 mod opener;
@@ -24,7 +25,7 @@ mod settings;
 mod watcher;
 
 use helper::{IndexService, Launch, ModelDownload, SearchService};
-use options::{Options, DEFAULT_HOTKEY};
+use options::{Command, Options, DEFAULT_HOTKEY};
 use serde_json::{json, Value};
 use settings::Settings;
 use std::path::{Path, PathBuf};
@@ -307,7 +308,7 @@ async fn settings_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Result<V
         "gnome": gnome,
         "shortcut": shortcut,
         // What our GNOME shortcut should run: when it runs something else (an older build), it can be set up again.
-        "shortcutCommand": desktop::shell_word(&launcher),
+        "shortcutCommand": desktop::shortcut_command(&launcher),
         "startsAtLogin": desktop::starts_at_login(),
         "version": app.package_info().version.to_string(),
         "paths": {
@@ -387,15 +388,34 @@ fn set_starts_at_login(app: AppHandle, on: bool) -> Result<(), String> {
     result
 }
 
-/// Writes the GNOME shortcut for the hotkey (see desktop.rs), running this program.
+/// Writes the GNOME shortcut for the hotkey (see desktop.rs), running this program with `--toggle`.
 #[tauri::command]
 async fn set_up_shortcut(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Result<(), String> {
     let hotkey = shell.hotkey();
-    let command = desktop::shell_word(&desktop::launcher());
+    let command = desktop::shortcut_command(&desktop::launcher());
     tauri::async_runtime::spawn_blocking(move || desktop::set_up_gnome_shortcut(&hotkey, &command))
         .await
         .map_err(|error| error.to_string())??;
     settings_changed(&app);
+    Ok(())
+}
+
+/// Settings' "Turn DigUp off": it doesn't start at login any more (and, if asked, our GNOME shortcut goes, the
+/// person's others stay), then it quits. Something that can't be undone that way leaves DigUp running, to say so.
+#[tauri::command]
+async fn turn_off(app: AppHandle, remove_shortcut: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if cfg!(target_os = "linux") {
+            desktop::set_starts_at_login(false, &desktop::launcher())?;
+        }
+        if remove_shortcut {
+            desktop::remove_gnome_shortcut()?;
+        }
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    quit(&app);
     Ok(())
 }
 
@@ -496,12 +516,24 @@ fn main() {
             std::process::exit(2);
         }
     };
+    let context = tauri::generate_context!();
+    // `--quit`, `--pause`… with no DigUp running: answered without starting one (control.rs).
+    #[cfg(target_os = "linux")]
+    if let Some(command) = options.command.filter(|command| !command.starts_app()) {
+        let identifier = context.config().identifier.clone();
+        if !control::is_running(&identifier) {
+            let (said, status) = control::when_not_running(command, options.settings_file(&identifier).as_deref());
+            println!("{said}");
+            std::process::exit(status);
+        }
+    }
     let app = tauri::Builder::default()
-        // A second launch shows the panel (the GNOME shortcut runs one), unless it's the login's (--background).
-        .plugin(tauri_plugin_single_instance::init(|app, args, _| {
-            if !args.iter().any(|arg| arg == "--background") {
-                show_panel(app);
-            }
+        // A second launch hands over its arguments: `--toggle` and the like do what they say (`act`); without one it
+        // shows the panel, unless it's the login's (--background).
+        .plugin(tauri_plugin_single_instance::init(|app, args, _| match Command::in_args(&args) {
+            Some(command) => act(app, command),
+            None if !args.iter().any(|arg| arg == "--background") => show_panel(app),
+            None => {}
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -518,9 +550,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             ask, estimate, setup_info, pick_folders, finish_setup, resolve_folder, open_path, open_hit, open_title, reveal,
             hide_panel, panel_height, settings_info, save_folders, set_paused, set_gpu, set_starts_at_login, set_up_shortcut,
-            set_moment_player, debug_query, debug_report
+            turn_off, set_moment_player, debug_query, debug_report
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("DigUp couldn't start");
     app.run(|app, event| match event {
         tauri::RunEvent::Exit => stop_helpers(app),
@@ -620,7 +652,34 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
     if shell.options.debug_show {
         show_panel(&handle);
     }
+    // Started with a command (`--settings`, `--show`… when DigUp wasn't running): done once it's up.
+    if let Some(command) = shell.options.command {
+        act(&handle, command);
+    }
     Ok(())
+}
+
+/// What a command says (`digup-shell --toggle` and the like, options.rs): from a second launch, or this one's own.
+fn act(app: &AppHandle, command: Command) {
+    match command {
+        Command::Toggle => toggle_panel(app),
+        Command::Show => show_panel(app),
+        Command::Hide => hide_panel(app.clone()),
+        Command::Pause | Command::Resume => {
+            let app = app.clone();
+            // Stopping the index helper takes up to two seconds: not on the thread that handed the command over.
+            tauri::async_runtime::spawn_blocking(move || {
+                if let Err(error) = pause(&app, command == Command::Pause) {
+                    set_status(&app, &error);
+                }
+            });
+        }
+        Command::Settings => {
+            let _ = show_settings(app);
+        }
+        Command::Quit => quit(app),
+        Command::IndexNow => run_index(app),
+    }
 }
 
 /// After setup or a change of folders: the search service, the watcher and indexing follow the new folders.
@@ -1050,7 +1109,7 @@ mod tests {
     fn helpers_use_the_cpu_when_told() {
         let options = Options {
             helper: "digup".into(), index: None, models: None, roots: Vec::new(), hotkey: None, settings: None,
-            offered: None, debug_setup: false, debug_query: None, debug_quit: false, debug_show: false,
+            command: None, offered: None, debug_setup: false, debug_query: None, debug_quit: false, debug_show: false,
             background: false,
         };
         assert!(helper_env(&options, &Settings::default()).is_empty());
