@@ -163,7 +163,8 @@ impl Process {
     }
 }
 
-/// `digup search-service`: started on the first request, and again after it died.
+/// `digup search-service`: started on the first request, and again after it died. Its `ready` event names its query
+/// encoder's log, which is read with its stderr for a Vulkan error when it ends.
 pub struct SearchService {
     /// How the next one starts (the folders and the GPU switch change it).
     launch: Mutex<Launch>,
@@ -234,10 +235,18 @@ impl SearchService {
         let process = Process::new(child);
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>> = Arc::default();
         let (replies, on_event, reaped) = (pending.clone(), self.on_event.clone(), process.clone());
+        let mut logs = logs;
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
                 let Ok(line) = line else { break };
                 let Ok(message) = serde_json::from_str::<Value>(&line) else { continue };
+                // Its query encoder's log, a file of its own (other search helpers on the index have theirs): read
+                // from its start, as nothing of this helper's was in it before.
+                if message["event"] == "ready" {
+                    if let Some(log) = message["log"].as_str() {
+                        logs.0.push((PathBuf::from(log), 0));
+                    }
+                }
                 match message.get("id").and_then(Value::as_u64) {
                     Some(id) => {
                         if let Some(sender) = replies.lock().unwrap().remove(&id) {
@@ -468,7 +477,8 @@ mod tests {
     /// or EOF. "quit": a sync event and an exit event, then exits at once (a helper with nothing to do). "hang": says
     /// it exits and doesn't (a helper before the readLine fix). "late": exits half a second after its sync, reading
     /// nothing (a sync sent then comes too late). "crash": killed by SIGSEGV; "watchdog": exits 75; "vulkan": writes
-    /// a Vulkan error to its log and exits 0; "fatal": says a fatal error and exits 1.
+    /// a Vulkan error to its log and exits 0; "fatal": says a fatal error and exits 1; "encoder": a search helper whose
+    /// `ready` names its encoder's log, which gets a Vulkan error before it exits 1.
     pub(super) fn fake_helper(folder: &Path, mode: &str) -> Launch {
         std::fs::create_dir_all(folder).unwrap();
         let script = folder.join("fake-digup");
@@ -484,6 +494,10 @@ crash) kill -SEGV $$ ;;
 watchdog) exit 75 ;;
 vulkan) echo "terminate called after throwing an instance of 'vk::DeviceLostError'" >&2; exit 0 ;;
 fatal) echo '{"event": "error", "fatal": true, "message": "no index"}'; exit 1 ;;
+encoder)
+    log="$(dirname "$FAKE_LOG")/worker-query-$$.log"
+    echo "{\"event\": \"ready\", \"log\": \"$log\"}"
+    echo "ggml_vulkan: VK_ERROR_DEVICE_LOST" >> "$log"; exit 1 ;;
 esac
 while read -r line; do
     echo "$line" >> "$FAKE_LOG"
@@ -658,6 +672,21 @@ done
         let _ = search.send(1, &json!({"op": "status"}));
         wait_for("its end", || seen.lock().unwrap().iter().any(|event| event["event"] == "exit"));
         assert_eq!(seen.lock().unwrap().last().unwrap()["signal"].as_i64(), Some(11));
+        let _ = std::fs::remove_dir_all(folder);
+    }
+
+    #[test]
+    fn a_search_helper_is_judged_by_its_own_encoder_log() {
+        let folder = folder("search-encoder");
+        let launch = fake_helper(&folder, "encoder");
+        // Another search helper's log on the same index, with an error of its own: not this one's.
+        std::fs::write(folder.join("worker-query-1.log"), "vk::Queue::submit: ErrorDeviceLost\n").unwrap();
+        let (seen, sink) = events();
+        let search = SearchService::new(launch, sink);
+        let _ = search.send(1, &json!({"op": "status"}));
+        wait_for("its end", || seen.lock().unwrap().iter().any(|event| event["event"] == "exit"));
+        let last = seen.lock().unwrap().last().unwrap().clone();
+        assert_eq!((last["code"].as_i64(), last["gpu_error"].as_str()), (Some(1), Some("ggml_vulkan: VK_ERROR_DEVICE_LOST")));
         let _ = std::fs::remove_dir_all(folder);
     }
 }

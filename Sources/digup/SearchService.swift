@@ -29,6 +29,8 @@ import Foundation
 ///   {"op":"prewarm"}                          → {"ok":true}: starts the encoder and loads the vectors (the panel opening)
 ///   {"op":"status"}                           → {"encoder":"stopped|starting|ready|unavailable","vectors":n,…}
 ///   {"op":"quit"}                             → {"ok":true}, then exit
+/// It says {"event":"ready","index":…,"log":…} first: `log` is where its query encoder (llama.cpp) writes its warnings
+/// and errors, a file of this helper's own (`logName`).
 /// The encoder exits after `--encoder-idle` seconds without a query and the vectors are released (as in the app);
 /// keyword search keeps working and the next query brings both back.
 final class SearchService: @unchecked Sendable {   // its state is guarded by `lock`
@@ -65,10 +67,11 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
         self.codeRoots = codeRoots
         self.codeSkipped = codeSkipped
         self.idleSeconds = idleSeconds
-        log = index.appendingPathComponent("worker-query.log")
+        log = index.appendingPathComponent(Self.logName)
+        HelperFiles.clear(in: index, mine: { $0 == Self.logName }, ofItsKind: Self.isLogName)
         previews = index.appendingPathComponent("previews")
         try FileManager.default.createDirectory(at: previews, withIntermediateDirectories: true)
-        Self.clearPreviews(in: previews)
+        HelperFiles.clear(in: previews, mine: { $0.hasPrefix(Self.previewPrefix) })
         try openCode()
     }
 
@@ -262,24 +265,20 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
         return ["image": image]
     }
 
-    /// What starts the names of the previews this helper renders. Several search helpers can share an index (the app's,
-    /// an MCP server's, an HTTP API's), and each clears only its own at its start, so none takes away the pictures
-    /// another one's shell is showing. A process id comes back only once its process is gone, so what a helper finds
-    /// with its own mark is an earlier one's. They all stay in the one folder, which shells may only read flat.
+    /// What starts the names of the previews this helper renders (`HelperFiles`): none takes away the pictures another
+    /// one's shell is showing. They all stay in the one folder, which shells may only read flat.
     static let previewPrefix = "p\(ProcessInfo.processInfo.processIdentifier)-"
 
-    /// Clears this helper's previews (`previewPrefix`) and anyone's over a day old: what helpers that ended left.
-    static func clearPreviews(in folder: URL, now: Date = Date()) {
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
-        for name in names {
-            let path = folder.appendingPathComponent(name).path
-            let modified = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date)
-                ?? .distantPast
-            if name.hasPrefix(previewPrefix) || now.timeIntervalSince(modified) > 86_400 {
-                try? FileManager.default.removeItem(atPath: path)
-            }
-        }
+    /// The query encoder's log, one per helper (`HelperFiles`), named in its `ready` event: a shell reads its own
+    /// helper's for GPU errors, and another helper's trouble on the same index isn't taken for its own. One that's
+    /// cleared for its age while its helper still runs is made again at that helper's next encoder start.
+    static let logName = "worker-query-\(ProcessInfo.processInfo.processIdentifier).log"
+
+    static func isLogName(_ name: String) -> Bool {
+        name.hasPrefix("worker-query-") && name.hasSuffix(".log")
     }
+
+    var logPath: String { log.path }
 
     // MARK: The query encoder
 
@@ -374,6 +373,6 @@ func searchService(_ args: Arguments) throws -> Int32 {
         codeRoots: (args.lists["--code-root"] ?? []).map { Arguments.folderURL($0).path },
         codeSkipped: (args.lists["--code-exclude"] ?? []).map { Arguments.folderURL($0).path },
         idleSeconds: args.values["--encoder-idle"].flatMap(Double.init) ?? 300)
-    emit(["event": "ready", "index": args.indexFolder.path])
+    emit(["event": "ready", "index": args.indexFolder.path, "log": service.logPath])
     return service.serve()
 }

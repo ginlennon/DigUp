@@ -142,13 +142,11 @@ impl Shell {
         }
     }
 
-    /// `search-service` for the folders and settings as they are now.
+    /// `search-service` for the folders and settings as they are now. (llama.cpp's own log, where a Vulkan error may
+    /// be rather than on stderr, is one of its own, which it names when it's ready: helper.rs.)
     fn search_launch(&self) -> Launch {
         let settings = self.settings.lock().unwrap().clone();
-        let mut launch = search_launch(&self.options, &settings, self.folders(), &self.logs, !self.search_gpu_in_use());
-        // llama.cpp's own log: a Vulkan error may be there rather than on stderr.
-        launch.also_logs.extend(self.options.index_folder().map(|index| index.join("worker-query.log")));
-        launch
+        search_launch(&self.options, &settings, self.folders(), &self.logs, !self.search_gpu_in_use())
     }
 
     fn index_arguments(&self) -> Vec<String> {
@@ -782,7 +780,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         editors: editors::Editors::new(),
     });
     app.manage(shell.clone());
-    // Now with all it's started with (the logs it's watched by too).
+    // Now with all it's started with.
     shell.search.set_launch(shell.search_launch());
 
     make_panel(&handle)?;
