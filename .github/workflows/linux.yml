@@ -1,0 +1,165 @@
+# The Linux port's checks on Ubuntu 24.04: the engine and its tests (llama.cpp on the CPU, with the real model), the
+# Tauri shell, and the integrations (MCP server, HTTP API, the Files scripts).
+name: Linux
+
+on:
+  push:
+    branches: [main, ci-linux]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  engine:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      SWIFT_VERSION: 6.4.1
+      MODELS_REVISION: bfcd298762cc34d0357ece5ebdd31791a3a374d8   # Sources/DigUpKit/ModelFiles.swift
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install build packages
+        # No Vulkan tools (glslc) and no CUDA: build-llama.sh then builds the CPU backends only.
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends build-essential cmake ninja-build pkg-config git curl \
+            ca-certificates xz-utils libz3-dev gnupg2 tesseract-ocr \
+            libcurl4-openssl-dev libxml2-dev libncurses-dev libpython3-dev libedit2 zlib1g-dev unzip
+          if command -v glslc || command -v nvcc; then echo "glslc or nvcc on PATH: llama.cpp wouldn't be CPU-only"; exit 1; fi
+
+      - name: Install Swift ${{ env.SWIFT_VERSION }} (swiftly)
+        run: |
+          t=$(mktemp -d) && cd "$t"
+          curl -fsSLO "https://download.swift.org/swiftly/linux/swiftly-$(uname -m).tar.gz"
+          tar zxf "swiftly-$(uname -m).tar.gz"
+          ./swiftly init --quiet-shell-followup --skip-install --assume-yes
+          . "$HOME/.local/share/swiftly/env.sh"
+          swiftly install --use --assume-yes "$SWIFT_VERSION"   # checks swift.org's signature
+          echo "SWIFTLY_HOME_DIR=$SWIFTLY_HOME_DIR" >> "$GITHUB_ENV"
+          echo "SWIFTLY_BIN_DIR=$SWIFTLY_BIN_DIR" >> "$GITHUB_ENV"
+          echo "$SWIFTLY_BIN_DIR" >> "$GITHUB_PATH"
+          "$SWIFTLY_BIN_DIR/swift" --version
+
+      # The vendored libraries, ffmpeg and the llama.cpp build: only the results, keyed on the scripts that pin them.
+      - name: Cache Vendor/
+        id: vendor
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            Vendor/VENDOR
+            Vendor/sqlite
+            Vendor/stb
+            Vendor/miniz
+            Vendor/pdfium
+            Vendor/ffmpeg
+            Vendor/llama
+          key: vendor-cpu-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/fetch-vendor.sh', 'scripts/build-llama.sh', 'scripts/llama.cpp-no-logits.patch', 'scripts/linux/fetch-ffmpeg.sh') }}
+
+      - name: Fetch and build Vendor/ (no-ops when cached)
+        run: |
+          scripts/fetch-vendor.sh
+          scripts/linux/fetch-ffmpeg.sh
+          scripts/build-llama.sh
+          cat Vendor/llama/BUILD
+          grep -q ' cpu$' Vendor/llama/BUILD
+          # Only the CPU backends, as SETUP.md does: DIGUP_BACKENDS points here.
+          mkdir -p Vendor/llama/cpu-only
+          (cd Vendor/llama/cpu-only && for f in ../lib/libggml-cpu-*.so; do ln -sfn "$f" .; done)
+          ls Vendor/llama/cpu-only
+
+      - name: Build digup
+        run: swift build -c release --product digup
+
+      # EmbeddingGemma 2 (text + media), ~865 MB, keyed on the pinned revision and checked against its SHA-256.
+      - name: Cache the model
+        id: models
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/digup-models
+          key: models-embeddinggemma-2-${{ env.MODELS_REVISION }}
+
+      - name: Download the model
+        if: steps.models.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/digup-models
+          for f in embeddinggemma-2-Q8_0.gguf mmproj-embeddinggemma-2-Q8_0.gguf; do
+            curl -fsSL --retry 3 -o ~/digup-models/$f \
+              "https://huggingface.co/ggml-org/embeddinggemma-2-GGUF/resolve/$MODELS_REVISION/$f"
+          done
+
+      - name: Check the model's SHA-256
+        run: |
+          cd ~/digup-models && sha256sum -c - <<'SUMS'
+          2188ac1deca4b77dffefd603c2776a9d76d9d74ec01841392982ebb840b09135  embeddinggemma-2-Q8_0.gguf
+          c4a8a52691ecef40618438928bdf9e68379b854e24166f292592353db0aab64f  mmproj-embeddinggemma-2-Q8_0.gguf
+          SUMS
+
+      - name: swift test
+        run: DIGUP_MODELS="$HOME/digup-models" DIGUP_BACKENDS="$PWD/Vendor/llama/cpu-only" swift test
+
+      - name: digup doctor
+        # Exits 1 only when an essential check fails; the others (no index yet, no GPU) may show ✗.
+        run: DIGUP_MODELS="$HOME/digup-models" DIGUP_BACKENDS="$PWD/Vendor/llama/cpu-only" .build/release/digup doctor --deep
+
+  shell:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: shell/src-tauri
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Tauri's packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev libsoup-3.0-dev libssl-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master, 2026-10-09
+        with:
+          toolchain: stable
+          components: clippy
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: shell/src-tauri -> target
+
+      - name: cargo test
+        run: cargo test --locked
+
+      - name: cargo clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Check the UI scripts' syntax
+        working-directory: shell/ui
+        run: for f in *.js; do node --check "$f"; done
+
+  integrations:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+          cache-dependency-glob: integrations/uv.lock
+
+      - name: pytest
+        # From integrations/, so pytest reads its settings there.
+        run: uv run --directory integrations --locked pytest -q
+
+      - name: shellcheck
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q shellcheck
+          shellcheck --version | sed -n 2p
+          shellcheck scripts/linux/*.sh $(find integrations/desktop -type f ! -name '*.md' | sort)
