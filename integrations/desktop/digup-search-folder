@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC1111  # the “ ” around the search words are meant
+# GNOME Files script "DigUp: Search in this folder": asks for words and searches the selected folder (or the one
+# Files is showing) by meaning (`digup search --in`), in a list; the one picked opens, at its page or moment when
+# the app can be told it. See README.md.
+set -uo pipefail
+
+# shellcheck source=digup-desktop-lib.sh
+source "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/digup-desktop-lib.sh"
+
+folder=
+digup_selection "$@"
+for item in "${DIGUP_SELECTED[@]}"; do
+    if [[ -d "$item" ]]; then
+        folder=$item
+        break
+    fi
+done
+if [[ -z "$folder" ]]; then
+    folder=$(digup_current_folder) || digup_fail "DigUp searches folders on this computer only."
+fi
+[[ -d "$folder" ]] || digup_fail "There's no folder at $folder."
+folder=${folder%/}
+folder=${folder:-/}
+name=$(basename -- "$folder")
+
+digup_find_helper
+if digup_interactive; then
+    query=$(zenity --entry --title="DigUp: Search in $name" --text="Search $(digup_markup "$name") for:" \
+        --entry-text="${DIGUP_SCRIPT_QUERY:-}" 2>/dev/null) || exit 0
+else
+    query=${DIGUP_SCRIPT_QUERY:-}
+fi
+query=$(printf '%s' "$query" | tr '\n\t' '  ')
+query=${query#"${query%%[![:space:]]*}"}
+query=${query%"${query##*[![:space:]]}"}
+[[ -n "$query" ]] || { digup_interactive && exit 0; digup_fail "Search for what? (set DIGUP_SCRIPT_QUERY)"; }
+
+digup_run "Searching $(digup_markup "$name") for “$(digup_markup "$query")”…" \
+    search --in "$folder" -n 20 --json -- "$query" ||
+    digup_fail "$(digup_error_text "$?")"
+digup_parse_hits
+if ((${#DIGUP_PATH[@]} == 0)); then
+    digup_info "Nothing in $folder matches “$query”. If the folder isn't in DigUp's index yet, add it in DigUp (or run: digup index \"$folder\")."
+    exit 0
+fi
+digup_show_hits "“$query” in $name" \
+    "Best matches for <b>$(digup_markup "$query")</b> in $(digup_markup "$folder"). Double-click one to open it."

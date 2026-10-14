@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# GNOME Files script "DigUp: Find similar": the files most like the selected one, by meaning (`digup similar`), in
+# a list; the one picked opens, at its page or moment when the app can be told it. See README.md.
+set -uo pipefail
+
+# shellcheck source=digup-desktop-lib.sh
+source "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/digup-desktop-lib.sh"
+
+digup_selection "$@"
+((${#DIGUP_SELECTED[@]})) || digup_fail "Select a file to find the ones like it."
+file=${DIGUP_SELECTED[0]}
+[[ -e "$file" ]] || digup_fail "There's no file at $file."
+if [[ -d "$file" ]]; then
+    digup_fail "$(basename -- "$file") is a folder. Pick a file to find the ones like it (or use \"DigUp: Search in this folder\")."
+fi
+name=$(basename -- "$file")
+
+digup_find_helper
+digup_run "Looking for files like $(digup_markup "$name")…" similar -n 15 --json -- "$file" ||
+    digup_fail "$(digup_error_text "$?")"
+digup_parse_hits
+if ((${#DIGUP_PATH[@]} == 0)); then
+    digup_info "Nothing in DigUp's index is like $name."
+    exit 0
+fi
+digup_show_hits "Like $name" "Files like <b>$(digup_markup "$name")</b>, most alike first. Double-click one to open it."
