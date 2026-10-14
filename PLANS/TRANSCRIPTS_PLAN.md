@@ -1,6 +1,6 @@
 # PLAN — Transcripts for recordings (D1), with the European-language testbed it needs
 
-**Status (2026-10-14): PLAN ONLY — not implemented.** Engine chosen by measurement:
+**Status (2026-10-14): approved by the user, default OFF; Stages 0–1 in progress.** Engine chosen by measurement:
 [docs/linux-port/ASR_SPIKE.md](../docs/linux-port/ASR_SPIKE.md). Parent plan: [LINUX_PORT_PLAN.md](./LINUX_PORT_PLAN.md)
 Part D. Languages in focus: German and English first, then French, Spanish, Italian, Portuguese; Bengali and Arabic
 (upstream's multilingual set) become tier 2.
@@ -99,13 +99,13 @@ in `setup.sh` (deu is there).
 
 ## A8. Decision rule
 The C7 rule ("≤ 1.5× the audio indexing time") is **not met and can't be**: turbo transcribes at ~5× real time,
-embedding runs at ~37×, so transcripts cost ~7× the audio's embedding. Revised rule — ship transcripts (on by default
-with the GPU) if:
+embedding runs at ~37×, so transcripts cost ~7× the audio's embedding. **User decision (2026-10-14): transcripts are
+off by default** — a setting the user turns on. Revised rule — the feature is kept (and recommended in Settings) if:
 1. `spoken-term` R@5 on `european.json` goes from ~0 to ≥ 0.7, with no drop > 0.01 R@1 on the other evals;
 2. the probes stay without text and the 4 English testbed recordings come out with WER ≤ 10 %;
 3. the pass never delays pass 1 (a new file is searchable by meaning as fast as today) and an hour of recordings is
    transcribed in ≤ 15 min on the 860M.
-If (1) holds but (3) doesn't: ship it off by default, with greedy decoding (~1.5× faster) as the "fast" choice.
+If (1) holds but (3) doesn't: offer greedy decoding (~1.5× faster) as the "fast" choice.
 
 ## A9. Risks
 | Risk | Answer |
