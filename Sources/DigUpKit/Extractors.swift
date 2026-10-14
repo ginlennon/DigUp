@@ -34,8 +34,9 @@ enum ImageExtractor {
 enum OCR {}
 
 /// Transcripts of recordings, for keyword search (optional, off unless turned on): whisper.cpp's whisper-cli on Linux
-/// and Windows; nothing on macOS yet (Apple's speech recognition could fill it). See PLANS/TRANSCRIPTS_PLAN.md.
-enum Transcriber {}
+/// and Windows; nothing on macOS yet (Apple's speech recognition could fill it). See PLANS/TRANSCRIPTS_PLAN.md and
+/// Transcripts.swift.
+public enum Transcriber {}
 
 /// PDF pages as text, or as pictures when they have little text (scans, slides): PDFKit on macOS, PDFium elsewhere.
 enum PDFExtractor {

@@ -35,16 +35,20 @@ final class Watchdog: @unchecked Sendable {
                 if let footprint = Self.footprint(), footprint > memoryLimit {
                     stop(reading?.path, why: "needed more than \(Self.size(memoryLimit)) of memory to read")
                 }
+                let limit = timeLimit >= 120 ? "\(Int(timeLimit / 60)) minutes" : "\(Int(timeLimit)) seconds"
                 if let reading, Date().timeIntervalSince(reading.since) > timeLimit {
-                    let limit = timeLimit >= 120 ? "\(Int(timeLimit / 60)) minutes" : "\(Int(timeLimit)) seconds"
                     stop(reading.path, why: "took more than \(limit) to read")
+                }
+                // A recording's transcript, a chunk at a time: whisper-cli has its own time limit, shorter than this.
+                if let transcribing = Indexer.nowTranscribing, Date().timeIntervalSince(transcribing.since) > timeLimit {
+                    stop(transcribing.path, why: "took more than \(limit) to transcribe a part", transcript: true)
                 }
             }
         }
     }
 
-    private func stop(_ path: String?, why: String) -> Never {
-        StoppedFile(path: path, why: why).write(to: note)
+    private func stop(_ path: String?, why: String, transcript: Bool = false) -> Never {
+        StoppedFile(path: path, why: why, transcript: transcript ? true : nil).write(to: note)
         emit(["event": "error", "message": "watchdog: \(why): \(path ?? "no file being read")"])
         FileHandle.standardError.write(Data("watchdog: \(why): \(path ?? "no file being read")\n".utf8))
         #if os(Windows)
@@ -86,6 +90,9 @@ struct StoppedFile: Codable {
 
     let path: String?
     let why: String
+    /// It was being transcribed, not read: it keeps what it has, and only its transcript fails. (Absent in notes
+    /// written before transcripts.)
+    var transcript: Bool?
 
     static func location(in folder: URL) -> URL {
         folder.appendingPathComponent("stopped-file.json")

@@ -12,13 +12,16 @@ import WinSDK
 ///
 /// Protocol: one command per line on stdin, one JSON event per line on stdout.
 ///   stdin:  sync | sync code | stop | backfill on | backfill off      (EOF = stop)
-///   stdout: {"event": "missing" | "pruned" | "sync" | "file" | "rest" | "summary" | "waiting" | "idle" | "error" |
-///            "exit", ...}; events about the code index say "code": true
+///   stdout: {"event": "missing" | "pruned" | "sync" | "file" | "rest" | "transcript" | "summary" | "waiting" | "idle" |
+///            "error" | "exit", ...}; events about the code index say "code": true
 ///
 /// The loop: sync, index what the sync just queued (if it's a few files: new files go first, on any power source),
 /// then the backfill if allowed; then the code index the same way (`--code-root`: its own sync, asked for with
 /// "sync code"; its folders are crawled with the first sync, so their counts show at once); then the rest of long
-/// files (`Indexer.finishLongFiles`) under the same rules. Between batches it yields to stop and to "backfill off" at
+/// files (`Indexer.finishLongFiles`) under the same rules; then, when `--transcripts` turns them on, transcripts of
+/// recordings (`Indexer.transcribeRecordings`: "transcript" events, one a recording, like "file"'s; the counts gain
+/// "transcripts_done" and "transcripts_waiting"). Without `--transcripts` (an older shell) they're off, and an index's
+/// transcripts are taken out. Between batches it yields to stop and to "backfill off" at
 /// once, and to a new sync once indexing has had about as long as the last sync took (`yieldAt`). When it's done it
 /// keeps a warm worker for `linger` seconds (screenshots come in bursts), then exits.
 ///
@@ -78,10 +81,16 @@ final class IndexService: @unchecked Sendable {
         removeStaleScratchFolders()
         do {
             // A file an earlier helper had to stop on (`Watchdog`) isn't read again until it changes.
+            // One it stopped on while transcribing it keeps what it has, and its transcript counts as failed.
             if let stopped = StoppedFile.take(from: folder), let path = stopped.path {
                 for part in parts {
-                    guard try part.store.markStopped(path, why: stopped.why) else { continue }
-                    emit(["event": "stopped", "path": path, "why": stopped.why, "code": part.code])
+                    if stopped.transcript == true {
+                        guard try part.store.failTranscript(at: path, why: stopped.why) else { continue }
+                    } else {
+                        guard try part.store.markStopped(path, why: stopped.why) else { continue }
+                    }
+                    emit(["event": "stopped", "path": path, "why": stopped.why, "code": part.code,
+                          "transcript": stopped.transcript == true])
                 }
             }
             let again = try main.store.readAgainOnce()   // what older indexes couldn't read: scans' words, SVGs
@@ -93,6 +102,8 @@ final class IndexService: @unchecked Sendable {
                     if pruned > 0 { emit(["event": "pruned", "files": pruned, "code": part.code]) }
                 }
             }
+            // Transcripts turned off go; on, or with another model, every recording waits for the transcript pass.
+            try main.indexer.checkTranscripts()
         } catch {
             emit(["event": "error", "message": "\(error)", "fatal": true])
             finish()
@@ -148,6 +159,11 @@ final class IndexService: @unchecked Sendable {
             if lock.withLock({ backfillAllowed }), (try? main.store.pendingCount()) ?? 1 == 0,
                (try? code?.store.pendingCount() ?? 0) ?? 1 == 0, (try? main.store.unfinishedCount().files) ?? 0 > 0 {
                 guard finishLongFiles() else { break }
+                if lock.withLock({ syncRequested || codeSyncRequested }) { continue }
+            }
+            // Then transcripts of recordings, when they're on: last, under the same rules.
+            if lock.withLock({ backfillAllowed }), nothingElseWaiting, (try? main.indexer.transcriptsWaiting()) ?? 0 > 0 {
+                guard transcribeRecordings() else { break }
                 if lock.withLock({ syncRequested || codeSyncRequested }) { continue }
             }
             if code != nil, lock.withLock({ codeSyncRequested }) { continue }
@@ -282,6 +298,43 @@ final class IndexService: @unchecked Sendable {
         }
     }
 
+    /// Nothing is waiting to be indexed or finished, in either index: what has to be true before transcripts.
+    private var nothingElseWaiting: Bool {
+        (try? main.store.pendingCount()) ?? 1 == 0 && (try? code?.store.pendingCount() ?? 0) ?? 1 == 0
+            && (try? main.store.unfinishedCount().files) ?? 1 == 0
+    }
+
+    /// The transcript pass (`Indexer.transcribeRecordings`), yielding as the backfill does, between recordings and
+    /// between a long one's chunks. On the GPU the model is closed first: whisper and the embedder never share it,
+    /// and a new file starts it again. False when indexing has to stop.
+    private func transcribeRecordings() -> Bool {
+        let started = Date()
+        if main.indexer.transcriber?.gpu == true {
+            for part in parts { part.indexer.closeWorker() }   // each lets go of the shared model first
+            model.close()
+        }
+        do {
+            let states = try main.indexer.transcribeRecordings(shouldStop: { [self] in
+                lock.withLock {
+                    stopRequested || !backfillAllowed
+                        || Date() >= yieldAt && (syncRequested || codeSyncRequested && code != nil)
+                }
+            }, onStep: { step in
+                emit(["event": "transcript", "done": step.done, "total": step.total, "path": step.path,
+                      "kind": step.kind.rawValue, "state": step.state, "seconds": step.seconds,
+                      "audio_seconds": step.audioSeconds, "note": step.note ?? ""])
+            })
+            if !states.isEmpty {
+                emit(["event": "summary", "transcripts": true, "states": states,
+                      "ms": Int(Date().timeIntervalSince(started) * 1000)])
+            }
+            return true
+        } catch {
+            emit(["event": "error", "message": "\(error)", "fatal": true])
+            return false
+        }
+    }
+
     /// Waits up to `linger` seconds for something to do. False: time's up, or told to stop.
     private func waitForWork() -> Bool {
         let deadline = DispatchTime.now() + linger
@@ -292,7 +345,7 @@ final class IndexService: @unchecked Sendable {
             if stop { return false }
             if sync || codeSync && code != nil { return true }
             if backfill, parts.contains(where: { (try? $0.store.pendingCount()) ?? 0 > 0 })
-                || (try? main.store.unfinishedCount().files) ?? 0 > 0 {
+                || (try? main.store.unfinishedCount().files) ?? 0 > 0 || (try? main.indexer.transcriptsWaiting()) ?? 0 > 0 {
                 return true
             }
         }
@@ -351,6 +404,11 @@ final class IndexService: @unchecked Sendable {
             fields[prefix + "pending"] = pending
             fields[prefix + "vectors"] = counts.vectors
             if !part.code { fields["unfinished"] = counts.unfinished }   // long files with pages or chunks left to read
+        }
+        // Transcripts, only while they're on (and installed): recordings with words, and those still waiting.
+        if main.indexer.transcriber != nil, let words = try? main.store.transcriptCounts() {
+            fields["transcripts_done"] = words.done
+            fields["transcripts_waiting"] = (try? main.indexer.transcriptsWaiting()) ?? words.waiting
         }
         emit(fields)
     }

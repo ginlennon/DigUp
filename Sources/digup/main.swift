@@ -21,13 +21,18 @@ let usage = """
     digup: search your files by meaning (DigUp developer CLI)
 
       digup estimate <folder>... [--json]     what would be indexed, and how long the first pass takes
-      digup index <folder>... [--limit N]     sync the index with these folders, embed what's new, then the rest
-                                              of long PDFs and documents
+      digup index <folder>... [--limit N] [--transcripts gpu|cpu|off] [--transcribe-music]
+                                              sync the index with these folders, embed what's new, then the rest
+                                              of long PDFs and documents, then transcripts of recordings when
+                                              they're on (off by default; off takes the index's transcripts out)
       digup search <words>... [--kind K,K] [--in DIR]... [-n 10] [--json]
                                               "code: <words>" searches the code index
       digup similar <file> [--kind K,K] [--in DIR]... [-n 10] [--json]
                                               the files most like this one, by meaning (its vectors from the index,
                                               or embedded as indexing would: a picture, a PDF's first page, …)
+      digup transcribe <file> [--cpu] [--json]
+                                              a recording's transcript: its segments with their times and the
+                                              language heard (for checking; nothing goes into the index)
       digup status                            what's in the index
       digup speed                             this machine's speed next to the M4 Pro behind the estimates, and
                                               what indexing has measured here (costs.json in the index folder)
@@ -37,7 +42,7 @@ let usage = """
                                               (exit 1: an essential check failed); --deep also checks the model
                                               files' SHA-256 and the index
       digup index-service <folder>... [--code-root DIR]... [--code-exclude DIR]... [--backfill] [--prune]
-                          [--memory-limit MB] [--time-limit S]
+                          [--memory-limit MB] [--time-limit S] [--transcripts gpu|cpu|off] [--transcribe-music]
                                               the app's indexing helper (JSON lines; see IndexService); it stops
                                               on a file whose reading passes the limits (see Watchdog)
       digup worker [--text-only]              the model as a process (JSON lines; the app's query encoder)
@@ -66,6 +71,10 @@ let usage = """
       --word-weight W      bonus for containing all of the query's words (default 2.0, and for code see Searcher)
       --shot-tokens N      vision tokens per screenshot (default 280; 560 was 2× slower, no better on real shots)
       --code-stretch N     characters a stretch of code holds at most (default 1800; 1200 and 3600 lost on the evals)
+      --transcripts M      transcripts of recordings, for keyword search: gpu (whisper large-v3-turbo), cpu
+                           (whisper small: slower and less exact) or off (the default); they need whisper-cli and
+                           `digup download-model --transcripts` (--small for cpu)
+      --transcribe-music   songs (audio with artist and album tags) get transcripts too
 
     The model: EmbeddingGemma 2 on llama.cpp, from $DIGUP_MODELS (only there, when set), else
     \(dataFolder)/Models or the Hugging Face cache. DIGUP_WORKER_DIR=worker uses the
@@ -85,7 +94,7 @@ struct Arguments {
     var flags: Set<String> = []
     static let valued: Set<String> = ["--index", "--limit", "--kind", "-n", "--zgate", "--word-weight", "--new-limit",
                                       "--linger", "--shot-tokens", "--code-stretch", "--encoder-idle", "--to",
-                                      "--memory-limit", "--time-limit"]
+                                      "--memory-limit", "--time-limit", "--transcripts"]
     static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude", "--in"]
 
     init(_ raw: ArraySlice<String>) throws {
@@ -107,6 +116,9 @@ struct Arguments {
                 positional.append(argument)
                 index += 1
             }
+        }
+        if let mode = values["--transcripts"], TranscriptMode(rawValue: mode) == nil {
+            throw CLIError("--transcripts takes gpu, cpu or off, not \(mode)")
         }
     }
 
@@ -131,6 +143,8 @@ struct Arguments {
         options.excludedExtensions = IndexOptions.extensions((lists["--exclude-ext"] ?? []).joined(separator: ","))
         if let tokens = values["--shot-tokens"].flatMap(Int.init) { options.screenshotBudget = tokens }
         if let characters = values["--code-stretch"].flatMap(Int.init) { options.codeStretch = characters }
+        options.transcripts = values["--transcripts"].flatMap(TranscriptMode.init) ?? .off
+        options.transcribeMusic = flags.contains("--transcribe-music")
         return options
     }
 
@@ -335,6 +349,11 @@ func index(_ args: Arguments) throws {
     indexer.costsFolder = store.directory
     try store.readAgainOnce()   // what older indexes couldn't read: scanned pages' words, SVGs
     try indexer.checkModel()
+    try indexer.checkTranscripts()   // off: the index's transcripts go; another model: they're all made again
+    if args.options.transcripts != .off, !args.code, indexer.transcriber == nil {
+        print("transcripts: not installed here (whisper-cli, and `digup download-model --transcripts"
+              + (args.options.transcripts == .cpu ? " --small" : "") + "`), so none are made")
+    }
     let folders = try args.folders()
     let sync = try indexer.sync(folders)
     print("index: \(tilde(store.file.path))")
@@ -356,16 +375,85 @@ func index(_ args: Arguments) throws {
         print("done in \(duration(Date().timeIntervalSince(started))): " + statesLine(states))
     }
     // The rest of long files, as the app does once nothing is pending (not after a --limit run: things still are).
-    guard limit == nil, try store.unfinishedCount().files > 0 else { return }
+    guard limit == nil else { return }
+    if try store.unfinishedCount().files > 0 {
+        started = Date()
+        let finished = try indexer.finishLongFiles(onStep: { step in
+            let name = (step.path as NSString).lastPathComponent
+            let note = step.note.map { "  (\($0))" } ?? ""
+            print("[rest \(lpad("\(step.done)", 5))/\(step.total)] \(pad(step.kind.rawValue, 4)) \(pad(step.state, 7)) "
+                  + String(format: "%5.2fs  ", step.seconds) + name + note)
+        })
+        print("the rest of long files in \(duration(Date().timeIntervalSince(started))): "
+              + (finished.isEmpty ? "none finished" : statesLine(finished)))
+    }
+    // Then transcripts of recordings, when they're on: after everything else, as the app does.
+    guard try indexer.transcriptsWaiting() > 0 else { return }
+    indexer.closeWorker()   // its GPU memory, for whisper: one thing at a time on the GPU
     started = Date()
-    let finished = try indexer.finishLongFiles(onStep: { step in
+    var heard = 0.0
+    let transcribed = try indexer.transcribeRecordings(onStep: { step in
+        heard += step.audioSeconds
         let name = (step.path as NSString).lastPathComponent
         let note = step.note.map { "  (\($0))" } ?? ""
-        print("[rest \(lpad("\(step.done)", 5))/\(step.total)] \(pad(step.kind.rawValue, 4)) \(pad(step.state, 7)) "
+        print("[words \(lpad("\(step.done)", 4))/\(step.total)] \(pad(step.kind.rawValue, 5)) \(pad(step.state, 6)) "
               + String(format: "%5.2fs  ", step.seconds) + name + note)
     })
-    print("the rest of long files in \(duration(Date().timeIntervalSince(started))): "
-          + (finished.isEmpty ? "none finished" : statesLine(finished)))
+    let took = Date().timeIntervalSince(started)
+    print("transcripts in \(duration(took)): " + statesLine(transcribed)
+          + (heard > 0 ? String(format: " (%.1f s a minute of audio, %.1f× real time)", took / heard * 60, heard / took)
+                       : ""))
+}
+
+/// `digup transcribe`: one recording's transcript as the index would get it (the guards applied, seams settled), for
+/// checking what whisper-cli hears. Nothing goes into the index.
+func transcribe(_ args: Arguments) throws -> Int32 {
+    guard let path = args.positional.first else { throw CLIError("which recording? e.g. digup transcribe memo.m4a") }
+    let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL
+    guard FileManager.default.isReadableFile(atPath: url.path) else { throw CLIError("can't read \(path)") }
+    let mode: TranscriptMode = args.flags.contains("--cpu") ? .cpu : .gpu
+    guard let engine = Transcriber.engine(for: mode) else {
+        throw CLIError(Tools.transcribesWithWhisper
+            ? "no transcripts here: whisper-cli (\(Tools.whisper ?? "not found")) and its models in "
+                + "\(tilde(TranscriptModels.folder.path)) (digup download-model --transcripts\(mode == .cpu ? " --small" : ""))"
+            : "no transcripts on this OS yet")
+    }
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("DigUp-transcribe-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let started = Date()
+    guard let transcript = try Transcriber.transcribe(url, duration: 0, engine: engine, in: folder) else { return 1 }
+    let seconds = Date().timeIntervalSince(started)
+    if args.flags.contains("--json") {
+        let fields: [String: Any] = [
+            "path": url.path, "model": engine.build, "gpu": engine.gpu, "seconds": seconds, "no_sound": transcript.noSound,
+            "language": transcript.language ?? NSNull(),
+            "chunks": transcript.chunks.map {
+                ["start": $0.start, "end": $0.end, "language": $0.language ?? NSNull(),
+                 "probability": $0.probability ?? NSNull(), "segments": $0.segments, "kept": $0.kept] as [String: Any]
+            },
+            "segments": transcript.segments.map { ["start": $0.start, "end": $0.end, "text": $0.text] as [String: Any] },
+        ]
+        let data = try JSONSerialization.data(withJSONObject: fields, options: [.prettyPrinted, .sortedKeys])
+        print(String(decoding: data, as: UTF8.self))
+        return 0
+    }
+    print("\(tilde(url.path))    \(engine.build) on the \(engine.gpu ? "GPU" : "CPU"), "
+          + String(format: "%.1f s", seconds))
+    if transcript.noSound { print("no sound") }
+    for chunk in transcript.chunks {
+        let heard = chunk.language.map { lang in chunk.probability.map { String(format: "%@ (p %.3f)", lang, $0) } ?? lang }
+        print("  \(clock(chunk.start))–\(clock(chunk.end)): \(heard ?? "no speech"), \(chunk.segments) segments"
+              + (chunk.segments > 0 && !chunk.kept ? ", dropped: unsure of the language" : ""))
+    }
+    for segment in transcript.segments {
+        print(String(format: "[%@ → %@] ", stamp(segment.start), stamp(segment.end)) + segment.text)
+    }
+    return 0
+}
+
+/// "1:02.35": minutes, seconds and hundredths.
+func stamp(_ seconds: Double) -> String {
+    String(format: "%d:%05.2f", Int(seconds) / 60, seconds.truncatingRemainder(dividingBy: 60))
 }
 
 func statesLine(_ states: [String: Int]) -> String {
@@ -441,6 +529,12 @@ func status(_ args: Arguments) throws {
     }
     if counts.unfinished > 0 {
         print("long files still being read: \(number(counts.unfinished)) (\(number(counts.left)) pages and chunks left)")
+    }
+    // Only an index with transcripts on says: meta "transcripts" names the model they're made with.
+    if let engine = try store.meta("transcripts") {
+        let words = try store.transcriptCounts()
+        print("transcripts (\(engine)): \(number(words.done)) done · \(number(words.none)) none · "
+              + "\(number(words.failed)) failed · \(number(words.waiting)) waiting")
     }
     if let fingerprint = try store.meta("fingerprint") { print("built with: \(fingerprint)") }
     print("this digup: llama.cpp \(LlamaEmbedder.buildTag), vectors \(LlamaEmbedder.vectorVersion)")
@@ -619,6 +713,7 @@ do {
     case "search": try search(args)
     case "similar": try similar(args)
     case "status": try status(args)
+    case "transcribe": exit(try transcribe(args))
     case "speed": speed(args)
     case "eval": try evaluate(args)
     case "doctor": exit(doctor(args))

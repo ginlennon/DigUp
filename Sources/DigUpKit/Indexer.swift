@@ -212,6 +212,124 @@ public final class Indexer {
         return states
     }
 
+    // MARK: Transcripts
+
+    /// One recording of the transcript pass: how far it has got (`done` of `total`), the file, what came of it ("done",
+    /// "none", "failed"), how long it took and how long the recording is.
+    public struct TranscriptStep: Sendable {
+        public let done: Int
+        public let total: Int
+        public let path: String
+        public let kind: FileKind
+        public let state: String
+        public let seconds: Double
+        public let audioSeconds: Double
+        public let note: String?
+    }
+
+    /// What `options.transcripts` runs with: nil when transcripts are off, or whisper-cli or its models aren't there.
+    public private(set) lazy var transcriber: Transcriber.Engine? =
+        options.code ? nil : Transcriber.engine(for: options.transcripts)
+
+    /// Brings the index's transcripts in step with the setting, without transcribing anything: turned off, they're all
+    /// taken out; turned on, or to another model (meta "transcripts", `Transcriber.Engine.id`), the old ones are taken
+    /// out and every recording waits for the transcript pass. Embeddings are never touched. Turned on but not
+    /// installed, it leaves things as they are. Returns how many recordings wait.
+    @discardableResult
+    public func checkTranscripts() throws -> Int {
+        guard !options.code else { return 0 }
+        guard options.transcripts != .off else {
+            if try store.meta("transcripts") != nil { try store.removeTranscripts() }
+            return 0
+        }
+        guard let transcriber else { return 0 }
+        if try store.meta("transcripts") != transcriber.id {
+            try store.removeTranscripts()
+            try store.setMeta("transcripts", transcriber.id)
+        }
+        return try transcriptsWaiting()
+    }
+
+    /// Recordings waiting for a transcript (0 while transcripts are off or not installed).
+    public func transcriptsWaiting() throws -> Int {
+        guard let transcriber else { return 0 }
+        return try store.untranscribedCount(build: transcriber.build, music: options.transcribeMusic)
+    }
+
+    /// The transcript pass (PLANS/TRANSCRIPTS_PLAN.md): once everything else is in, recordings read in full get their
+    /// words, one at a time, in indexing order. Each is transcribed (`Transcriber.transcribe`) and its words go onto
+    /// its audio windows, the segments pass 1 made (`IndexStore.setTranscript`), for keyword search, snippets and
+    /// `text(ofSegment:)`: nothing is embedded and no segment is added. A recording without sound, a song (artist and
+    /// album tags, unless `options.transcribeMusic`) and one with no speech heard get "none"; a failure is tried once
+    /// more, then not again until whisper.cpp or the model changes. `shouldStop` is asked between recordings and
+    /// between a long one's chunks: a recording stopped mid-way waits for the next pass, from its start.
+    ///
+    /// The model isn't used meanwhile: one thing at a time on the GPU. Call `checkTranscripts` first.
+    @discardableResult
+    public func transcribeRecordings(shouldStop: () -> Bool = { false }, onStep: (TranscriptStep) -> Void = { _ in })
+        throws -> [String: Int] {
+        guard let transcriber else { return [:] }
+        let queue = try store.untranscribed(build: transcriber.build, music: options.transcribeMusic)
+        var states: [String: Int] = [:]
+        defer { Self.readingLock.withLock { Self.transcribing = nil } }
+        for (index, file) in queue.enumerated() {
+            guard !shouldStop() else { break }
+            let started = Date()
+            let url = URL(fileURLWithPath: file.path)
+            let duration = try store.info(of: file.id)["duration"].flatMap(Double.init) ?? 0
+            let windows = try store.audioWindows(of: file.id)
+            var info = ["transcript": "none", "transcript_model": transcriber.build]
+            var texts: [(window: Int64, text: String)] = []
+            var note: String?
+            if windows.isEmpty {
+                info["transcript_why"] = "no sound"
+            } else if file.kind == .audio, !options.transcribeMusic, Transcriber.isSong(url) {
+                info["transcript_why"] = "music"
+            } else {
+                let transcript: Transcriber.Transcript?
+                do {
+                    let folder = scratch.appendingPathComponent("transcript-\(file.id)")
+                    defer {
+                        try? FileManager.default.removeItem(at: folder)
+                        Self.readingLock.withLock { Self.transcribing = nil }
+                    }
+                    transcript = try Transcriber.transcribe(url, duration: duration, engine: transcriber, in: folder,
+                                                            shouldStop: shouldStop, onChunk: { _, _ in
+                        Self.readingLock.withLock { Self.transcribing = (file.path, Date()) }
+                    })
+                } catch {
+                    try store.failTranscript(file: file.id, why: "\(error)", build: transcriber.build)
+                    states["failed", default: 0] += 1
+                    onStep(TranscriptStep(done: index + 1, total: queue.count, path: file.path, kind: file.kind,
+                                          state: "failed", seconds: Date().timeIntervalSince(started),
+                                          audioSeconds: duration, note: "\(error)"))
+                    continue
+                }
+                guard let transcript else { break }   // stopped: it waits for the next pass
+                texts = Transcriber.texts(of: transcript.segments, in: windows)
+                if !texts.isEmpty {
+                    info["transcript"] = "done"
+                    info["transcript_lang"] = transcript.language
+                    note = "\(transcript.language ?? "?"), \(texts.count) of \(windows.count) windows"
+                } else if transcript.noSound {
+                    info["transcript_why"] = "no sound"
+                } else if let unsure = transcript.chunks.first(where: { !$0.kept && $0.segments > 0 }) {
+                    info["transcript_why"] = String(format: "unsure of the language (%@, p %.2f)",
+                                                    unsure.language ?? "?", unsure.probability ?? 0)
+                } else {
+                    info["transcript_why"] = "no speech"
+                }
+            }
+            try store.setTranscript(file: file.id, texts: texts, info: info)
+            note = note ?? info["transcript_why"]
+            states[info["transcript"]!, default: 0] += 1
+            onStep(TranscriptStep(done: index + 1, total: queue.count, path: file.path, kind: file.kind,
+                                  state: info["transcript"]!, seconds: Date().timeIntervalSince(started),
+                                  audioSeconds: duration, note: note))
+        }
+        return states
+    }
+
     /// Runs `jobs` in order until `shouldStop` (asked between jobs), passing each one's results to `committed` (with
     /// its place in `jobs`). Jobs that `skip` turns down when their turn comes are left out.
     ///
@@ -387,6 +505,12 @@ public final class Indexer {
     private static func startReading(_ path: String) {
         readingLock.withLock { reading = (path, Date()) }
     }
+
+    /// The recording being transcribed right now, and since when its current chunk started: for the watchdog, which
+    /// gives each chunk as long as it gives a file to read (a chunk is 10 minutes of audio at most, and whisper-cli has
+    /// a time limit of its own, so it never should).
+    public static var nowTranscribing: (path: String, since: Date)? { readingLock.withLock { transcribing } }
+    nonisolated(unsafe) private static var transcribing: (path: String, since: Date)?
 
     private func prepare(_ job: Job) -> PendingBatch {
         let pending = PendingBatch()

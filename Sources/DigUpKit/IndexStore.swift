@@ -496,6 +496,149 @@ public final class IndexStore {
         return folder.split(separator: "/").joined(separator: " ")
     }
 
+    // MARK: Transcripts
+
+    /// What a recording's info says of its transcript (`Indexer.transcribeRecordings`): "transcript" is done, none (no
+    /// speech, no sound, or a song) or failed, and absent while it waits; "transcript_lang" the language heard,
+    /// "transcript_model" the whisper.cpp build and model, "transcript_why" why there's none or what failed,
+    /// "transcript_tries" how often it failed.
+    static let transcriptKeys = ["transcript", "transcript_lang", "transcript_model", "transcript_why",
+                                 "transcript_tries"]
+
+    /// A file's audio windows, in order: the segments its transcript is stored on.
+    func audioWindows(of file: Int64) throws -> [Transcriber.Window] {
+        var out: [Transcriber.Window] = []
+        try db.query("SELECT id, loc, loc_end FROM segments WHERE file = ? AND kind = 'audio' ORDER BY loc",
+                     [.int(file)]) { out.append(Transcriber.Window(id: $0.int(0), start: $0.double(1), end: $0.double(2))) }
+        return out
+    }
+
+    /// Recordings waiting for a transcript, in indexing order: audio and video read in full that have none yet, one
+    /// that failed fewer than twice or under another `build` (`Transcriber.Engine.build`), and songs left without one
+    /// when `music` is wanted now.
+    func untranscribed(build: String, music: Bool, limit: Int? = nil) throws -> [FileRecord] {
+        var out: [FileRecord] = []
+        try db.query("""
+            SELECT \(Self.fileColumns) FROM files WHERE \(Self.untranscribedSQL)\(scopeSQL)
+            ORDER BY \(FileKind.indexingOrderSQL), mtime DESC LIMIT ?
+            """, [.text(build), .int(music ? 1 : 0)] + scopeValues + [.int(Int64(limit ?? -1))]) {
+            out.append(Self.record($0))
+        }
+        return out
+    }
+
+    func untranscribedCount(build: String, music: Bool) throws -> Int {
+        var count = 0
+        try db.query("SELECT COUNT(*) FROM files WHERE \(Self.untranscribedSQL)\(scopeSQL)",
+                     [.text(build), .int(music ? 1 : 0)] + scopeValues) { count = Int($0.int(0)) }
+        return count
+    }
+
+    /// `untranscribed`'s files; binds the build, then 1 when songs are wanted.
+    private static let untranscribedSQL = """
+        kind IN ('audio', 'video') AND state = 'done' AND (json_extract(info, '$.transcript') IS NULL
+            OR (json_extract(info, '$.transcript') = 'failed'
+                AND (CAST(coalesce(json_extract(info, '$.transcript_tries'), '0') AS INTEGER) < 2
+                     OR json_extract(info, '$.transcript_model') IS NOT ?))
+            OR (? AND json_extract(info, '$.transcript') = 'none' AND json_extract(info, '$.transcript_why') = 'music'))
+        """
+
+    /// Stores a recording's transcript: each window's words (`texts`, by segment) go to keyword search as that
+    /// segment's text and its excerpt (the first ~200 characters), and `info` (the transcript keys) into its info,
+    /// replacing what was there of them. Its vectors, its name's row, its state and its other info stay as they are.
+    func setTranscript(file: Int64, texts: [(window: Int64, text: String)], info: [String: String]) throws {
+        try db.transaction {
+            try removeTranscriptText(file: file)
+            for (window, text) in texts {
+                try db.run("INSERT INTO fts(rowid, name, body, original) VALUES(?, '', ?, ?)",
+                           [.int(window)] + Self.keywordText(text))
+                try db.run("UPDATE segments SET excerpt = ? WHERE id = ?", [.text(excerpt(text, limit: 200)), .int(window)])
+            }
+            var merged = try self.info(of: file)
+            for key in Self.transcriptKeys { merged[key] = nil }
+            merged.merge(info) { $1 }
+            try setInfo(file, merged)
+        }
+    }
+
+    /// A transcript that failed (`Indexer.transcribeRecordings`, or the helper's watchdog): counted, and tried again
+    /// while it has failed less than twice.
+    func failTranscript(file: Int64, why: String, build: String?) throws {
+        var info = try self.info(of: file)
+        let tries = (info["transcript_model"] == build ? info["transcript_tries"].flatMap(Int.init) ?? 0 : 0) + 1
+        for key in Self.transcriptKeys { info[key] = nil }
+        info["transcript"] = "failed"
+        info["transcript_why"] = why
+        info["transcript_model"] = build
+        info["transcript_tries"] = "\(tries)"
+        try db.transaction {
+            try removeTranscriptText(file: file)
+            try setInfo(file, info)
+        }
+    }
+
+    /// The recording at `path` stopped the helper while it was being transcribed (its watchdog): a failure, which isn't
+    /// tried again after the second. False when no file has that path.
+    @discardableResult
+    public func failTranscript(at path: String, why: String) throws -> Bool {
+        var found: Int64?
+        try db.query("SELECT id FROM files WHERE path = ?", [.text(path)]) { found = $0.int(0) }
+        guard let found else { return false }
+        try failTranscript(file: found, why: "It \(why)", build: try info(of: found)["transcript_model"])
+        return true
+    }
+
+    private func removeTranscriptText(file: Int64) throws {
+        try db.run("DELETE FROM fts WHERE rowid IN (SELECT id FROM segments WHERE file = ? AND kind = 'audio')",
+                   [.int(file)])
+        try db.run("UPDATE segments SET excerpt = NULL WHERE file = ? AND kind = 'audio' AND excerpt IS NOT NULL",
+                   [.int(file)])
+    }
+
+    private func setInfo(_ id: Int64, _ info: [String: String]) throws {
+        let json = info.isEmpty ? nil : (try? JSONSerialization.data(withJSONObject: info, options: [.sortedKeys]))
+            .flatMap { String(data: $0, encoding: .utf8) }
+        try db.run("UPDATE files SET info = ? WHERE id = ?", [.optional(json), .int(id)])
+    }
+
+    /// Takes every transcript out (transcripts turned off, or another model about to make new ones): the words of the
+    /// audio windows, their excerpts, the transcript keys of the files' info, and meta "transcripts". Nothing else
+    /// changes: audio windows never have words of their own.
+    public func removeTranscripts() throws {
+        try db.transaction {
+            try db.run("DELETE FROM fts WHERE rowid IN (SELECT id FROM segments WHERE kind = 'audio')")
+            try db.run("UPDATE segments SET excerpt = NULL WHERE kind = 'audio' AND excerpt IS NOT NULL")
+            let paths = Self.transcriptKeys.map { "'$.\($0)'" }.joined(separator: ", ")
+            try db.run("""
+                UPDATE files SET info = json_remove(info, \(paths))
+                WHERE kind IN ('audio', 'video') AND info IS NOT NULL AND json_extract(info, '$.transcript') IS NOT NULL
+                """)
+            try setMeta("transcripts", nil)
+        }
+    }
+
+    /// How many recordings (audio and video read in full) have a transcript, have none, failed, or have no word yet.
+    public struct TranscriptCounts: Sendable, Equatable {
+        public var done = 0, none = 0, failed = 0, waiting = 0
+    }
+
+    public func transcriptCounts() throws -> TranscriptCounts {
+        var counts = TranscriptCounts()
+        try db.query("""
+            SELECT json_extract(info, '$.transcript'), COUNT(*) FROM files
+            WHERE kind IN ('audio', 'video') AND state = 'done'\(scopeSQL) GROUP BY 1
+            """, scopeValues) { row in
+            let count = Int(row.int(1))
+            switch row.text(0) {
+            case "done": counts.done += count
+            case "none": counts.none += count
+            case "failed": counts.failed += count
+            default: counts.waiting += count
+            }
+        }
+        return counts
+    }
+
     // MARK: Stats
 
     public struct Counts: Sendable {

@@ -67,6 +67,12 @@ public struct IndexOptions: Sendable {
     public var audioHop = 25.0
     public var excludedFolders: [String] = []
     public var excludedExtensions: Set<String> = []
+    /// Transcripts of recordings (`Indexer.transcribeRecordings`): off unless turned on. They add words to the audio
+    /// windows already there, never vectors, so neither of these is part of `fingerprint`: turning them on, off or to
+    /// another model touches the transcripts alone.
+    public var transcripts = TranscriptMode.off
+    /// Songs (audio with artist and album tags) get transcripts too; by default they're left without.
+    public var transcribeMusic = false
 
     public init() {}
 
@@ -83,6 +89,12 @@ public struct IndexOptions: Sendable {
         if code { return "code1 lines\(codeStretch)" }
         return "photo\(photoBudget) shot\(screenshotBudget) page\(pageBudget) frame\(frameBudget)/\(frameInterval)s audio\(audioWindow)/\(audioHop)s"
     }
+}
+
+/// How recordings are transcribed (PLANS/TRANSCRIPTS_PLAN.md): not at all (the default), on the GPU with whisper
+/// large-v3-turbo (~5× real time on a Radeon 860M), or on the CPU with whisper small (~3.7×, less exact).
+public enum TranscriptMode: String, Sendable, CaseIterable {
+    case off, gpu, cpu
 }
 
 /// EmbeddingGemma 2's task prompts (model card). Media inputs take no prompt.
