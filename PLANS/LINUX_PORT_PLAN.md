@@ -253,3 +253,11 @@ Sublime, Geany, JetBrains `--line`), `code:` in the panel.
 `scripts/linux/install-user.sh`: release builds (`--static-swift-stdlib`, `cargo build --release`) into
 `~/.local/opt/digup` (shell + `helper/` with digup, llama.cpp + ggml backends, PDFium, ffmpeg), a `.desktop` entry
 and icon, shortcut and autostart pointing at it; `--uninstall` removes all of it.
+
+### C7. Idea (not started): transcripts for recordings
+Found while testing the HTTP API's `/context`: audio and video soundtracks are embedded (searchable by meaning) but
+have no text, so exact words spoken in a podcast aren't matched and RAG gets nothing for a recording. A local
+whisper.cpp pass (ggml, also runs on Vulkan) per 30 s window would add `transcript` segments to the keyword index and
+to `text`. Null hypothesis: meaning search already finds the right moment (the evals' audio queries are 1.00), so
+transcripts only pay off for exact words (names, numbers) and RAG. Decision rule: worth it if it adds exact-word
+hits on spoken names/numbers without more than ~1.5× the audio indexing time on the 860M.
