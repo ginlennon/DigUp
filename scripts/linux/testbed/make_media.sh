@@ -34,7 +34,7 @@ ffmpeg -loglevel error -y -i "$A/speech_flight_delay.wav" -i "$A/speech_flight_d
 I="$M/img"; V="$M/video"
 fill="scale=768:768:force_original_aspect_ratio=increase,crop=768:768,setsar=1"
 ffmpeg -loglevel error -y -loop 1 -t 6 -i "$I/Animals-Penguin.jpg" -loop 1 -t 6 -i "$I/Animals-Zebra.jpg" -loop 1 -t 6 -i "$I/Animals-Parrot.jpg" \
-  -filter_complex "[0:v]$fill[a];[1:v]$fill[b];[2:v]$fill[c];[a][b][c]concat=n=3:v=1:a=0,format=yuv420p" \
+  -filter_complex "[0:v]${fill}[a];[1:v]${fill}[b];[2:v]${fill}[c];[a][b][c]concat=n=3:v=1:a=0,format=yuv420p" \
   -r 24 -c:v libx264 "$V/penguin_zebra_parrot_18s.mp4"
 for s in 0 6 12; do ffmpeg -loglevel error -y -ss $s -t 6 -i "$V/penguin_zebra_parrot_18s.mp4" -c:v libx264 -pix_fmt yuv420p "$V/seg_${s}s.mp4"; done
 ffmpeg -loglevel error -y -stream_loop 2 -i "$V/penguin_zebra_parrot_18s.mp4" -t 45 -c copy "$V/bench_45s.mp4"

@@ -175,4 +175,4 @@ jobs:
           sudo apt-get update -q && sudo apt-get install -y -q shellcheck
           shellcheck --version | sed -n 2p
           # Warnings and errors fail it; style notes (info, style) don't.
-          shellcheck -S warning scripts/linux/*.sh $(find integrations/desktop -type f ! -name '*.md' | sort)
+          shellcheck -S warning scripts/linux/*.sh scripts/linux/testbed/*.sh scripts/fetch-vendor.sh $(find integrations/desktop -type f ! -name '*.md' | sort)
