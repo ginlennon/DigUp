@@ -48,6 +48,7 @@ const state = {
   scopeProblem: null,    // what the panel says when in: names no chosen folder
   like: null,            // the file whose similar files are showing ({path, name}), or null
   before: "",            // what the field had before them
+  codeFolders: 0,        // how many code folders there are (none: code: says where to add them)
   isCode: false,
   strong: [],
   weaker: [],
@@ -353,7 +354,10 @@ function renderPreview() {
   $preview.replaceChildren();
   if (!state.strong.length && !state.weaker.length) {
     const inside = state.scope ? ` in ${state.scope.name}` : "";
-    if (state.phase === "codeHint") {
+    if (state.isCode && !state.codeFolders) {
+      $preview.append(message("No code folders yet", "Add the folders you keep code in under Settings → Code search; "
+        + "then say what the code does, or type a name that's in it."));
+    } else if (state.phase === "codeHint") {
       $preview.append(message("Search your code", "Say what the code does, or type a name that's in it."));
     } else if (state.phase === "scopeHint") {
       $preview.append(message("Search inside a folder", "Name one of your folders, or a folder right inside one, "
@@ -742,8 +746,15 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+/// What the panel knows of the settings (asked again each time it's shown: they may have changed).
+function loadInfo() {
+  invoke("panel_info").then((info) => { state.codeFolders = info.codeFolders; }).catch(() => {});
+}
+loadInfo();
+
 tauri.event.listen("panel-shown", () => {
-  openTitles.clear();   // a default app may have changed since
+  loadInfo();
+  openTitles.clear();   // a default app or the code editor may have changed since
   // Like Spotlight: the last query, selected.
   $query.focus();
   $query.select();

@@ -313,13 +313,25 @@ impl IndexService {
     }
 
     pub fn run(&self, launch: &Launch) -> Result<(), String> {
+        self.ask(launch, "sync")
+    }
+
+    /// As `run`, for the code index: the running helper is asked to "sync code"; a new one syncs it at its start.
+    pub fn run_code(&self, launch: &Launch) -> Result<(), String> {
+        self.ask(launch, "sync code")
+    }
+
+    fn ask(&self, launch: &Launch, sync: &str) -> Result<(), String> {
         let mut running = self.running.lock().unwrap();
         if let Some(indexing) = running.as_mut() {
             let leaving = indexing.progress.lock().unwrap().leaving;
             if !leaving && indexing.args == launch.args && indexing.process.is_running() {
-                indexing.progress.lock().unwrap().wanted = Some(seconds_now());
+                // Only the main index's sync is followed up ("again"): a code sync that's missed waits for the next.
+                if sync == "sync" {
+                    indexing.progress.lock().unwrap().wanted = Some(seconds_now());
+                }
                 let stdin = &mut indexing.stdin;
-                if writeln!(stdin, "sync").and_then(|_| stdin.flush()).is_ok() {
+                if writeln!(stdin, "{sync}").and_then(|_| stdin.flush()).is_ok() {
                     return Ok(());
                 }
                 // It exited just now (the pipe is closed): a new one does the sync.
@@ -541,6 +553,10 @@ done
         service.run(&other).unwrap();
         wait_for("the new helper", || log(&folder).iter().filter(|line| line.starts_with("start")).count() == 2);
         assert_eq!(log(&folder), ["start index-service /a", "sync", "stop", "start index-service /a /b"]);
+        // Code changes ask the running one for its code sync.
+        service.run_code(&other).unwrap();
+        wait_for("the code sync", || log(&folder).contains(&"sync code".to_string()));
+        assert_eq!(log(&folder).iter().filter(|line| line.starts_with("start")).count(), 2, "the same helper");
         service.stop();
         let _ = std::fs::remove_dir_all(folder);
     }

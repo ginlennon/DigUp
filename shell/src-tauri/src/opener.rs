@@ -10,9 +10,11 @@
 //! - VLC `--start-time=S`, mpv `--start=S`, Celluloid `--mpv-start=S` (mpv's option, passed through)
 //! - Totem, which has no start option: it opens the file, and is then told the moment over MPRIS (D-Bus), once its
 //!   player is there, has the file and is playing it (checked, and told again if it didn't go there)
-//! - VS Code (and its forks) `-g file:line`, Geany `--line=N`, Kate `-l N`, gedit `+N`, Zed and Sublime `file:line`
+//! - VS Code (and its forks) `-g file:line`, Geany `--line=N`, Kate `-l N`, gedit `+N`, Zed and Sublime `file:line`,
+//!   JetBrains IDEs `--line N`; GNOME Text Editor has no line option
 //!
-//! A recording at a moment opens in VLC instead when it's installed and Settings say so (the default: `app_for`).
+//! A recording at a moment opens in VLC instead when it's installed and Settings say so (the default: `app_for`). Code
+//! opens in the editor chosen in Settings (editors.rs, `code_plan`), at its line when the editor can be told it.
 //!
 //! Which app and which arguments are pure functions (`app_for`, `plan`), tested below with made-up .desktop folders.
 
@@ -106,6 +108,10 @@ pub enum Viewer {
     Gedit,
     /// Zed and Sublime Text: `file:line`.
     FileColonLine,
+    /// IntelliJ IDEA, PyCharm and the other JetBrains IDEs: `--line N file`.
+    JetBrains,
+    /// GNOME Text Editor: opens the file, but can't be told a line.
+    TextEditor,
 }
 
 impl Viewer {
@@ -125,6 +131,9 @@ impl Viewer {
             "kate" => Viewer::Kate,
             "gedit" => Viewer::Gedit,
             "zed" | "zeditor" | "subl" => Viewer::FileColonLine,
+            "gnome-text-editor" => Viewer::TextEditor,
+            // Their launchers, as Toolbox, the snaps and the tarballs (idea.sh…) name them.
+            name if is_jetbrains(name.trim_end_matches(".sh")) => Viewer::JetBrains,
             _ => return None,
         })
     }
@@ -135,9 +144,15 @@ impl Viewer {
         match place {
             Place::Page(_) => matches!(self, Evince | Okular | Firefox | Chromium),
             Place::Moment(_) => matches!(self, Vlc | Mpv | Celluloid | Totem),
-            Place::Line(_) => matches!(self, VsCode | Geany | Kate | Gedit | FileColonLine),
+            Place::Line(_) => matches!(self, VsCode | Geany | Kate | Gedit | FileColonLine | JetBrains),
         }
     }
+}
+
+fn is_jetbrains(name: &str) -> bool {
+    let ide = name.trim_end_matches("-community").trim_end_matches("-professional").trim_end_matches("-ultimate");
+    matches!(ide, "idea" | "intellij-idea" | "pycharm" | "webstorm" | "clion" | "goland" | "rustrover" | "phpstorm"
+                  | "rubymine" | "android-studio" | "studio")
 }
 
 /// A file's default app: its .desktop id and the program its Exec line runs.
@@ -156,13 +171,16 @@ pub enum Plan {
     Run { argv: Vec<String>, place: Place },
     /// This command line opens the recording; then its MPRIS player is told the moment.
     RunThenSeek { argv: Vec<String>, bus: String, seconds: f64, duration: Option<f64> },
+    /// This command line opens the file, at its start (code in an editor that can't be told the line, or a result
+    /// without one).
+    Open { argv: Vec<String> },
 }
 
 impl Plan {
     /// What ↩ does, for the footer and the Open button: "Open at p. 3", "Open at 0:06", else "Open".
     pub fn title(&self) -> String {
         match self {
-            Plan::Plain => "Open".to_string(),
+            Plan::Plain | Plan::Open { .. } => "Open".to_string(),
             Plan::Run { place, .. } => format!("Open at {}", place.text()),
             Plan::RunThenSeek { seconds, .. } => format!("Open at {}", clock(*seconds)),
         }
@@ -217,9 +235,20 @@ pub fn plan(hit: &Hit, query: &str, app: Option<&App>) -> Plan {
         (Viewer::Kate, Place::Line(line)) => vec![program, "-l".into(), line.to_string(), file],
         (Viewer::Gedit, Place::Line(line)) => vec![program, format!("+{line}"), file],
         (Viewer::FileColonLine, Place::Line(line)) => vec![program, format!("{file}:{line}")],
+        (Viewer::JetBrains, Place::Line(line)) => vec![program, "--line".into(), line.to_string(), file],
         _ => return Plan::Plain,
     };
     Plan::Run { argv, place }
+}
+
+/// How a code result opens: in `editor` (Settings' choice, editors.rs) at its line when that editor can be told it,
+/// else there at the file's start; with no editor chosen, as any file (its `default` app, at the line if it can).
+pub fn code_plan(hit: &Hit, editor: Option<&App>, default: impl FnOnce() -> Option<App>) -> Plan {
+    let Some(editor) = editor else { return plan(hit, "", default().as_ref()) };
+    match plan(hit, "", Some(editor)) {
+        Plan::Plain => Plan::Open { argv: vec![editor.program.clone(), hit.path.clone()] },
+        at_line => at_line,
+    }
 }
 
 /// The word to search for on a PDF's page, as the Mac's `Landmark` picks one: a word that's on that page, so the
@@ -489,7 +518,7 @@ fn launch(argv: &[String]) -> Result<(), String> {
 pub fn run(plan: &Plan) -> Result<(), String> {
     match plan {
         Plan::Plain => Err("opens the plain way".into()),
-        Plan::Run { argv, .. } => launch(argv),
+        Plan::Run { argv, .. } | Plan::Open { argv } => launch(argv),
         Plan::RunThenSeek { argv, bus, seconds, duration } => {
             launch(argv)?;
             let (bus, seconds, duration) = (bus.clone(), *seconds, *duration);
@@ -649,7 +678,7 @@ mod tests {
 
     fn argv(plan: Plan) -> Vec<String> {
         match plan {
-            Plan::Run { argv, .. } | Plan::RunThenSeek { argv, .. } => argv,
+            Plan::Run { argv, .. } | Plan::RunThenSeek { argv, .. } | Plan::Open { argv } => argv,
             Plan::Plain => panic!("plain"),
         }
     }
@@ -756,6 +785,35 @@ mod tests {
         assert_eq!(argv(plan(&code, "", Some(&app("geany")))), ["geany", "--line=12", "/src/main.rs"]);
         assert_eq!(plan(&code, "", Some(&app("geany"))).title(), "Open at line 12");
         assert_eq!(plan(&code, "", Some(&app("gnome-text-editor"))), Plan::Plain);
+        assert_eq!(argv(plan(&code, "", Some(&app("/opt/pycharm/bin/pycharm.sh")))),
+                   ["/opt/pycharm/bin/pycharm.sh", "--line", "12", "/src/main.rs"]);
+        assert_eq!(argv(plan(&code, "", Some(&app("intellij-idea-community")))),
+                   ["intellij-idea-community", "--line", "12", "/src/main.rs"]);
+        assert_eq!(argv(plan(&code, "", Some(&app("kate")))), ["kate", "-l", "12", "/src/main.rs"]);
+        assert_eq!(argv(plan(&code, "", Some(&app("codium")))), ["codium", "-g", "/src/main.rs:12"]);
+        assert_eq!(argv(plan(&code, "", Some(&app("subl")))), ["subl", "/src/main.rs:12"]);
+    }
+
+    #[test]
+    fn code_in_the_chosen_editor() {
+        let mut code = hit("code", "lines", 12.0);
+        code.path = "/src/main.rs".into();
+        code.focus = Some(14.0);
+        let geany = || Some(app("geany"));
+        let zed = app("/usr/bin/zed");
+        assert_eq!(argv(code_plan(&code, Some(&zed), geany)), ["/usr/bin/zed", "/src/main.rs:14"],
+                   "the chosen editor, at the line that matched, not the default app");
+        assert_eq!(code_plan(&code, Some(&zed), geany).title(), "Open at line 14");
+        // An editor without a line option, or a result without a line (its name matched): the editor, at the start.
+        let text_editor = app("gnome-text-editor");
+        assert_eq!(code_plan(&code, Some(&text_editor), geany),
+                   Plan::Open { argv: vec!["gnome-text-editor".into(), "/src/main.rs".into()] });
+        let name = Hit { path: "/src/retry.py".into(), kind: "code".into(), segment: "name".into(), ..Hit::default() };
+        assert_eq!(argv(code_plan(&name, Some(&zed), geany)), ["/usr/bin/zed", "/src/retry.py"]);
+        assert_eq!(code_plan(&name, Some(&zed), geany).title(), "Open");
+        // No editor chosen: the default app, at the line if it can be told it.
+        assert_eq!(argv(code_plan(&code, None, geany)), ["geany", "--line=14", "/src/main.rs"]);
+        assert_eq!(code_plan(&code, None, || None), Plan::Plain);
     }
 
     #[test]

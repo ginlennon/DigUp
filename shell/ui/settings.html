@@ -35,6 +35,20 @@
     </section>
 
     <section>
+      <h3>Code search</h3>
+      <div class="card" id="code-folders"></div>
+      <button class="link" id="add-code">Add Code Folders…</button>
+      <p class="note">Repos, or folders of repos, to search with <b>code:</b> in the panel (“code: retry with backoff”).
+        Their code gets an index of its own; builds, dependencies and git's own files are left out.</p>
+    </section>
+
+    <section>
+      <h3>Skip these code folders</h3>
+      <div class="card" id="code-skipped"></div>
+      <button class="link" id="add-code-skipped">Skip a Code Folder…</button>
+    </section>
+
+    <section>
       <h3>Indexing</h3>
       <div class="card">
         <div class="row">
@@ -63,6 +77,10 @@
             <option value="vlc">VLC (when installed)</option>
             <option value="default">The default app</option>
           </select>
+        </div>
+        <div class="row">
+          <div class="label"><b>Open code in</b><span id="editor-text"></span></div>
+          <select id="editor" aria-label="Open code in"></select>
         </div>
       </div>
     </section>

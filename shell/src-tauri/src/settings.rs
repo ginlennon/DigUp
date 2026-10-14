@@ -1,8 +1,8 @@
 //! What the person chose: the folders DigUp searches, what it skips in them, the hotkey, whether setup is done,
-//! whether indexing is paused and may use the GPU, where recordings open at a moment. A JSON file in the app's config
-//! folder (%APPDATA%\com.abdurrahim.DigUp on Windows, ~/.config/com.abdurrahim.DigUp on Linux). Launch arguments
-//! (`--roots`, `--hotkey`) stand in for it in dev runs. A field a file doesn't have yet (one saved by an older shell)
-//! takes its default.
+//! whether indexing is paused and may use the GPU, where recordings open at a moment, the code folders and the editor
+//! code opens in. A JSON file in the app's config folder (%APPDATA%\com.abdurrahim.DigUp on Windows,
+//! ~/.config/com.abdurrahim.DigUp on Linux). Launch arguments (`--roots`, `--hotkey`) stand in for it in dev runs. A
+//! field a file doesn't have yet (one saved by an older shell) takes its default.
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -28,6 +28,13 @@ pub struct Settings {
     /// Where a recording opens when its result has a moment: "vlc" (VLC when it's installed, else as "default") or
     /// "default" (the file's default app, told the moment if it can be: opener.rs).
     pub moment_player: String,
+    /// Code search: the folders (repos, or folders of repos) kept in the code index (`--code-root`); none: off.
+    pub code_folders: Vec<String>,
+    /// Folders inside them that aren't (`--code-exclude`).
+    pub code_skipped: Vec<String>,
+    /// Where code results open (editors.rs): an editor's id, "default" (the file's default app), or "" (not chosen
+    /// yet: the first editor installed).
+    pub code_editor: String,
 }
 
 impl Default for Settings {
@@ -41,6 +48,9 @@ impl Default for Settings {
             paused: false,
             gpu: true,
             moment_player: "vlc".to_string(),
+            code_folders: Vec::new(),
+            code_skipped: Vec::new(),
+            code_editor: String::new(),
         }
     }
 }
@@ -90,8 +100,11 @@ mod tests {
         assert_eq!(old.folders, ["/home/me/Documents"]);
         assert!(old.set_up && old.gpu && !old.paused, "new fields take their defaults");
         assert!(old.prefers_vlc());
+        assert!(old.code_folders.is_empty() && old.code_skipped.is_empty() && old.code_editor.is_empty());
         let chosen: Settings = serde_json::from_str(r#"{"momentPlayer":"default"}"#).unwrap();
         assert!(!chosen.prefers_vlc());
+        let code: Settings = serde_json::from_str(r#"{"codeFolders":["/home/me/git"],"codeEditor":"zed"}"#).unwrap();
+        assert_eq!((code.code_folders, code.code_editor), (vec!["/home/me/git".to_string()], "zed".to_string()));
         let written = serde_json::to_value(Settings { paused: true, gpu: false, ..old }).unwrap();
         assert_eq!((written["paused"].as_bool(), written["gpu"].as_bool()), (Some(true), Some(false)));
     }

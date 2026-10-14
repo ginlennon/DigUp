@@ -1,7 +1,8 @@
-// DigUp's settings window: the folders and what's skipped in them, pausing indexing and the GPU switch, where
-// recordings open at a moment, the shortcut (on GNOME a GNOME shortcut, which this window can write), starting at
-// login, and where DigUp keeps things. Each change applies at once, as in the Mac app's Settings; the shell saves it
-// and the helpers follow (search-service is told the folders, the watcher and indexing start over with them).
+// DigUp's settings window: the folders and what's skipped in them, the code folders, pausing indexing and the GPU
+// switch (and what's left of it after a GPU problem), where recordings and code open, the shortcut (on GNOME a GNOME
+// shortcut, which this window can write), starting at login, turning DigUp off, where DigUp keeps things and a check
+// of it. Each change applies at once, as in the Mac app's Settings; the shell saves it and the helpers follow
+// (search-service is told the folders, the watcher and indexing start over with them).
 "use strict";
 
 const tauri = window.__TAURI__;
@@ -25,6 +26,7 @@ async function load() {
 function render() {
   renderFolders();
   renderSkipped();
+  renderCode();
   // Not while it's being typed in.
   if (document.activeElement !== $("types")) $("types").value = info.skipTypes.join(", ");
   $("from-launch").hidden = !info.foldersFromLaunch;
@@ -35,6 +37,7 @@ function render() {
   $("gpu").checked = info.gpu;
   renderGpuProblem();
   renderMomentPlayer();
+  renderEditor();
 
   renderShortcut();
   $("login").checked = info.startsAtLogin;
@@ -146,6 +149,69 @@ async function save(change) {
   }
   load();
 }
+
+// MARK: Code search
+
+function renderCode() {
+  const folders = $("code-folders"), skipped = $("code-skipped");
+  folders.replaceChildren();
+  if (!info.codeFolders.length) folders.append(emptyRow("None: code search is off. Add the folders you keep code in."));
+  for (const path of info.codeFolders) {
+    folders.append(folderRow(path, "Remove", "Its code leaves code search; adding it back reads it again.", () =>
+      saveCode({ folders: info.codeFolders.filter((folder) => folder !== path) })));
+  }
+  skipped.replaceChildren();
+  if (!info.codeSkipped.length) skipped.append(emptyRow("None. Builds, dependencies and hidden folders are skipped anyway."));
+  for (const path of info.codeSkipped) {
+    skipped.append(folderRow(path, "Search Again", null, () =>
+      saveCode({ skipped: info.codeSkipped.filter((folder) => folder !== path) })));
+  }
+}
+
+$("add-code").addEventListener("click", async () => {
+  const picked = (await invoke("pick_folders", { title: "Add Code Folders" }))
+    .filter((path) => !info.codeFolders.includes(path));
+  if (picked.length) saveCode({ folders: [...info.codeFolders, ...picked] });
+});
+
+$("add-code-skipped").addEventListener("click", async () => {
+  const picked = (await invoke("pick_folders", { title: "Skip Code Folders" }))
+    .filter((path) => !info.codeSkipped.includes(path));
+  if (picked.length) saveCode({ skipped: [...info.codeSkipped, ...picked] });
+});
+
+async function saveCode(change) {
+  try {
+    await invoke("save_code_folders", { folders: change.folders ?? info.codeFolders,
+                                        skipped: change.skipped ?? info.codeSkipped });
+    problem(null);
+  } catch (error) {
+    problem(error);
+  }
+  load();
+}
+
+/// The editors installed (and the file's default app), the one in use selected.
+function renderEditor() {
+  const select = $("editor");
+  if (document.activeElement !== select) {
+    select.replaceChildren(...info.editors.map((editor) => {
+      const option = element("option", "", editor.name);
+      option.value = editor.id;
+      return option;
+    }), Object.assign(element("option", "", "The file's default app"), { value: "default" }));
+    select.value = info.codeEditor;
+  }
+  const chosen = info.editors.find((editor) => editor.id === info.codeEditor);
+  $("editor-text").textContent = chosen
+    ? (chosen.id === "gnome-text-editor" ? `${chosen.name} opens the file at its start: it can't be told a line.`
+                                         : `${chosen.name} opens at the line that matched.`)
+    : info.editors.length
+      ? "Its default app, at the line when that app can be told it."
+      : "No code editor found (VS Code, Zed, Sublime Text, Geany, JetBrains IDEs, Kate…): its default app.";
+}
+
+$("editor").addEventListener("change", () => run("set_code_editor", { editor: $("editor").value }, $("editor")));
 
 // MARK: Indexing, the shortcut, login
 

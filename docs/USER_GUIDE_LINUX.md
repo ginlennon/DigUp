@@ -57,10 +57,13 @@ there before pointing DigUp at your own folders.
 
 ### Work and code
 
-9. **Code by what it does.** Turn on code folders and start the query with `code:`: *"code: plot how many examples
-   each class has"* finds the notebook cell; *"code: retry a failed call with backoff"* finds the function whatever
-   it's called. (In the desktop app: coming. From the terminal today:
-   `digup index --code ~/projects && digup search "code: retry with backoff"`.)
+9. **Code by what it does.** Add your code folders in Settings → Code search and start the query with `code:`:
+   *"code: plot how many examples each class has"* finds the notebook cell; *"code: retry a failed call with
+   backoff"* finds the function whatever it's called. ↩ opens it at the line in the editor chosen under Settings →
+   Opening → "Open code in" (VS Code, VSCodium, Cursor, Zed, Sublime Text, Geany, JetBrains IDEs, Kate, Text Editor,
+   or the file's default app); the footer says where ("Open at line 12 in VS Code"). Code is indexed again a minute
+   after you stop changing it. From the terminal:
+   `digup index --code ~/projects && digup search "code: retry with backoff"`.
 10. **Your coding assistant asks DigUp.** The MCP server in [`integrations/`](../integrations/README.md) lets Claude
     Code, Cursor, VS Code or Zed search your files: "find the design doc that mentions the rate limiter", "which
     screenshot shows the staging error?", then read the matching passage (`read_segment`). For Claude Code:

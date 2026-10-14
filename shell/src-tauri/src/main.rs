@@ -17,6 +17,7 @@ macro_rules! log_error {
 
 mod control;
 mod desktop;
+mod editors;
 mod fallback;
 mod helper;
 mod opener;
@@ -75,6 +76,8 @@ struct Shell {
     apps: opener::Apps,
     /// The helpers' troubles this session, and what was done about them (fallback.rs).
     health: Mutex<fallback::Health>,
+    /// The code editors installed, for code results.
+    editors: editors::Editors,
 }
 
 impl Shell {
@@ -84,6 +87,18 @@ impl Shell {
             return self.options.roots.iter().map(|root| root.display().to_string()).collect();
         }
         self.settings.lock().unwrap().folders.clone()
+    }
+
+    /// The code folders (code search; none: off).
+    fn code_folders(&self) -> Vec<String> {
+        self.settings.lock().unwrap().code_folders.clone()
+    }
+
+    /// Where code results open: the editor chosen in Settings (or the first one installed), else None: the file's
+    /// default app (editors.rs).
+    fn code_editor(&self) -> Option<editors::Editor> {
+        let id = self.settings.lock().unwrap().code_editor.clone();
+        editors::chosen(&id, &self.editors.installed())
     }
 
     fn is_set_up(&self) -> bool {
@@ -151,6 +166,7 @@ impl Shell {
         for extension in &settings.skip_types {
             args.extend(["--exclude-ext".to_string(), extension.clone()]);
         }
+        args.extend(code_arguments(&settings));
         args.extend(self.folders());
         let mut launch = self.launch(args, "index.log");
         launch.also_logs.extend(self.options.index_folder().map(|index| index.join("worker.log")));
@@ -180,6 +196,14 @@ fn helper_env(options: &Options, cpu: bool) -> Vec<(String, String)> {
     env
 }
 
+/// Code search's folders for both helpers: `--code-root` for each code folder, `--code-exclude` for what's skipped in
+/// them. None: no code index is kept (one made earlier stays, unsearched).
+fn code_arguments(settings: &Settings) -> Vec<String> {
+    let roots = settings.code_folders.iter().flat_map(|folder| ["--code-root".to_string(), folder.clone()]);
+    let skipped = settings.code_skipped.iter().flat_map(|folder| ["--code-exclude".to_string(), folder.clone()]);
+    roots.chain(skipped).collect()
+}
+
 /// `search-service` for these folders, with what's skipped in them, on the CPU only when `cpu`. Not a background
 /// helper: it answers typing.
 fn search_launch(options: &Options, settings: &Settings, folders: Vec<String>, logs: &Path, cpu: bool) -> Launch {
@@ -191,6 +215,7 @@ fn search_launch(options: &Options, settings: &Settings, folders: Vec<String>, l
     for extension in &settings.skip_types {
         args.extend(["--exclude-ext".to_string(), extension.clone()]);
     }
+    args.extend(code_arguments(settings));
     args.extend(folders);
     Launch {
         program: options.helper.clone(),
@@ -335,6 +360,11 @@ async fn settings_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Result<V
         "paused": settings.paused,
         "gpu": settings.gpu,
         "momentPlayer": if settings.prefers_vlc() { "vlc" } else { "default" },
+        // Code search: its folders, what's skipped there, and the editors to choose from with the one in use.
+        "codeFolders": settings.code_folders,
+        "codeSkipped": settings.code_skipped,
+        "editors": shell.editors.installed(),
+        "codeEditor": shell.code_editor().map_or(editors::DEFAULT_APP.to_string(), |editor| editor.id),
         "vlc": shell.apps.vlc().is_some(),
         "hotkey": shortcut_text(&shell.hotkey()),
         "gnome": gnome,
@@ -497,11 +527,47 @@ async fn turn_off(app: AppHandle, remove_shortcut: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// The folder a query's `in:` names (scope.rs), among the folders searched: what the panel's chip searches in.
+/// The folder a query's `in:` names (scope.rs), among the folders searched and the code folders: what the panel's
+/// chip searches in.
 #[tauri::command]
 fn resolve_folder(shell: State<'_, Arc<Shell>>, name: String) -> Result<scope::Folder, String> {
     let home = std::env::var("HOME").ok();
-    scope::resolve(&name, &shell.folders(), home.as_deref(), scope::subfolders, Path::is_dir)
+    let roots: Vec<String> = shell.folders().into_iter().chain(shell.code_folders()).collect();
+    scope::resolve(&name, &roots, home.as_deref(), scope::subfolders, Path::is_dir)
+}
+
+/// What the panel needs to know of the settings: whether there are code folders (for `code:`'s hint).
+#[tauri::command]
+fn panel_info(shell: State<'_, Arc<Shell>>) -> Value {
+    json!({"codeFolders": shell.code_folders().len()})
+}
+
+/// Settings → Code: the code folders and what's skipped in them. Saved, and both helpers and the watcher follow.
+#[tauri::command]
+async fn save_code_folders(app: AppHandle, shell: State<'_, Arc<Shell>>, folders: Vec<String>, skipped: Vec<String>)
+                           -> Result<(), String> {
+    shell.change_settings(|settings| {
+        settings.code_folders = folders;
+        settings.code_skipped = skipped;
+    })?;
+    tauri::async_runtime::spawn_blocking(move || {
+        apply_folders(&app);
+        settings_changed(&app);
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+/// Where code results open: an installed editor's id, or "default" (editors.rs). The panel asks for its Open titles
+/// again each time it's shown.
+#[tauri::command]
+fn set_code_editor(app: AppHandle, shell: State<'_, Arc<Shell>>, editor: String) -> Result<(), String> {
+    if editor != editors::DEFAULT_APP && !shell.editors.installed().iter().any(|installed| installed.id == editor) {
+        return Err(format!("no such editor here: {editor}"));
+    }
+    shell.change_settings(|settings| settings.code_editor = editor)?;
+    settings_changed(&app);
+    Ok(())
 }
 
 /// Opens a result in its default app.
@@ -518,7 +584,7 @@ async fn open_hit(app: AppHandle, shell: State<'_, Arc<Shell>>, hit: opener::Hit
     let shell = shell.inner().clone();
     let path = hit.path.clone();
     let opened = tauri::async_runtime::spawn_blocking(move || {
-        let plan = opener::plan(&hit, &query, shell.apps.for_hit(&hit, shell.prefers_vlc()).as_ref());
+        let (plan, _) = open_plan(&shell, &hit, &query);
         if cfg!(debug_assertions) {
             log!("open: {} → {plan:?}", hit.path);
         }
@@ -532,18 +598,35 @@ async fn open_hit(app: AppHandle, shell: State<'_, Arc<Shell>>, hit: opener::Hit
     app.opener().open_path(path, None::<&str>).map_err(|error| error.to_string())
 }
 
-/// What ↩ does with a result, for the panel's footer and Open button: "Open at p. 3", "Open at 0:06", else "Open".
+/// What ↩ does with a result, for the panel's footer and Open button: "Open at p. 3", "Open at 0:06", else "Open";
+/// code says its editor: "Open at line 12 in VS Code".
 #[tauri::command]
 async fn open_title(shell: State<'_, Arc<Shell>>, hit: opener::Hit) -> Result<String, String> {
-    if hit.place().is_none() {
+    if hit.place().is_none() && hit.kind != "code" {
         return Ok("Open".into());
     }
     let shell = shell.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        opener::plan(&hit, "", shell.apps.for_hit(&hit, shell.prefers_vlc()).as_ref()).title()
+        let (plan, editor) = open_plan(&shell, &hit, "");
+        match editor {
+            Some(name) => format!("{} in {name}", plan.title()),
+            None => plan.title(),
+        }
     })
     .await
     .map_err(|error| error.to_string())
+}
+
+/// How a result opens (opener.rs): code in the editor chosen in Settings (its name too), the rest in its default app,
+/// or VLC for a recording at a moment when Settings say so.
+fn open_plan(shell: &Shell, hit: &opener::Hit, query: &str) -> (opener::Plan, Option<String>) {
+    if hit.kind == "code" {
+        let editor = shell.code_editor();
+        let plan = opener::code_plan(hit, editor.as_ref().map(editors::Editor::app).as_ref(),
+                                     || shell.apps.for_file(&hit.path));
+        return (plan, editor.map(|editor| editor.name));
+    }
+    (opener::plan(hit, query, shell.apps.for_hit(hit, shell.prefers_vlc()).as_ref()), None)
 }
 
 /// Shows a result in the file manager, selected.
@@ -628,7 +711,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             ask, estimate, setup_info, pick_folders, finish_setup, resolve_folder, open_path, open_hit, open_title, reveal,
             hide_panel, panel_height, settings_info, save_folders, set_paused, set_gpu, set_starts_at_login, set_up_shortcut,
-            turn_off, try_gpu_again, check_digup, set_moment_player, debug_query, debug_report
+            turn_off, try_gpu_again, check_digup, set_moment_player, panel_info, save_code_folders, set_code_editor,
+            debug_query, debug_report
         ])
         .build(context)
         .expect("DigUp couldn't start");
@@ -695,6 +779,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         logs,
         apps: opener::Apps::new(),
         health: Mutex::new(fallback::Health::default()),
+        editors: editors::Editors::new(),
     });
     app.manage(shell.clone());
     // Now with all it's started with (the logs it's watched by too).
@@ -767,10 +852,7 @@ fn act(app: &AppHandle, command: Command) {
 fn apply_folders(app: &AppHandle) {
     let shell = app.state::<Arc<Shell>>().inner().clone();
     let folders = shell.folders();
-    let (skipped, types) = {
-        let settings = shell.settings.lock().unwrap();
-        (settings.skipped.clone(), settings.skip_types.clone())
-    };
+    let settings = shell.settings.lock().unwrap().clone();
     for folder in &folders {
         let _ = app.asset_protocol_scope().allow_directory(folder, true);
     }
@@ -778,12 +860,14 @@ fn apply_folders(app: &AppHandle) {
     shell.search.set_launch(shell.search_launch());
     let search = shell.clone();
     tauri::async_runtime::spawn(async move {
-        let _ = search.search.ask(json!({"op": "folders", "roots": folders, "skipped": skipped, "types": types})).await;
+        let request = json!({"op": "folders", "roots": folders, "skipped": settings.skipped, "types": settings.skip_types,
+                             "code_roots": settings.code_folders, "code_skipped": settings.code_skipped});
+        let _ = search.search.ask(request).await;
     });
     watch_folders(app);
 }
 
-/// Watches the folders, and indexes them now when the model is in.
+/// Watches the folders and the code folders, and indexes them now when the model is in.
 fn watch_folders(app: &AppHandle) {
     let shell = app.state::<Arc<Shell>>().inner().clone();
     let folders: Vec<PathBuf> = shell.folders().iter().map(PathBuf::from).collect();
@@ -791,11 +875,17 @@ fn watch_folders(app: &AppHandle) {
         set_status(app, "No folders chosen yet");
         return;
     }
+    let code: Vec<PathBuf> = shell.code_folders().iter().map(PathBuf::from).collect();
     let changed = {
         let app = app.clone();
         move || run_index(&app)
     };
-    *shell.watcher.lock().unwrap() = Some(FolderWatcher::start(&folders, shell.options.index_folder(), changed));
+    let code_changed = {
+        let app = app.clone();
+        move || run_code_index(&app)
+    };
+    *shell.watcher.lock().unwrap() =
+        Some(FolderWatcher::start(&folders, &code, shell.options.index_folder(), changed, code_changed));
     if shell.is_paused() {
         set_status(app, "Paused");
     }
@@ -821,6 +911,19 @@ fn run_index(app: &AppHandle) {
         return;
     }
     if let Err(error) = shell.index.run(&shell.index_launch()) {
+        set_status(app, &format!("Indexing couldn't start: {error}"));
+    }
+}
+
+/// Code changed (and has been quiet a while: watcher.rs): the index helper syncs the code index, under the same
+/// conditions as `run_index`.
+fn run_code_index(app: &AppHandle) {
+    let shell = app.state::<Arc<Shell>>();
+    if !shell.is_set_up() || shell.folders().is_empty() || shell.code_folders().is_empty() || !shell.model_ready()
+        || shell.is_paused() {
+        return;
+    }
+    if let Err(error) = shell.index.run_code(&shell.index_launch()) {
         set_status(app, &format!("Indexing couldn't start: {error}"));
     }
 }
