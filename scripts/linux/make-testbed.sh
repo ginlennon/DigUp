@@ -5,17 +5,20 @@
 #   traps/      cases the crawler must get right (TypeScript .ts, code projects, datasets, icons, bundles, odd names)
 #   code/       small git repos with known functions, for code search (evals/code.json)
 #   real/       only with --with-real: a seeded random sample of your own files (see testbed/sample_real.py)
+# synthetic/lang/eu/ has German, English, French, Spanish, Italian and Portuguese files (evals/european.json); Bengali
+# and Arabic (synthetic/lang/bn, ar: upstream's evals/multilingual.json) are tier 2, built only with --tier2.
 #
-#   scripts/linux/make-testbed.sh [--with-real [--hardlinks]] [dir]        default: ~/DigUpTestbed
+#   scripts/linux/make-testbed.sh [--with-real [--hardlinks]] [--tier2] [dir]        default: ~/DigUpTestbed
 # Delete it any time: rm -rf ~/DigUpTestbed. Needs uv, ffmpeg, git and Ubuntu's Noto fonts; downloads ~110 MB of
-# pictures and ~200 MB of voices once (kept in ~/.cache/digup-testbed). See scripts/linux/README.md.
+# pictures and ~380 MB of voices once (~510 MB with --tier2; kept in ~/.cache/digup-testbed). See scripts/linux/README.md.
 set -euo pipefail
-WITH_REAL=0; REAL_ARGS=(); TB=""
+WITH_REAL=0; REAL_ARGS=(); TIER2=0; TB=""
 for arg in "$@"; do
   case "$arg" in
     --with-real) WITH_REAL=1 ;;
     --hardlinks) REAL_ARGS+=(--hardlinks) ;;
-    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    --tier2) TIER2=1 ;;
+    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
     -*) echo "unknown option $arg"; exit 1 ;;
     *) TB="$arg" ;;
   esac
@@ -44,7 +47,10 @@ mv "$S/shots" "$S/screenshots"
 # screenshots by name only ("Screenshot…"), so shot_*.png are plain pictures there.
 py "$G/make_docs.py" "$S/docs" >/dev/null
 py "$G/make_long.py" "$S/long" >/dev/null   # deep pages: read after the first pass
-"$G/make_lang.sh" "$S/lang"   # Bengali and Arabic (evals/multilingual.json)
+"$G/make_eu.sh" "$S/lang/eu"   # de, en, fr, es, it, pt (evals/european.json)
+if [[ $TIER2 == 1 ]]; then
+  "$G/make_lang.sh" "$S/lang"   # tier 2: Bengali and Arabic (evals/multilingual.json)
+fi
 
 echo "== traps/ =="
 T="$TB/traps"; mkdir -p "$T"
@@ -93,8 +99,10 @@ A sandbox for testing DigUp. Delete it whenever you like: `rm -rf ~/DigUpTestbed
 Rebuild it with `scripts/linux/make-testbed.sh` in the DigUp repo (macOS: `scripts/make-testbed.sh`).
 
 - `synthetic/`: generated media with known content (freely licensed stand-ins for macOS's sample pictures, from
-  Wikimedia Commons; synthetic UI screenshots; Piper TTS speech; a penguin/zebra/parrot video; PDFs and notes; `lang/`
-  has Bengali and Arabic ones; `long/` a 120-page PDF, long notes and a dump of numbers). This is the ground truth for
+  Wikimedia Commons; synthetic UI screenshots; Piper TTS speech; a penguin/zebra/parrot video; PDFs and notes; `lang/eu/`
+  has German, English, French, Spanish, Italian and Portuguese notes, PDFs, screenshots and recordings, with
+  `transcripts.json` saying what each recording says; `lang/bn`, `lang/ar` (only with `--tier2`) Bengali and Arabic
+  ones; `long/` a 120-page PDF, long notes and a dump of numbers). This is the ground truth for
   automated evals.
 - `traps/`: cases the crawler must handle: TypeScript `.ts` files (not videos), a real MPEG-TS video (is a video),
   a code project (only its screenshot counts), `node_modules`, hidden folders, an app bundle, tiny icons, a

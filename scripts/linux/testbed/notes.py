@@ -1,6 +1,9 @@
 """Notes in the formats macOS's NSAttributedString writes: .rtf (as TextEdit/Cocoa writes it: non-ASCII as \\uN escapes)
-and .docx (one paragraph per line, python-docx); anything else is plain UTF-8, as `String.write(to:)` writes it."""
+and .docx (one paragraph per line, python-docx); .odt as a minimal OpenDocument text (one paragraph per line); anything
+else is plain UTF-8, as `String.write(to:)` writes it."""
 import datetime
+import zipfile
+from xml.sax.saxutils import escape as xml_escape
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -52,8 +55,33 @@ def docx(path, content, font="Helvetica", size=13, rtl=False):
     document.save(path)
 
 
+def odt(path, content):
+    """The smallest OpenDocument text LibreOffice opens: the mimetype first and stored, a manifest, content.xml."""
+    office = "urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+    body = "".join(f"<text:p>{xml_escape(line)}</text:p>" if line else "<text:p/>" for line in content.split("\n"))
+    xml = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+           f'<office:document-content xmlns:office="{office}" '
+           'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" office:version="1.3">'
+           f"<office:body><office:text>{body}</office:text></office:body></office:document-content>")
+    manifest = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" '
+                'manifest:version="1.3">'
+                '<manifest:file-entry manifest:full-path="/" manifest:version="1.3" '
+                'manifest:media-type="application/vnd.oasis.opendocument.text"/>'
+                '<manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>'
+                "</manifest:manifest>")
+    stamp = FIXED_TIME.timetuple()[:6]
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(zipfile.ZipInfo("mimetype", stamp), "application/vnd.oasis.opendocument.text",
+                   compress_type=zipfile.ZIP_STORED)
+        for name, data in [("META-INF/manifest.xml", manifest), ("content.xml", xml)]:
+            z.writestr(zipfile.ZipInfo(name, stamp), data, compress_type=zipfile.ZIP_DEFLATED)
+
+
 def write(path, content, font="Helvetica", size=13, rtl=False):
-    if path.endswith(".rtf"):
+    if path.endswith(".odt"):
+        odt(path, content)
+    elif path.endswith(".rtf"):
         with open(path, "w", encoding="ascii") as f:
             f.write(rtf(content, font, size, rtl))
     elif path.endswith(".docx"):

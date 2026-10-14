@@ -1,7 +1,8 @@
 """Text to speech for the testbed with Piper (CPU), standing in for macOS's `say` voices: Samantha (en), Piya (bn),
-Majed (ar). Writes 16 kHz mono WAVs, as make_media.sh writes them.
+Majed (ar); and the voices of the European recordings (make_eu.py: de, fr, es, it, pt). Writes 16 kHz mono WAVs, as
+make_media.sh writes them.
 
-    uv run --project scripts/linux/testbed python -I scripts/linux/testbed/speak.py <en|bn|ar> <out.wav> <text> [<out.wav> <text> ...]
+    uv run --project scripts/linux/testbed python -I scripts/linux/testbed/speak.py <language> <out.wav> <text> [<out.wav> <text> ...]
 
 The voices come from rhasspy/piper-voices at a pinned revision, checked by sha256, and are kept in
 ${DIGUP_TESTBED_CACHE:-${XDG_CACHE_HOME:-~/.cache}/digup-testbed}/voices.
@@ -26,6 +27,23 @@ VOICES = {  # language: (path in the repo, sha256 of .onnx, sha256 of .onnx.json
     "ar": ("ar/ar_JO/kareem/medium/ar_JO-kareem-medium",
            "9e95cab07b679da603bba17c4dec7ab3111320571964ee95c0379603c086491e",
            "ea6d9b9d9076dbdb6bf5c98c6a141ef154959d2359709b37855727964e7d6c4d"),
+    # The ASR spike's voices (docs/linux-port/ASR_SPIKE.md). Each .onnx sha256 is the file's Git LFS oid at REVISION, and
+    # each .onnx.json's Git blob id matched the repo tree there (2026-10-14).
+    "de": ("de/de_DE/thorsten/medium/de_DE-thorsten-medium",
+           "7e64762d8e5118bb578f2eea6207e1a35a8e0c30595010b666f983fc87bb7819",
+           "974adee790533adb273a1ac88f49027d2a1b8f0f2cf4905954a4791e79264e85"),
+    "fr": ("fr/fr_FR/siwis/medium/fr_FR-siwis-medium",
+           "641d1ab097da2b81128c076810edb052b385decc8be3381814802a64a73baf99",
+           "39479916c2db192b5ac9764daddd0c744d83e023ad890c6976c0633ae4df8959"),
+    "es": ("es/es_ES/davefx/medium/es_ES-davefx-medium",
+           "6658b03b1a6c316ee4c265a9896abc1393353c2d9e1bca7d66c2c442e222a917",
+           "0e0dda87c732f6f38771ff274a6380d9252f327dca77aa2963d5fbdf9ec54842"),
+    "it": ("it/it_IT/paola/medium/it_IT-paola-medium",
+           "6fc918b5a0ea6137382833dddfa567bffbe6a5060c02043c87192ee59c04210c",
+           "aea19c0a7fce29fbc359b93f10e7902854401e4c95ae2ea328ae516b15d296cf"),
+    "pt": ("pt/pt_BR/faber/medium/pt_BR-faber-medium",
+           "858555e3a064209c57088fe6bd70c4c3dc54d03eaa00c45d5ecaf43a33f95aa7",
+           "7e694de195ae3fc36dd732c445eb04fb49b649854893cb5506b978f0d50a1d6f"),
 }
 UA = "DigUpTestbed/0.1 (https://github.com/ginlennon/DigUp; testbed generator)"
 

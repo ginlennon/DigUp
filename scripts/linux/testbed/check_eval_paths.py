@@ -1,15 +1,20 @@
 """Checks that a testbed has every file the evals expect: each path in evals/*.json exists (an "@a-b" suffix is a page,
-time or chunk range and is stripped), PDFs have the pages the evals point at, and videos last long enough.
+time or chunk range and is stripped), PDFs have the pages the evals point at, and recordings and videos last long
+enough.
 
     uv run --project scripts/linux/testbed python -I scripts/linux/testbed/check_eval_paths.py <testbed> [eval.json ...]
         [--content]
 
 The evals' "base" ("~/DigUpTestbed", "~/DigUpTestbed/code") is mapped onto <testbed>. With no eval files, all of
-evals/*.json. --content also reads the text DigUp's Linux build would read (PDF pages through PDFium, docx/rtf/txt/md)
-and reports, for the queries that are words to find ("exact", "*-word" tags), whether the words are in the expected
-file or page; this says what's there, it isn't an eval. Exit status 1 when a path or page is missing.
+evals/*.json. Tier-2 evals (multilingual.json: Bengali and Arabic, which make-testbed.sh builds only with --tier2) are
+skipped with a note when their folders aren't in the testbed. --content also reads the text DigUp's Linux build would
+read (PDF pages through PDFium, docx/odt/rtf/txt/md) and reports, for the queries that are words to find ("exact",
+"*-word" tags), whether the words are in the expected file or page, and for "spoken-term" queries that the words are in
+no text under synthetic/ (they're only said in a recording); this says what's there, it isn't an eval. Exit status 1
+when a path or page is missing or a recording or video is shorter than its range.
 """
 import glob
+import html
 import json
 import os
 import re
@@ -20,6 +25,10 @@ import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
+# Evals over tier-2 files, and the folders make-testbed.sh --tier2 adds for them.
+TIER2 = {"multilingual.json": ["synthetic/lang/bn", "synthetic/lang/ar"]}
+TEXT_EXTENSIONS = (".txt", ".md", ".rtf", ".docx", ".odt")
+MEDIA_EXTENSIONS = (".mp4", ".mov", ".wav", ".m4a", ".mp3", ".ogg", ".flac", ".opus")
 
 
 def split(path):
@@ -58,6 +67,10 @@ def bare(text):
                    if not (unicodedata.category(c) == "Mn" and "\u064b" <= c <= "\u065f"))
 
 
+def fold(text):
+    return unicodedata.normalize("NFC", text).casefold()
+
+
 def rtf_text(rtf):
     """Enough of RTF for a check: \\uN escapes decoded, control words and skipped groups dropped."""
     rtf = re.sub(r"\{\\\*[^{}]*\}|\{\\(fonttbl|colortbl)[^{}]*\}", "", rtf)
@@ -69,11 +82,28 @@ def rtf_text(rtf):
 
 def text_of(path):
     extension = os.path.splitext(path)[1].lower()
-    if extension == ".docx":
+    if extension in (".docx", ".odt"):
         with zipfile.ZipFile(path) as z:
-            return re.sub(r"<[^>]+>", "", z.read("word/document.xml").decode("utf-8"))
+            xml = z.read("word/document.xml" if extension == ".docx" else "content.xml").decode("utf-8")
+        return html.unescape(re.sub(r"<[^>]+>", "", re.sub(r"</(w|text):p>", "\n", xml)))
     raw = open(path, encoding="utf-8", errors="replace").read()
     return rtf_text(raw) if extension == ".rtf" else raw
+
+
+def written_texts(testbed, pdf_cache):
+    """Every text DigUp reads under synthetic/, as (path in the testbed, text): where a spoken term mustn't be."""
+    texts = []
+    for root, _, files in os.walk(os.path.join(testbed, "synthetic")):
+        for name in sorted(files):
+            path = os.path.join(root, name)
+            extension = os.path.splitext(name)[1].lower()
+            if extension == ".pdf":
+                if path not in pdf_cache:
+                    pdf_cache[path] = pdf_pages(path)
+                texts.append((os.path.relpath(path, testbed), "\n".join(pdf_cache[path])))
+            elif extension in TEXT_EXTENSIONS:
+                texts.append((os.path.relpath(path, testbed), text_of(path)))
+    return texts
 
 
 def main():
@@ -83,9 +113,15 @@ def main():
         sys.exit(__doc__)
     testbed = os.path.abspath(os.path.expanduser(args[0]))
     evals = args[1:] or sorted(glob.glob(os.path.join(REPO, "evals", "*.json")))
-    missing, checked, words = [], 0, []
-    pdf_cache = {}
+    missing, checked, words, skipped = [], 0, [], 0
+    pdf_cache, written = {}, None
     for eval_path in evals:
+        absent = [d for d in TIER2.get(os.path.basename(eval_path), []) if not os.path.isdir(os.path.join(testbed, d))]
+        if absent:
+            print(f"{os.path.basename(eval_path)}: skipped, tier 2 isn't in this testbed (no {', '.join(absent)}; "
+                  "make-testbed.sh --tier2 builds it)")
+            skipped += 1
+            continue
         with open(eval_path, encoding="utf-8") as f:
             data = json.load(f)
         base = data["base"]
@@ -108,17 +144,23 @@ def main():
                     if end is not None and end > len(pdf_cache[path]):
                         missing.append(f"{where}  (the PDF has {len(pdf_cache[path])} pages)")
                         continue
-                elif start is not None and (extension in (".mp4", ".mov") or
+                elif start is not None and (extension in MEDIA_EXTENSIONS or
                                             (extension == ".ts" and is_transport_stream(path))):
                     if duration(path) <= start:
-                        missing.append(f"{where}  (the video lasts {duration(path):.1f} s)")
+                        missing.append(f"{where}  (it lasts {duration(path):.1f} s)")
                         continue
                 tag = query.get("tag", "")
-                if content and ("exact" in tag or tag.endswith("-word")):
+                if content and tag == "spoken-term":
+                    if written is None:
+                        written = written_texts(testbed, pdf_cache)
+                    also = [name for name, text in written if fold(query["q"]) in fold(text)]
+                    words.append(f"  {'ALSO WRITTEN in ' + ', '.join(also) if also else 'ok, only said'}  "
+                                 f"{query['q']!r} in {expect}")
+                elif content and ("exact" in tag or tag.endswith("-word")):
                     if extension == ".pdf":
                         pages = pdf_cache[path]
                         text = "\n".join(pages[start - 1:end] if start else pages)
-                    elif extension in (".txt", ".md", ".rtf", ".docx"):
+                    elif extension in TEXT_EXTENSIONS:
                         text = text_of(path)
                     else:
                         words.append(f"  -    {query['q']!r} in {expect}: a picture; only its pixels hold the words")
@@ -128,11 +170,11 @@ def main():
                     if not found and bare(query["q"]) in bare(text):
                         note = "  (only with diacritics in the file)"
                     words.append(f"  {'ok  ' if found else 'MISS'} {query['q']!r} in {expect}{note}")
-    print(f"{checked} expected paths in {len(evals)} eval files, {len(missing)} missing")
+    print(f"{checked} expected paths in {len(evals) - skipped} eval files, {len(missing)} missing")
     for line in missing:
         print("  MISSING", line)
     if content:
-        print("Words the exact/word queries look for, in the text DigUp reads:")
+        print("Words the exact/word queries look for, in the text DigUp reads; spoken terms, in no text:")
         print("\n".join(words))
     sys.exit(1 if missing else 0)
 

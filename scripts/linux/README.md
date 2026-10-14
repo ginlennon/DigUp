@@ -69,27 +69,49 @@ English, German, French, Spanish, Italian, Portuguese and Arabic that are instal
 ## The eval testbed: `make-testbed.sh`
 
 ```sh
-scripts/linux/make-testbed.sh [--with-real [--hardlinks]] [dir]     # default dir: ~/DigUpTestbed
+scripts/linux/make-testbed.sh [--with-real [--hardlinks]] [--tier2] [dir]     # default dir: ~/DigUpTestbed
 uv run --project scripts/linux/testbed python -I scripts/linux/testbed/check_eval_paths.py ~/DigUpTestbed [--content]
-digup eval evals/synthetic.json      # and evals/multilingual.json, evals/code.json
+digup eval evals/synthetic.json      # and evals/european.json, evals/code.json; evals/multilingual.json with --tier2
 ```
 
 This is the Linux port of `scripts/make-testbed.sh`. It builds `synthetic/`, `traps/` and `code/` with the **same
 relative paths** the evals name, so `evals/*.json` (base `~/DigUpTestbed`) run unchanged. `check_eval_paths.py` checks
 that every expected path exists (the `@a-b` ranges stripped; PDFs have the pages, videos the length); `--content` also
-shows whether the words that the exact and word queries look for are in the text DigUp reads. It takes about 35 s
-once the downloads are cached and needs no GPU.
+shows whether the words that the exact and word queries look for are in the text DigUp reads, and that the
+`spoken-term` queries' words are in no text (they're only said). It takes about a minute once the downloads are cached
+and needs no GPU.
+
+**Languages.** German and English come first, then French, Spanish, Italian and Portuguese: `synthetic/lang/eu/`
+(`testbed/make_eu.sh`, `make_eu.py`) has per language a note (md, txt, docx or odt), a two-page PDF with a topic per
+page, a screenshot named as GNOME names one in that language (`Bildschirmfoto vom …`, `Capture d'écran du …`,
+`Captura de pantalla de …`, `Schermata del …`, `Captura de tela de …`), and two voice memos (m4a, ogg, mp3, wav) with
+planted names, numbers, amounts, dates and a code; German also a 162 s board meeting, and `probes/` 20 s of silence and
+of music that must match nothing. The recordings are the ASR spike's texts and voices (Piper `de_DE-thorsten`,
+`fr_FR-siwis`, `es_ES-davefx`, `it_IT-paola`, `pt_BR-faber`, `en_US-lessac`, medium), and
+`synthetic/lang/eu/transcripts.json` says what each one says (reference text, planted terms, each paragraph's start and
+end), for scoring transcripts. Every topic is in one language only, so a query in another language has one right
+answer; German is Swiss (CHF 1'250, "ss"), but one note writes "Seestraße", for the keyword probes.
+`evals/european.json` tags: `xx-doc`, `xx-pdf`, `xx-shot`, `xx-shot-ocr` (exact words in a screenshot: with only
+`eng+deu` OCR, French to Portuguese words can fail), `xx-audio` (a recording's topic), `spoken-term` (words only said
+in a recording: they need transcripts), `cross` (a query in one language, the file in another), `xx-keyword` (plurals,
+stopwords, kind words, ß/ss, Swiss numbers). Add the folder to an existing testbed with
+`scripts/linux/testbed/make_eu.sh ~/DigUpTestbed/synthetic/lang/eu`. Piper adds noise inside its model, so a new run
+has slightly other timings (in `transcripts.json`); the eval's moment ranges in the long clip allow for that.
+
+**Tier 2: Bengali and Arabic** (`synthetic/lang/bn`, `ar`, upstream's `evals/multilingual.json`) are kept working, not
+extended, and built only with `--tier2` (or `scripts/linux/testbed/make_lang.sh ~/DigUpTestbed/synthetic/lang`);
+`check_eval_paths.py` skips `multilingual.json`, with a note, when they aren't there.
 
 **Needs:** `uv` (Python 3.13 from `testbed/pyproject.toml` + `uv.lock`; never the system Python), `ffmpeg`/`ffprobe`
 (6.1), `git`, and Ubuntu's fonts: `fonts-noto-core` (Noto Sans, Sans Mono, Sans Bengali, Naskh Arabic, Symbols),
 `fonts-noto-color-emoji`, `fonts-dejavu-core`. The script stops with the `apt install` line if a font is missing.
-First run downloads ~110 MB of pictures (Wikimedia Commons) and ~200 MB of Piper voices (Hugging Face) into
-`~/.cache/digup-testbed` (`DIGUP_TESTBED_CACHE` moves it); both are pinned by sha256.
+First run downloads ~110 MB of pictures (Wikimedia Commons) and ~380 MB of Piper voices (Hugging Face; ~510 MB with
+`--tier2`) into `~/.cache/digup-testbed` (`DIGUP_TESTBED_CACHE` moves it); both are pinned by sha256.
 
 | macOS | Linux |
 |---|---|
 | `/Library/User Pictures/*/*.heic` through `sips -Z 768` | `testbed/pictures.json`: 35 photos from Wikimedia Commons (CC0, CC BY, CC BY-SA, public domain; URL, author, license and sha256 each), at most 768 px. Never committed. |
-| `say -v Samantha` / `Piya` / `Majed` | Piper (CPU): `en_US-lessac-medium`, `bn_BD-google-medium`, `ar_JO-kareem-medium` |
+| `say -v Samantha` / `Piya` / `Majed` | Piper (CPU): `en_US-lessac-medium`, `bn_BD-google-medium`, `ar_JO-kareem-medium` (tier 2) |
 | `make_screenshots.swift`, `make_docs.swift`, `make_long.swift`, `make_lang.swift` (AppKit, CoreText, WebKit) | `make_screenshots.py`, `make_docs.py`, `make_long.py`, `make_lang.py` (Pillow with HarfBuzz via raqm, fpdf2 with HarfBuzz, python-docx, a Cocoa-style RTF writer): same names, same text, same formats (PDF, PNG, txt, md, rtf, docx) |
 | `cp -c` (APFS clone) | `cp --reflink=auto` |
 | the `kMDItemIsScreenCapture` attribute | names and the `screenshots/` folder (see below) |
