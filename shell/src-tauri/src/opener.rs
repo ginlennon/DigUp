@@ -498,11 +498,11 @@ fn seek_when_ready(bus: &str, seconds: f64, duration: Option<f64>) {
             .arg(format!("int64 {}", (seconds * 1e6) as i64))
             .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
         if cfg!(debug_assertions) {
-            println!("open: {bus} told {seconds:.1} s after {:.1} s: {set:?}", started.elapsed().as_secs_f64());
+            log!("open: {bus} told {seconds:.1} s after {:.1} s: {set:?}", started.elapsed().as_secs_f64());
         }
         return;
     }
-    eprintln!("digup-shell: {bus} didn't come up to be told the moment");
+    log_error!("digup-shell: {bus} didn't come up to be told the moment");
 }
 
 #[cfg(test)]

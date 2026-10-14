@@ -28,13 +28,13 @@ impl FolderWatcher {
         let mut watcher = match watcher {
             Ok(watcher) => watcher,
             Err(error) => {
-                eprintln!("digup-shell: can't watch folders: {error}");
+                log_error!("digup-shell: can't watch folders: {error}");
                 return FolderWatcher { _watcher: None };
             }
         };
         for folder in folders {
             if let Err(error) = watcher.watch(folder, RecursiveMode::Recursive) {
-                eprintln!("digup-shell: can't watch {}: {error}", folder.display());
+                log_error!("digup-shell: can't watch {}: {error}", folder.display());
             }
         }
         std::thread::spawn(move || {

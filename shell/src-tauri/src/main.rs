@@ -4,6 +4,17 @@
 // folders. The Mac app (Sources/DigUpApp) is the reference for behavior.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+/// A log line on stdout after the time of day ("14:03:27.512 index: {…}"), so a run's lines can be lined up with the
+/// helpers' logs and with what was done by hand. Defined before the modules so they have it too.
+macro_rules! log {
+    ($($arg:tt)*) => { println!("{} {}", $crate::time_of_day(), format_args!($($arg)*)) };
+}
+
+/// The same on stderr, for problems.
+macro_rules! log_error {
+    ($($arg:tt)*) => { eprintln!("{} {}", $crate::time_of_day(), format_args!($($arg)*)) };
+}
+
 mod desktop;
 mod helper;
 mod opener;
@@ -159,6 +170,23 @@ fn search_launch(options: &Options, settings: &Settings, folders: Vec<String>, l
         log: Some(logs.join("search.log")),
         background: false,
     }
+}
+
+/// "14:03:27.512", for `log!`: the local time where libc's localtime_r can say it (Linux, the Mac), else UTC.
+fn time_of_day() -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let millis = now.subsec_millis();
+    #[cfg(unix)]
+    {
+        let seconds = now.as_secs() as libc::time_t;
+        // SAFETY: localtime_r only reads the time and writes the tm it's given (zeroes are a valid tm).
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        if !unsafe { libc::localtime_r(&seconds, &mut tm) }.is_null() {
+            return format!("{:02}:{:02}:{:02}.{millis:03}", tm.tm_hour, tm.tm_min, tm.tm_sec);
+        }
+    }
+    let seconds = now.as_secs() % 86_400;
+    format!("{:02}:{:02}:{:02}.{millis:03}", seconds / 3600, seconds / 60 % 60, seconds % 60)
 }
 
 // MARK: Commands
@@ -368,9 +396,9 @@ async fn open_hit(app: AppHandle, shell: State<'_, Arc<Shell>>, hit: opener::Hit
     let opened = tauri::async_runtime::spawn_blocking(move || {
         let plan = opener::plan(&hit, &query, shell.apps.for_file(&hit.path).as_ref());
         if cfg!(debug_assertions) {
-            println!("open: {} → {plan:?}", hit.path);
+            log!("open: {} → {plan:?}", hit.path);
         }
-        plan != opener::Plan::Plain && opener::run(&plan).map_err(|error| eprintln!("digup-shell: {error}")).is_ok()
+        plan != opener::Plan::Plain && opener::run(&plan).map_err(|error| log_error!("digup-shell: {error}")).is_ok()
     })
     .await
     .unwrap_or(false);
@@ -536,12 +564,12 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
     make_panel(&handle)?;
     // No tray (a session without a taskbar, a Linux desktop without one): the hotkey and the panel still work.
     if let Err(error) = make_tray(&handle, &shell) {
-        eprintln!("digup-shell: no tray icon: {error}");
+        log_error!("digup-shell: no tray icon: {error}");
     }
     let hotkey = shell.hotkey();
     if let Err(error) = app.global_shortcut().register(hotkey.as_str()) {
         set_status(&handle, &format!("The shortcut {} is taken", shortcut_text(&hotkey)));
-        eprintln!("digup-shell: can't use {hotkey} as the shortcut: {error}");
+        log_error!("digup-shell: can't use {hotkey} as the shortcut: {error}");
     }
 
     // The search service starts now (the first search is then quick); the model is checked (and fetched if it's
@@ -864,7 +892,7 @@ fn set_status(app: &AppHandle, text: &str) {
 
 fn search_event(app: &AppHandle, event: Value) {
     if cfg!(debug_assertions) {
-        println!("search: {event}");
+        log!("search: {event}");
     }
     if event["event"] == "ready" {
         if let Some(index) = event["index"].as_str() {
@@ -876,7 +904,7 @@ fn search_event(app: &AppHandle, event: Value) {
 
 fn index_event(app: &AppHandle, event: Value) {
     if cfg!(debug_assertions) {
-        println!("index: {event}");
+        log!("index: {event}");
     }
     let count = |key: &str| event[key].as_u64().unwrap_or(0);
     // Paused: a stopping helper's last lines don't take the tray's "Paused" away.
@@ -918,7 +946,7 @@ fn index_event(app: &AppHandle, event: Value) {
 
 fn model_event(app: &AppHandle, event: Value) {
     if cfg!(debug_assertions) && event["event"] != "progress" {
-        println!("model: {event}");
+        log!("model: {event}");
     }
     let shell = app.state::<Arc<Shell>>().inner().clone();
     let state = match event["event"].as_str().unwrap_or_default() {
@@ -964,7 +992,7 @@ fn reload(app: &AppHandle, now: bool) {
     tauri::async_runtime::spawn(async move {
         let reply = shell.search.ask(json!({"op": "reload"})).await;
         if cfg!(debug_assertions) {
-            println!("search: reload {reply:?}");
+            log!("search: reload {reply:?}");
         }
     });
 }
@@ -981,6 +1009,15 @@ mod tests {
         if !cfg!(target_os = "macos") {
             assert_eq!(shortcut_text("CommandOrControl+Shift+Space"), "Ctrl+Shift+Space");
         }
+    }
+
+    #[test]
+    fn log_lines_say_the_time() {
+        let time = time_of_day();
+        let parts: Vec<&str> = time.split([':', '.']).collect();
+        assert_eq!(parts.iter().map(|part| part.len()).collect::<Vec<_>>(), [2, 2, 2, 3], "{time}");
+        assert!(parts.iter().all(|part| part.parse::<u32>().is_ok()), "{time}");
+        assert!(parts[0].parse::<u32>().unwrap() < 24 && parts[1].parse::<u32>().unwrap() < 60);
     }
 
     #[test]
