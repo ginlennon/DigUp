@@ -24,7 +24,8 @@ let usage = """
       digup index <folder>... [--limit N] [--transcripts gpu|cpu|off] [--transcribe-music]
                                               sync the index with these folders, embed what's new, then the rest
                                               of long PDFs and documents, then transcripts of recordings when
-                                              they're on (off by default; off takes the index's transcripts out)
+                                              --transcripts turns them on (off takes the index's transcripts out;
+                                              without it, those it has stay and no new ones are made)
       digup search <words>... [--kind K,K] [--in DIR]... [-n 10] [--json]
                                               "code: <words>" searches the code index
       digup similar <file> [--kind K,K] [--in DIR]... [-n 10] [--json]
@@ -72,8 +73,9 @@ let usage = """
       --shot-tokens N      vision tokens per screenshot (default 280; 560 was 2× slower, no better on real shots)
       --code-stretch N     characters a stretch of code holds at most (default 1800; 1200 and 3600 lost on the evals)
       --transcripts M      transcripts of recordings, for keyword search: gpu (whisper large-v3-turbo), cpu
-                           (whisper small: slower and less exact) or off (the default); they need whisper-cli and
-                           `digup download-model --transcripts` (--small for cpu)
+                           (whisper small: slower and less exact) or off; they need whisper-cli and
+                           `digup download-model --transcripts` (--small for cpu). index-service without it: off;
+                           index without it leaves the index's transcripts as they are
       --transcribe-music   songs (audio with artist and album tags) get transcripts too
 
     The model: EmbeddingGemma 2 on llama.cpp, from $DIGUP_MODELS (only there, when set), else
@@ -97,11 +99,13 @@ struct Arguments {
                                       "--memory-limit", "--time-limit", "--transcripts"]
     static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude", "--in"]
 
-    init(_ raw: ArraySlice<String>) throws {
+    /// `command`: `download-model` takes `--transcripts` as a flag (the transcript files), the others with a mode.
+    init(_ raw: ArraySlice<String>, command: String = "") throws {
+        let valued = command == "download-model" ? Self.valued.subtracting(["--transcripts"]) : Self.valued
         var index = raw.startIndex
         while index < raw.endIndex {
             let argument = raw[index]
-            if Self.valued.contains(argument) || Self.repeated.contains(argument) {
+            if valued.contains(argument) || Self.repeated.contains(argument) {
                 guard index + 1 < raw.endIndex else { throw CLIError("\(argument) needs a value") }
                 if Self.repeated.contains(argument) {
                     lists[argument, default: []].append(raw[index + 1])
@@ -349,7 +353,10 @@ func index(_ args: Arguments) throws {
     indexer.costsFolder = store.directory
     try store.readAgainOnce()   // what older indexes couldn't read: scanned pages' words, SVGs
     try indexer.checkModel()
-    try indexer.checkTranscripts()   // off: the index's transcripts go; another model: they're all made again
+    // Only a `--transcripts` given changes them: off, the index's transcripts go; another model, they're all made
+    // again. Without it (a run by hand on the app's index) they stay as they are, and the transcriber is nil (off), so
+    // no new ones are made either.
+    if args.values["--transcripts"] != nil { try indexer.checkTranscripts() }
     if args.options.transcripts != .off, !args.code, indexer.transcriber == nil {
         print("transcripts: not installed here (whisper-cli, and `digup download-model --transcripts"
               + (args.options.transcripts == .cpu ? " --small" : "") + "`), so none are made")
@@ -702,7 +709,7 @@ do {
         print(usage)
         exit(0)
     }
-    let args = try Arguments(raw.dropFirst())
+    let args = try Arguments(raw.dropFirst(), command: command)
     if ["index-service", "worker", "search-service", "download-model"].contains(command)
         || command == "estimate" && args.flags.contains("--json") {
         ParentWatch.start()   // an app's helper goes when the app does
