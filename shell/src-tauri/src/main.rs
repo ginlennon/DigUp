@@ -118,6 +118,11 @@ impl Shell {
         self.settings.lock().unwrap().paused
     }
 
+    /// What the tray says while indexing is paused: why, when DigUp paused it by itself.
+    fn paused_text(&self) -> String {
+        self.settings.lock().unwrap().paused_why.clone().unwrap_or_else(|| "Paused".to_string())
+    }
+
     /// The model may use the GPU: Settings allow it, the shell wasn't started with DIGUP_GPU=0 (which the helpers get
     /// too), and it hasn't failed this session (fallback.rs).
     fn gpu_in_use(&self) -> bool {
@@ -339,16 +344,16 @@ async fn settings_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Result<V
     let path = |folder: Option<PathBuf>| folder.map(|folder| folder.display().to_string());
     let status = shell.status.lock().unwrap().as_ref().and_then(|status| status.text().ok());
     let launcher = desktop::launcher();
-    let (on_cpu, search_on_cpu, paused_why) = {
+    let (on_cpu, search_on_cpu) = {
         let health = shell.health.lock().unwrap();
-        (health.on_cpu, health.search_on_cpu, health.paused_why.clone())
+        (health.on_cpu, health.search_on_cpu)
     };
     Ok(json!({
         "status": status,
         // The GPU failed this session: everything, or only search, runs on the CPU (fallback.rs).
         "gpuFailed": on_cpu,
         "searchGpuFailed": search_on_cpu,
-        "pausedWhy": paused_why,
+        "pausedWhy": settings.paused_why,
         // The saved folders. Dev runs search the folders they're given (--roots) instead: the window says so, and
         // what's changed is saved for later.
         "folders": settings.folders,
@@ -922,7 +927,7 @@ fn watch_folders(app: &AppHandle) {
     *shell.watcher.lock().unwrap() =
         Some(FolderWatcher::start(&folders, &code, shell.options.index_folder(), changed, code_changed));
     if shell.is_paused() {
-        set_status(app, "Paused");
+        set_status(app, &shell.paused_text());
     }
     run_index(app);
 }
@@ -966,18 +971,30 @@ fn run_code_index(app: &AppHandle) {
 }
 
 /// Pauses indexing (the index helper stops, and neither the watcher nor Index Now starts it) or resumes it. Blocks up
-/// to two seconds while the helper stops: not on the main thread.
+/// to two seconds while the helper stops: not on the main thread. `pause_for` pauses with a reason (fallback.rs).
 fn pause(app: &AppHandle, paused: bool) -> Result<(), String> {
+    pause_with(app, paused, None)
+}
+
+/// Indexing paused by DigUp itself, saying why (saved with the pause, so it's said after a restart too).
+fn pause_for(app: &AppHandle, why: String) -> Result<(), String> {
+    pause_with(app, true, Some(why))
+}
+
+fn pause_with(app: &AppHandle, paused: bool, why: Option<String>) -> Result<(), String> {
     let shell = app.state::<Arc<Shell>>().inner().clone();
-    shell.change_settings(|settings| settings.paused = paused)?;
+    shell.change_settings(|settings| {
+        // A pause by hand on top of DigUp's own keeps its reason; resuming clears it.
+        if !paused || why.is_some() || !settings.paused {
+            settings.paused_why = why;
+        }
+        settings.paused = paused;
+    })?;
     show_pause(app, paused);
     if paused {
         shell.index.stop();
-        // Paused by the shell itself (fallback.rs): it says why.
-        let why = shell.health.lock().unwrap().paused_why.clone();
-        set_status(app, why.as_deref().unwrap_or("Paused"));
+        set_status(app, &shell.paused_text());
     } else {
-        shell.health.lock().unwrap().paused_why = None;
         set_status(app, if shell.folders().is_empty() { "No folders chosen yet" } else { "Looking for changes…" });
         run_index(app);
     }
@@ -1317,11 +1334,10 @@ fn index_ended(app: &AppHandle, event: &Value) {
             let file = stopped.map(|(path, _)| Path::new(&path).file_name().map_or(path.clone(), |name| {
                 name.to_string_lossy().into_owned()
             }));
-            shell.health.lock().unwrap().paused_why =
-                Some(format!("Indexing paused: {} kept failing", file.as_deref().unwrap_or("a file")));
+            let why = format!("Indexing paused: {} kept failing", file.as_deref().unwrap_or("a file"));
             let app = app.clone();
             std::thread::spawn(move || {
-                if let Err(error) = pause(&app, true) {
+                if let Err(error) = pause_for(&app, why) {
                     set_status(&app, &error);
                 }
             });
@@ -1370,7 +1386,7 @@ fn model_event(app: &AppHandle, event: Value) {
         if shell.folders().is_empty() {
             set_status(app, "No folders chosen yet");
         } else if shell.is_paused() {
-            set_status(app, "Paused");
+            set_status(app, &shell.paused_text());
         }
         run_index(app);
         // A search helper that started before the model was there has no encoder ("unavailable" sticks): it tries

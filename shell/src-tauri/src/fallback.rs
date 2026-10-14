@@ -128,8 +128,6 @@ pub struct Health {
     pub on_cpu: bool,
     /// search-service's encoder couldn't start on the GPU, so it runs on the CPU (tried once a session).
     pub search_on_cpu: bool,
-    /// Why indexing paused by itself ("Indexing paused: x.pdf kept failing"), until it's resumed.
-    pub paused_why: Option<String>,
 }
 
 impl Health {

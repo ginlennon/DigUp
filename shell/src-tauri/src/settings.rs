@@ -23,6 +23,9 @@ pub struct Settings {
     /// Pause Indexing: the index helper doesn't run (not for changes either) until it's resumed, also after a
     /// restart. Search works as ever.
     pub paused: bool,
+    /// Why DigUp paused indexing by itself ("Indexing paused: x.pdf kept failing", fallback.rs), so the tray and
+    /// Settings still say it after a restart; none when it was paused by hand. Cleared on Resume.
+    pub paused_why: Option<String>,
     /// The model may run on the GPU (Vulkan); off, the helpers get DIGUP_GPU=0 and use the CPU only.
     pub gpu: bool,
     /// Where a recording opens when its result has a moment: "vlc" (VLC when it's installed, else as "default") or
@@ -46,6 +49,7 @@ impl Default for Settings {
             hotkey: String::new(),
             set_up: false,
             paused: false,
+            paused_why: None,
             gpu: true,
             moment_player: "vlc".to_string(),
             code_folders: Vec::new(),
@@ -98,15 +102,17 @@ mod tests {
         let old: Settings = serde_json::from_str(r#"{"folders":["/home/me/Documents"],"skipTypes":["heic"],"setUp":true}"#)
             .unwrap();
         assert_eq!(old.folders, ["/home/me/Documents"]);
-        assert!(old.set_up && old.gpu && !old.paused, "new fields take their defaults");
+        assert!(old.set_up && old.gpu && !old.paused && old.paused_why.is_none(), "new fields take their defaults");
         assert!(old.prefers_vlc());
         assert!(old.code_folders.is_empty() && old.code_skipped.is_empty() && old.code_editor.is_empty());
         let chosen: Settings = serde_json::from_str(r#"{"momentPlayer":"default"}"#).unwrap();
         assert!(!chosen.prefers_vlc());
         let code: Settings = serde_json::from_str(r#"{"codeFolders":["/home/me/git"],"codeEditor":"zed"}"#).unwrap();
         assert_eq!((code.code_folders, code.code_editor), (vec!["/home/me/git".to_string()], "zed".to_string()));
-        let written = serde_json::to_value(Settings { paused: true, gpu: false, ..old }).unwrap();
+        let why = Some("Indexing paused: Big.pdf kept failing".to_string());
+        let written = serde_json::to_value(Settings { paused: true, paused_why: why.clone(), gpu: false, ..old }).unwrap();
         assert_eq!((written["paused"].as_bool(), written["gpu"].as_bool()), (Some(true), Some(false)));
+        assert_eq!(serde_json::from_value::<Settings>(written).unwrap().paused_why, why, "kept for the next start");
     }
 
     #[test]

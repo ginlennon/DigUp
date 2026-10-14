@@ -39,6 +39,7 @@ pub fn when_not_running(command: Command, settings: Option<&Path>) -> (String, i
         return (said.into(), 0);
     }
     chosen.paused = paused;
+    chosen.paused_why = None;   // a reason DigUp paused for itself goes with the pause (and a pause by hand has none)
     match chosen.save(file) {
         Ok(()) => (said.into(), 0),
         Err(error) => (format!("DigUp isn't running, and its settings can't be saved: {error}"), 1),
@@ -71,10 +72,11 @@ mod tests {
         // The rest of the settings stay as they were.
         let mut chosen = Settings::load(&file);
         chosen.folders = vec!["/home/me/Documents".into()];
+        chosen.paused_why = Some("Indexing paused: Big.pdf kept failing".into());
         chosen.save(&file).unwrap();
         assert!(when_not_running(Command::Resume, Some(&file)).0.ends_with("resume when it starts"));
         let after = Settings::load(&file);
-        assert!(!after.paused);
+        assert!(!after.paused && after.paused_why.is_none(), "resuming clears why it paused");
         assert_eq!(after.folders, ["/home/me/Documents"]);
         assert_eq!(when_not_running(Command::Resume, None).1, 1);
         let _ = std::fs::remove_dir_all(folder);
