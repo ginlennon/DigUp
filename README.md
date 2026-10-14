@@ -23,6 +23,7 @@ passes here on both the CPU and the Vulkan GPU, so an index means the same thing
 | Desktop app: tray, setup, search panel, open, show in Files | ✅ Tauri shell; the hotkey is a GNOME custom shortcut (Ctrl+Alt+Space) |
 | Open PDFs at the page (Evince, Okular), videos and recordings at the moment (Totem, VLC, mpv); settings window, pause, GPU switch, start at login | ✅ (PDF pages and VLC moments tried by hand) |
 | Search inside folders (`in:Documents …`, `--in`), more like this (Ctrl+L, `digup similar`), `digup doctor` | ✅ |
+| A filter of exact words under the search field (`Rechnung* AND (Uster OR Winterthur) NOT Mahnung`, `*kaution*`, `"phrases"`; `--filter`, HTTP and MCP `filter`) | ✅ new |
 | Code search in the app (`code:`, opens your editor at the line), Files right-click scripts | ✅ |
 | Control from outside (`digup-shell --toggle/--pause/--resume/--quit …`), turn off, GPU→CPU fallback, helper restarts | ✅ new |
 | MCP server (Claude Code, Cursor, VS Code, Zed) and a localhost HTTP API for RAG apps | ✅ [`integrations/`](integrations/README.md) |

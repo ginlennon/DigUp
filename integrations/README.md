@@ -48,11 +48,18 @@ Tools (all read-only):
 
 | Tool | What it does |
 |---|---|
-| `search_files(query, kinds?, folders?, limit=10)` | Search by meaning and words. `kinds`: screenshot, image, pdf, doc, audio, video. Returns absolute paths, where in the file (page, time, lines), a score, an excerpt and a segment number. |
+| `search_files(query, filter?, kinds?, folders?, limit=10)` | Search by meaning and words. `kinds`: screenshot, image, pdf, doc, audio, video. Returns absolute paths, where in the file (page, time, lines), a score, an excerpt and a segment number. |
 | `read_segment(segment_id, code=false, max_chars=8000)` | The indexed text of a hit: the document's chunk, the PDF page's text, a screenshot's text, a code stretch. |
-| `search_code(query, limit=10)` | The code index (what a DigUp search starting with `code:` does). |
+| `search_code(query, filter?, limit=10)` | The code index (what a DigUp search starting with `code:` does). |
 | `find_similar(path, limit=10, kinds?, folders?)` | Files like a given file; needs a helper with the `similar` op, says so otherwise. |
 | `index_status(doctor=false)` | Encoder state, vectors, index, folders (and `digup doctor --json` when the helper has it). |
+
+`filter` is the panel's keyword filter: exact words the file must have, `Rechnung* AND (Uster OR Winterthur) NOT
+Mahnung`, `"Bahnhofstrasse 12"`, `*kaution*` (inside a word), `RE-2041`. Only those files come back, ranked by
+`query`, each hit at the page, moment or lines with the words (marked «like this» in its excerpt); `query` may be
+empty then. Words are ANDed; `AND`, `OR`, `NOT` / `-word` only in capitals; case, accents and ß/ss don't matter. A
+filter that can't be parsed (an unclosed quote) is read as plain words, and the result says so. It needs a helper
+from the same release (an older one ignores the filter).
 
 A result looks like this (what the model reads):
 
@@ -129,10 +136,10 @@ uv run --project integrations digup-http [--port 8484] [--token SECRET] [--root 
 |---|---|
 | `GET /health` | `{"ok": true}` (no token needed) |
 | `GET /status` | encoder, vectors, index, folders |
-| `POST /search` `{query, kinds?, folders?, limit?, code?}` | `{hits: [{rank, path, kind, where, score, strong, segment, segment_id, loc, loc_end, focus, excerpt, modified, size, info, …}]}`; also `GET /search?q=…&limit=…` |
+| `POST /search` `{query, filter?, kinds?, folders?, limit?, code?}` | `{hits: [{rank, path, kind, where, score, strong, segment, segment_id, loc, loc_end, focus, excerpt, modified, size, info, …}], filter?, filter_note?}`; also `GET /search?q=…&filter=…&limit=…` |
 | `GET /segments/{segment_id}?code=false` | `{text}`, the hit's indexed text (404: a picture or a frame) |
 | `POST /similar` `{path, limit?, kinds?, folders?}` | like `/search` (501 when the helper hasn't the `similar` op) |
-| `POST /context` `{query, limit=5, max_chars=6000, kinds?, folders?, code?}` | `{context, sources, other_matches}`: the top hits' texts, each as `[n] path (where)` then the text |
+| `POST /context` `{query, filter?, limit=5, max_chars=6000, kinds?, folders?, code?}` | `{context, sources, other_matches}`: the top hits' texts, each as `[n] path (where)` then the text |
 | `GET /preview?path=…&kind=pdf\|video\|image&loc=…&pixels=1024` | a JPEG of a PDF page, a video frame (at `loc` seconds) or a picture; only files in the searched folders |
 | `GET /openapi.json` | the OpenAPI 3.1 spec (no token needed) |
 
@@ -143,6 +150,8 @@ Security: binds `127.0.0.1` unless `--host` (then it warns, and the localhost-on
 ```sh
 curl -s localhost:8484/search -d '{"query": "the lease agreement", "kinds": ["pdf"], "limit": 3}'
 curl -s 'localhost:8484/search?q=code:%20retry%20with%20backoff&limit=3'
+curl -s 'localhost:8484/search?q=&filter=*kaution*'              # the filter alone: files with "…kaution…"
+curl -s localhost:8484/search -d '{"query": "invoice from the carpenter", "filter": "Rechnung* NOT Mahnung"}'
 curl -s localhost:8484/segments/31
 curl -s localhost:8484/context -d '{"query": "when is the rent due?", "limit": 4, "max_chars": 4000}'
 curl -s -o page.jpg 'localhost:8484/preview?path=/home/you/Documents/lease.pdf&loc=2'

@@ -14,7 +14,8 @@ This guide is for the Linux port (tested on Ubuntu 24.04 with GNOME). Setup is i
 | ↓ ↑ | moves through the results |
 | ↩ | opens the result: PDFs at the page with your word found, videos and recordings at the moment, the rest in its default app |
 | Ctrl+↩ | shows the file in Files, selected |
-| Esc | closes the panel |
+| Tab, Ctrl+F | goes to the filter under the search field ([exact words](#filter-by-exact-words)); Tab goes back |
+| Esc | clears the filter if it has something, else closes the panel |
 
 The tray icon shows what DigUp is doing ("Indexing 120 of 482", "Transcribing 3 of 12" when transcripts are on,
 "Up to date · 482 files") and has Pause/Resume, Index Now, Settings… and Quit.
@@ -127,6 +128,47 @@ there before pointing DigUp at your own folders.
     shortcut: `digup-shell --quit`, `--pause`, `--resume`, `--index-now`, `--settings`, `--show`, `--hide`,
     `--toggle` (without DigUp running, `--quit` just says so and `--pause`/`--resume` apply at its next start). To
     remove its data: `rm -rf ~/.local/share/digup ~/.config/com.abdurrahim.DigUp`.
+
+## Filter by exact words
+
+The search field goes by meaning, and its word matching is tuned for English: a German plural, a word inside a
+compound or a street number can slip through. When you know the exact words, put them in the **filter** under the
+search field (Tab or Ctrl+F gets you there). The filter decides which files appear; the search field, if you type
+anything there, ranks them. Each result points at the page or the moment where the filter's words are, with the
+words in bold. On the European test files (`synthetic/lang/eu`):
+
+1. **A word inside a compound.** Filter *`*kaution*`* → `Unterlagen Wohnung.pdf` at *p. 2*: "Die **Mietkaution** …
+   auf ein **Mietkautionskonto**". `Kaution` alone in the search field doesn't find it, as the word only appears
+   inside longer ones.
+2. **Singular or plural.** Filter *`Versichertenkarte*`* (a word starting with it) → `Arzttermin.odt`, where it says
+   "**Versichertenkarte** und die Liste der Medikamente mitbringen". It finds "Versichertenkarten" just as well.
+3. **This but not that.** Filter *`Rechnung*`* finds the carpenter's invoice in `Unterlagen Wohnung.pdf` (p. 1) and,
+   with transcripts on, the voice memo where he asks Frau Brunner to pay. *`Rechnung* NOT Brunner`* keeps only the
+   PDF; at home that's *`Rechnung* NOT Mahnung`*: the invoices without the reminders.
+4. **A phrase, and a query to rank.** Filter *`"Bahnhofstrasse 12"`* (the words side by side, in this order) finds the
+   PDF, at *p. 1*, the invoice's address. Type *Mietvertrag* in the search field as well, and the same file points at
+   *p. 2*, the rental contract with that address. Without a query the filter's own best match counts; with one, the
+   page that fits the query best among those with the filter's words.
+5. **A code on a screenshot.** Filter *`ZK-4471`* → the German screenshot with that error code, shown as the
+   picture, the code in bold below it.
+
+How it's written (the **?** at the end of the filter shows the same table):
+
+| Written | Means |
+|---|---|
+| `Rechnung Uster` | both words (AND is implied) |
+| `A OR B`, `NOT A`, `-A`, `A AND B` | either, without, both; operators only in capitals, so "or" and "und" stay words |
+| `( … )` | grouping: `Rechnung* AND (Uster OR Winterthur)`; NOT binds before AND, AND before OR |
+| `"Bahnhofstrasse 12"` | these words side by side |
+| `Rechnung*`, `*karte`, `*kaution*` | a word starting with it, ending with it, with it inside (3 letters or more) |
+| `RE-2041`, `2'380.50` | a code or a number as written |
+
+Case, accents and ß/ss don't matter (`Bahnhofstraße` finds `Bahnhofstrasse`). The filter looks at file and folder
+names, document and PDF text, the text in screenshots and scans, transcripts (when they're on) and, with `code:`,
+your code. A filter it can't read, such as one with an unclosed quote, is read as plain words and the panel says so
+under it. Esc clears the filter, and it's gone when the panel opens again. It works with `in:` folders and with
+Ctrl+L (only the similar files with the filter's words). From the terminal: `digup search "Mietvertrag" --filter
+'"Bahnhofstrasse 12"'`, `digup search --filter '*kaution*'`; the HTTP API and the MCP server take `filter` too.
 
 ## Good to know
 

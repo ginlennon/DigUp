@@ -1,7 +1,8 @@
 # PLAN — A keyword filter beside the search field (AND, OR, NOT, wildcards, phrases)
 
-**Status (2026-10-14): F1 (normalization + `fts_tri`, schema 6) and F2 (the filter in the engine, CLI, search
-service, evals) built; F3–F5 not yet.** Starts after transcripts Stage 2
+**Status (2026-10-14): F1 (normalization + `fts_tri`, schema 6), F2 (the filter in the engine, CLI, search
+service, evals), F3 (panel, HTTP, MCP) and F5's user guide, README and integrations docs built; F3 waits for the
+user to try it; F4 not yet.** Starts after transcripts Stage 2
 (PLANS/TRANSCRIPTS_PLAN.md) is merged, since both touch the keyword index. Input: the German keyword weaknesses
 measured in `docs/linux-port/EVAL_RESULTS.md` ("European languages — baseline").
 
@@ -161,7 +162,44 @@ reads `"filter"`. **Check:** the filter queries in european.json all exact; < 50
 Second field (Tab / Ctrl+F, Esc order, a parse hint), the hit's page/moment as the engine says; HTTP `/search`,
 `/context` and MCP `search_files` / `search_code` get `filter`; OpenAPI updated.
 **Check:** the user tries it.
+- **Built (2026-10-14)**, waiting for the user's try. Decided on the way:
+  - *Panel*: a slimmer field under the main one (funnel icon, placeholder `Filter: Rechnung* AND (Uster OR
+    Winterthur) NOT Mahnung`, a "?" that shows on hover or focus); the empty panel is 88 px instead of 56. Tab moves
+    between the two fields only (Shift+Tab too), Ctrl+F goes to the filter with its text selected; ↓↑ ↩ Ctrl+↩
+    Ctrl+L work from both. Esc: the syntax if it's open, then the filter (the keyboard goes back to the main field),
+    then Like, then the panel. The filter is cleared when the panel opens again (the main field keeps its text, as
+    before): a filter left over from the last look would hide files without saying so.
+  - *Searching*: the main field as before, the filter sent along; typing in the filter searches once typing pauses
+    (120 ms) without the at-once keyword pass, as its words match whole (a half-typed word finds nothing, a quote
+    being typed would flash "read as plain words"). Main empty + filter: one keyword request, phase "filtered",
+    footer "N files have the filter's words". `filter_note` shows under the filter (capitalized, amber).
+  - *Ctrl+L*: the engine had no filter for `similar`, so it got one (`Searcher.similar(…, filter:)`, search-service
+    `similar` `"filter"`, `digup similar --filter`): every file the filter allows that has a vector, by likeness, no
+    gate (the weakest fold), each at its segment with the filter's words most like the file, the words marked.
+  - *A hit*: the badge is the engine's page/moment; below the meaning gate the reason says where the filter's words
+    are ("Has the filter's words on page 2", "… on screen" for a screenshot's OCR row, "Said at 0:25" for a
+    transcript), else "Matches the filter" (name, folder or NOT only). A screenshot's OCR hit shows the picture, as
+    the panel draws by the file's kind. The passage preview marks the excerpt's «» words too.
+  - *Syntax help*: the "?" (or the filter focused while empty with nothing searched) shows A3's table in the
+    preview's place.
+  - *HTTP*: `filter` in `/search` (GET `?filter=`, POST body) and `/context` (body); `query` may be empty with a
+    filter; replies carry `filter` and `filter_note`; OpenAPI: a `filter` property with the syntax, examples and
+    request examples. *MCP*: `search_files` / `search_code` take `filter` (query optional with it), the syntax in its
+    description, the result's heading says "filtered by …" and the note.
+  - Debug runs: `--debug-filter EXPR` beside `--debug-query`; the report has the filter, its note and each row's badge.
+- **Checked:** pytest (31), cargo test (51) + clippy, swift test; the panel's page in headless Chrome against a real
+  search-service over the European testbed (Tauri's API stubbed): 22 steps (keys, help, filter-only, the note,
+  query + filter, Ctrl+L with a filter, `code:`, reopening); the real shell (`--debug-query/--debug-filter`, a private
+  session bus and XDG folders): `*kaution*` → p. 2 with its picture and "Open at p. 2", `ZK-4471` → the screenshot's
+  picture; `digup-http`: `/search?q=&filter=*kaution*` → p. 2, `/context` with a filter → that page's text.
+- Open: an integration with an older helper gets unfiltered results (the helper ignores `filter`); the README says
+  so. A dev shell started with transcripts off takes an index's transcripts out (by design), so a dev run on a
+  transcribed temp index needs Settings' transcripts on.
 
 ### F4 — Main-field fixes A6.2–A6.4, one at a time, measured.
 
 ### F5 — Docs: user guide cases ("Rechnung* NOT Mahnung", "*kaution*", a phrase), README, EVAL_RESULTS.
+- **User guide, README, integrations README done (2026-10-14)** with F3: docs/USER_GUIDE_LINUX.md "Filter by exact
+  words" (five cases checked on `synthetic/lang/eu`: `*kaution*`, `Versichertenkarte*`, `Rechnung* NOT Brunner` (the
+  testbed has no "Mahnung"), `"Bahnhofstrasse 12"` with and without "Mietvertrag", `ZK-4471`), the key table (Tab,
+  Ctrl+F, Esc); README's Linux table; integrations/README.md. EVAL_RESULTS waits for F4.
