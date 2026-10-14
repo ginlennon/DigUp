@@ -74,9 +74,14 @@ public enum SearchText {
     /// `part`: where `word` has to be in a word of the text (`WordPart`, for the filter's `Rechnung*`, `*karte` and
     /// `*kaution*`); the range is then the whole word it's in.
     public static func matches(of word: String, in text: String, as part: WordPart = .whole) -> [Range<String.Index>] {
+        matches(of: word, in: Folded(text), as: part)
+    }
+
+    /// The same in text folded once for several words (`KeywordFilter.marks`).
+    static func matches(of word: String, in folded: Folded, as part: WordPart) -> [Range<String.Index>] {
         let needle = normalized(word).lowercased()
         guard !needle.isEmpty else { return [] }
-        let folded = Folded(text)
+        let text = folded.source
         let haystack = folded.text as NSString
         let atStart = part == .whole || part == .start, atEnd = part == .end || (part == .whole && !inflects(word))
         var found: [Range<String.Index>] = []
@@ -113,7 +118,12 @@ public enum SearchText {
     /// One line from `text` around the first of `terms` it has, the terms marked « » as SQLite's snippet() marks them:
     /// the excerpt of a keyword match, from the text as it's written. Nil when none of the terms is in it.
     public static func snippet(_ text: String, terms: [String], words: Int = 12) -> String? {
-        let marks = terms.flatMap { matches(of: $0, in: text) }.sorted { $0.lowerBound < $1.lowerBound }
+        snippet(text, marks: terms.flatMap { matches(of: $0, in: text) }, words: words)
+    }
+
+    /// The same around `marks` (ranges of `text`; `KeywordFilter.marks`).
+    public static func snippet(_ text: String, marks: [Range<String.Index>], words: Int = 12) -> String? {
+        let marks = marks.sorted { $0.lowerBound < $1.lowerBound }
         guard let first = marks.first else { return nil }
         // About `words` words, starting a few before the first match.
         var start = first.lowerBound, before = 0
@@ -145,11 +155,11 @@ public enum SearchText {
     }
 
     /// `text` normalized one character at a time, remembering where each piece came from.
-    private struct Folded {
+    struct Folded {
         let text: String
         /// For each UTF-16 unit of `text`, the original character it came from.
         private let origin: [String.Index]
-        private let source: String
+        let source: String
 
         init(_ source: String) {
             self.source = source
@@ -164,7 +174,9 @@ public enum SearchText {
                 // A digit-group mark between two digits goes, as `normalized` takes it out of the whole text.
                 if let scalar = character.unicodeScalars.first, character.unicodeScalars.count == 1,
                    digitGroupMarks.contains(scalar.value), isDigit(position - 1), isDigit(position + 1) { continue }
-                let piece = normalized(String(character)).lowercased()
+                // ASCII is as it is, but for its case (a page of 4,000 characters was 10 ms one by one, 2026-10-14).
+                let piece = character.asciiValue.map { String(UnicodeScalar($0 >= 65 && $0 <= 90 ? $0 + 32 : $0)) }
+                    ?? normalized(String(character)).lowercased()
                 text += piece
                 origin += Array(repeating: index, count: piece.utf16.count)
             }

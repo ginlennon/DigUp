@@ -85,6 +85,32 @@
 
   {"q": "factures garage", "expect": ["synthetic/lang/eu/fr/Courrier octobre.pdf@1-1"], "tag": "fr-keyword"},
   {"q": "facturas de la luz", "expect": ["synthetic/lang/eu/es/Casa y barrio.pdf@1-1"], "tag": "es-keyword"},
-  {"q": "ricette risotto", "expect": ["synthetic/lang/eu/it/Ricetta risotto.txt"], "tag": "it-keyword"}
+  {"q": "ricette risotto", "expect": ["synthetic/lang/eu/it/Ricetta risotto.txt"], "tag": "it-keyword"},
+
+  {"q": "", "filter": "Versichertenkarte*", "expect": ["synthetic/lang/eu/de/Arzttermin.odt"], "tag": "filter"},
+  {"q": "Versichertenkarten", "filter": "Versichertenkarte*", "expect": ["synthetic/lang/eu/de/Arzttermin.odt"], "tag": "filter"},
+  {"q": "", "filter": "Rechnung*", "expect": ["synthetic/lang/eu/de/Unterlagen Wohnung.pdf@1-1", "synthetic/lang/eu/de/Memo 2026-10-09 0814.m4a@0-0"], "tag": "filter"},
+  {"q": "", "filter": "Rechnung*", "kind": "audio", "expect": ["synthetic/lang/eu/de/Memo 2026-10-09 0814.m4a@0-0"], "tag": "filter"},
+  {"q": "Anruf eines Schreiners wegen einer unbezahlten Rechnung", "filter": "Rechnung* AND Uster", "expect": ["synthetic/lang/eu/de/Memo 2026-10-09 0814.m4a@0-0", "synthetic/lang/eu/de/Unterlagen Wohnung.pdf@1-1"], "tag": "filter"},
+  {"q": "", "filter": "Rechnung* NOT Brunner", "expect": ["synthetic/lang/eu/de/Unterlagen Wohnung.pdf@1-1"], "tag": "filter"},
+  {"q": "", "filter": "*kaution*", "expect": ["synthetic/lang/eu/de/Unterlagen Wohnung.pdf@2-2"], "tag": "filter"},
+  {"q": "Kaution", "filter": "*kaution*", "expect": ["synthetic/lang/eu/de/Unterlagen Wohnung.pdf@2-2"], "tag": "filter"},
+  {"q": "", "filter": "*karte", "expect": ["synthetic/lang/eu/de/Arzttermin.odt", "synthetic/lang/eu/de/Bildschirmfoto vom 2026-10-03 14-22-10.png"], "tag": "filter"},
+  {"q": "", "filter": "*stühle*", "expect": ["synthetic/lang/eu/de/Memo 2026-10-09 0814.m4a@0-0"], "tag": "filter"},
+  {"q": "Mietvertrag", "filter": "\"Bahnhofstrasse 12\"", "expect": ["synthetic/lang/eu/de/Unterlagen Wohnung.pdf@2-2"], "tag": "filter"},
+  {"q": "", "filter": "\"Bahnhofstrasse 12", "expect": ["synthetic/lang/eu/de/Unterlagen Wohnung.pdf"], "tag": "filter"},
+  {"q": "", "filter": "Bahnhofstraße", "expect": ["synthetic/lang/eu/de/Unterlagen Wohnung.pdf"], "tag": "filter"},
+  {"q": "", "filter": "Seestrasse", "expect": ["synthetic/lang/eu/de/Arzttermin.odt"], "tag": "filter"},
+  {"q": "", "filter": "RE-2041", "expect": ["synthetic/lang/eu/de/Memo 2026-10-09 0814.m4a@0-0"], "tag": "filter"},
+  {"q": "", "filter": "2'380.50", "expect": ["synthetic/lang/eu/de/Unterlagen Wohnung.pdf@1-1"], "tag": "filter"},
+  {"q": "", "filter": "ZK-4471 OR CMD-90417", "expect": ["synthetic/lang/eu/de/Bildschirmfoto vom 2026-10-03 14-22-10.png", "synthetic/lang/eu/fr/Capture d'écran du 2026-10-05 18-03-11.png"], "tag": "filter"},
+  {"q": "", "filter": "Uster OR Winterthur", "expect": ["synthetic/lang/eu/de/Unterlagen Wohnung.pdf", "synthetic/lang/eu/de/Memo 2026-10-09 0814.m4a", "synthetic/lang/eu/de/Arzttermin.odt"], "tag": "filter"},
+  {"q": "", "filter": "(Uster OR Winterthur) -Rechnung*", "expect": ["synthetic/lang/eu/de/Arzttermin.odt"], "tag": "filter"},
+  {"q": "", "filter": "Bootssteg AND Zollinger", "expect": ["synthetic/lang/eu/de/Memo 2026-09-22 1930.wav@75-75"], "tag": "filter"},
+  {"q": "Offerten für die Sanierung des Bootsstegs", "filter": "Zollinger", "expect": ["synthetic/lang/eu/de/Memo 2026-09-22 1930.wav@75-100"], "tag": "filter"},
+  {"q": "", "filter": "facture* NOT garage", "expect": ["synthetic/lang/eu/fr/Memo 2026-10-06 1012.ogg@0-0"], "tag": "filter"},
+  {"q": "phone call about an unpaid invoice", "filter": "Rechnung* OR facture* OR factura* OR fattura* OR fatura* OR invoice*", "expect": ["synthetic/lang/eu/de/Memo 2026-10-09 0814.m4a@0-0", "synthetic/lang/eu/en/Memo 2026-10-08 0915.m4a@0-0", "synthetic/lang/eu/fr/Memo 2026-10-06 1012.ogg@0-0", "synthetic/lang/eu/es/Memo 2026-10-05 1125.mp3@0-0", "synthetic/lang/eu/it/Memo 2026-10-07 1610.m4a@0-0", "synthetic/lang/eu/pt/Memo 2026-10-04 1430.wav@0-0", "synthetic/lang/eu/de/Unterlagen Wohnung.pdf@1-1", "synthetic/lang/eu/fr/Courrier octobre.pdf@1-1", "synthetic/lang/eu/es/Casa y barrio.pdf@1-1", "synthetic/screenshots/shot_payment_error.png"], "tag": "filter"},
+  {"q": "code: wait longer each time a call fails", "filter": "*_delay", "expect": ["code/billing-service/billing/retry.py@8-29"], "tag": "filter"},
+  {"q": "code:", "filter": "cooldown AND threshold", "expect": ["code/billing-service/billing/retry.py@36-63", "code/billing-service/tests/test_retry.py"], "tag": "filter"}
  ]
 }

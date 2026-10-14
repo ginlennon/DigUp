@@ -63,6 +63,8 @@ let usage = """
                            folder): source files, their repos' docs and notebooks, minus what git ignores
       --kind K,K           screenshot, image, pdf, doc, audio, video
       --in DIR             only the files inside this folder (repeatable)
+      --filter EXPR        search: only the files whose text has this (the words may be left out then):
+                           Rechnung* AND (Uster OR Winterthur) NOT Mahnung, "a phrase", *karte, *kaution*, -word
       --include-code       also index loose source code and data files as documents (outside code projects)
       --include-datasets   don't skip folders that look like datasets
       --exclude DIR        don't index this folder (repeatable)
@@ -95,7 +97,7 @@ struct Arguments {
     var lists: [String: [String]] = [:]
     var flags: Set<String> = []
     static let valued: Set<String> = ["--index", "--limit", "--kind", "-n", "--zgate", "--word-weight", "--new-limit",
-                                      "--linger", "--shot-tokens", "--code-stretch", "--encoder-idle", "--to",
+                                      "--filter", "--linger", "--shot-tokens", "--code-stretch", "--encoder-idle", "--to",
                                       "--memory-limit", "--time-limit", "--transcripts"]
     static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude", "--in"]
 
@@ -482,19 +484,22 @@ func queryVectors(_ queries: [String], store: IndexStore, searcher: Searcher,
 
 func search(_ args: Arguments) throws {
     var query = args.positional.joined(separator: " ")
-    guard !query.isEmpty else { throw CLIError("search for what?") }
+    // `--filter` alone is a keyword search: its files, ranked by how well its words match.
+    let filter = args.values["--filter"].map(KeywordFilter.init)
+    guard !query.isEmpty || filter != nil else { throw CLIError("search for what?") }
     let code = CodeQuery.text(of: query)
     if let code { query = code }
-    guard !query.isEmpty else { throw CLIError("search the code for what?") }
+    guard !query.isEmpty || filter != nil else { throw CLIError("search the code for what?") }
+    if let note = filter?.note { FileHandle.standardError.write(Data("filter: \(note)\n".utf8)) }
     let store = try IndexStore(directory: args.indexFolder, file: code == nil ? IndexStore.mainFile : IndexStore.codeFile)
     let searcher = try Searcher(store: store)
     let started = Date()
-    let vector = try queryVectors([query], store: store, searcher: searcher,
-                                  prompt: code == nil ? Prompts.query : Prompts.codeQuery)?.first
+    let vector = query.isEmpty ? nil : try queryVectors([query], store: store, searcher: searcher,
+                                                        prompt: code == nil ? Prompts.query : Prompts.codeQuery)?.first
     let encoded = Date()
     let hits = try searcher.search(query, queryVector: vector, kinds: try args.kinds(),
                                    limit: args.values["-n"].flatMap(Int.init) ?? 10, zGate: args.zGate,
-                                   wordWeight: args.wordWeight, folders: args.searchFolders)
+                                   wordWeight: args.wordWeight, folders: args.searchFolders, filter: filter)
     let searched = Date()
     if args.flags.contains("--json") {
         printJSON(hits)
@@ -617,6 +622,8 @@ struct EvalFile: Decodable {
         let expect: [String]   // paths relative to `base`; "path@6-12" also requires the hit to start in [6, 12) s
         let tag: String?
         let kind: String?
+        /// A keyword filter (`KeywordFilter`; `q` may be empty then). Its query must list exactly the expected files.
+        let filter: String?
     }
     let base: String
     let queries: [Query]
@@ -640,7 +647,7 @@ func evaluate(_ args: Arguments) throws {
         let store = try IndexStore(directory: args.indexFolder, file: code ? IndexStore.codeFile : IndexStore.mainFile)
         let searcher = try Searcher(store: store)
         searchers[code] = searcher
-        let indices = texts.indices.filter { isCode[$0] == code }
+        let indices = texts.indices.filter { isCode[$0] == code && !texts[$0].isEmpty }
         let embedded = try queryVectors(indices.map { texts[$0] }, store: store, searcher: searcher,
                                         prompt: code ? Prompts.codeQuery : Prompts.query)
         for (index, vector) in zip(indices, embedded ?? []) { vectors[index] = vector }
@@ -649,10 +656,13 @@ func evaluate(_ args: Arguments) throws {
 
     var byTag: [String: (n: Int, at1: Int, at5: Int, at10: Int, mrr: Double)] = [:]
     var shown = 0, listed = 0, folded = 0   // the app's weaker-matches fold (Searcher.strongCount), over all queries
+    var filterQueries = (n: 0, exact: 0)
     for (index, query) in eval.queries.enumerated() {
         let kinds = query.kind.flatMap { FileKind(rawValue: $0) }.map { Set([$0]) }
+        let filter = query.filter.map(KeywordFilter.init)
         let hits = try searchers[isCode[index]]!.search(texts[index], queryVector: vectors[index], kinds: kinds,
-                                                       limit: depth, zGate: args.zGate, wordWeight: args.wordWeight)
+                                                       limit: depth, zGate: args.zGate, wordWeight: args.wordWeight,
+                                                       filter: filter)
         let strong = Searcher.strongCount(hits)
         shown += strong
         listed += hits.count
@@ -673,6 +683,20 @@ func evaluate(_ args: Arguments) throws {
             }
         }.map { $0 + 1 }
         if let rank, rank > strong { folded += 1 }
+        // A filter is a test, not a statistic: exactly the expected files, each hit at its page or moment.
+        var exact = ""
+        if let filter {
+            let found = Set(hits.map(\.path)), expected = Set(targets.map(\.path))
+            let placed = targets.allSatisfy { target in
+                target.range.map { range in hits.contains { $0.path == target.path && at($0, range) } } ?? true
+            }
+            let isExact = found == expected && placed
+            filterQueries.n += 1
+            if isExact { filterQueries.exact += 1 }
+            exact = isExact ? "  exact" : "  NOT EXACT (\(found.count) files, \(found.intersection(expected).count) of "
+                + "\(expected.count) expected\(placed ? "" : ", a place wrong"))"
+            if let note = filter.note { exact += "  [\(note)]" }
+        }
         let tag = query.tag ?? "all"
         for key in Set([tag, "ALL"]) {
             var row = byTag[key] ?? (0, 0, 0, 0, 0)
@@ -686,7 +710,8 @@ func evaluate(_ args: Arguments) throws {
             byTag[key] = row
         }
         let top = hits.first.map { "\(($0.path as NSString).lastPathComponent)" + (location($0).isEmpty ? "" : " [\(location($0))]") } ?? "-"
-        print("\(rank.map { lpad("#\($0)", 4) } ?? "miss")  \(pad(tag, 11)) \(pad("“\(query.q)”", 42)) top: \(top)")
+        let asked = query.filter.map { "“\(query.q)” ⧩ \($0)" } ?? "“\(query.q)”"
+        print("\(rank.map { lpad("#\($0)", 4) } ?? "miss")  \(pad(tag, 11)) \(pad(asked, 42)) top: \(top)\(exact)")
     }
     print("")
     print("\(pad("tag", 12)) \(lpad("n", 3))  \(lpad("R@1", 5))  \(lpad("R@5", 5))  \(lpad("R@10", 5))  \(lpad("MRR", 5))")
@@ -699,6 +724,7 @@ func evaluate(_ args: Arguments) throws {
     print(String(format: "weaker-matches fold (below 0.5× the top score): %.1f of %.1f results shown per query; ",
                  Double(shown) / count, Double(listed) / count)
           + "\(folded) expected \(folded == 1 ? "answer" : "answers") folded")
+    if filterQueries.n > 0 { print("filter queries exact: \(filterQueries.exact) of \(filterQueries.n)") }
 }
 
 // MARK: Main

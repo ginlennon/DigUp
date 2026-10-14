@@ -6,13 +6,16 @@ import Foundation
 /// in the Mac app (tens of milliseconds), not a process start.
 ///
 /// Protocol: one JSON request per line on stdin, one JSON response per line on stdout, carrying the request's `id`.
-///   {"op":"search","q":…,"code":bool,"kinds":[…],"limit":n,"meaning":bool,"prefix_last":bool,"folders":[…]}
+///   {"op":"search","q":…,"code":bool,"kinds":[…],"limit":n,"meaning":bool,"prefix_last":bool,"folders":[…],"filter":…}
 ///       → {"hits":[…], "strong":n, "meaning":bool, "ms":{"embed":…,"search":…}}
 ///         `meaning` false: keyword-only (while typing, or while the encoder isn't ready); `strong`: the weaker-matches
 ///         fold (`Searcher.strongCount`); each hit has the fields of `digup search --json` plus segment_id, modified,
 ///         size and info, and text_segment_id when the segment has no words of its own but another one has them (a
 ///         screenshot's OCR, a scanned page's text: for `text`). `folders`: only files inside these (absolute paths;
-///         missing or empty: everywhere).
+///         missing or empty: everywhere). `filter` (optional): the keyword filter (`KeywordFilter`): only the files
+///         whose text has it, ranked by `q` below the meaning gate too, each hit at a segment with its words (`q` may
+///         be empty then: ranked by how well its words match); "filter_note" in the reply when it was read other
+///         than as written (an unclosed quote: as plain words).
 ///   {"op":"similar","path":…,"kinds":[…],"limit":n,"folders":[…]}
 ///       → as search's (and "stored": whether the file's vectors came from the index): the files most like that one,
 ///         by meaning alone (`digup similar`)
@@ -134,6 +137,7 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             let wantMeaning = request["meaning"] as? Bool ?? true
             let prefixLast = request["prefix_last"] as? Bool ?? false
             let folders = Self.folders(request)
+            let filter = (request["filter"] as? String).flatMap { $0.isEmpty ? nil : KeywordFilter($0) }
             let started = Date()
             var vector: [Float]?
             var warning: String?
@@ -154,13 +158,13 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             if code {
                 guard let codeSearcher else { return ["hits": [], "strong": 0, "meaning": false] }
                 hits = try codeSearcher.search(text, queryVector: vector, limit: limit, prefixLast: prefixLast,
-                                               folders: folders).filter {
+                                               folders: folders, filter: filter).filter {
                     FolderSelection.isSearched($0.path, folders: codeRoots, skipped: codeSkipped)
                         && FileManager.default.fileExists(atPath: $0.path)
                 }
             } else {
                 hits = shown(try searcher.search(text, queryVector: vector, kinds: kinds, limit: limit,
-                                                 prefixLast: prefixLast, folders: folders))
+                                                 prefixLast: prefixLast, folders: folders, filter: filter))
             }
             var reply: [String: Any] = [
                 "hits": hits.map(hitFields), "strong": Searcher.strongCount(hits), "meaning": vector != nil,
@@ -168,6 +172,7 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
                        "search": Int(Date().timeIntervalSince(embedded) * 1000)],
             ]
             if let warning { reply["warning"] = warning }
+            if let note = filter?.note { reply["filter_note"] = note }
             return reply
         case "similar":
             guard let path = request["path"] as? String else { throw CLIError("similar to which file?") }

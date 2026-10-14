@@ -117,22 +117,39 @@ public final class Searcher {
 
     /// `folders`: only files inside them (nil or empty: everywhere), applied before the limit, so a search of one
     /// folder still fills `limit` from inside it.
+    ///
+    /// `filter` (`KeywordFilter`, the field beside the search field) decides which files appear, and `text` ranks them
+    /// as it ranks any search, except that no gate drops one: every file the filter holds for is a result, the ones
+    /// that match `text` least at the end (where the app folds them, `strongCount`). With `text` empty they're ranked by
+    /// how well the filter's words match (bm25), then by date. A hit points at a segment with the filter's words: the
+    /// one that fits `text` best, or with `text` empty the best match for the filter (`filterSegment`).
     public func search(_ text: String, queryVector: [Float]?, kinds: Set<FileKind>? = nil, limit: Int = 20,
                        zGate: Double = 2.0, wordWeight: Double? = nil, prefixLast: Bool = false,
-                       folders: [String]? = nil) throws -> [SearchHit] {
+                       folders: [String]? = nil, filter keywordFilter: KeywordFilter? = nil) throws -> [SearchHit] {
         let wordWeight = wordWeight ?? (isCode ? Self.codeWordWeight : Self.wordWeight)
+        let keywordFilter = keywordFilter?.expression == nil ? nil : keywordFilter
+        // A filter alone ranks by its own words. (Without one, a vector with no words is a search by meaning alone.)
+        let mainEmpty = keywordFilter != nil && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let queryVector = mainEmpty ? nil : queryVector
         if queryVector != nil, !vectorsLoaded { try reload() }
         let place = try Place(folders, in: store)
         let allowed = filter(kinds: kinds, place: place)
+        let filtered = try keywordFilter.map { keywords in
+            try FilterMatch(keywords, store: store, universe: Set(fileKind.keys.filter(allowed)))
+        }
 
         // Meaning: score every vector on this query's scale (`meaning`), keep each file's best segment.
         var best: [Int64: (z: Double, cosine: Double, row: Int)] = [:]
+        var segmentZ: [Int64: Double] = [:]   // of the segments with the filter's words
         if let query = queryVector, query.count == Vectors.dimension, !rowFile.isEmpty {
             let scores = score(query)
             let meaning = Self.meaning(scores, rowModality, setsScale: rowSetsScale)
             for row in 0..<scores.count where allowed(rowFile[row]) {
                 let z = meaning[row]
                 if z > (best[rowFile[row]]?.z ?? -.infinity) { best[rowFile[row]] = (z, Double(scores[row]), row) }
+                if let filtered, filtered.segments[rowFile[row]]?[rowSegment[row]] != nil {
+                    segmentZ[rowSegment[row]] = z
+                }
             }
         }
 
@@ -162,18 +179,23 @@ public final class Searcher {
                 WHERE fts MATCH ? ORDER BY bm25(fts, 3.0, 1.0) LIMIT 1000
                 """, (place?.values ?? []) + [.text(patterns.joined(separator: " OR "))]) { row in
                 let file = row.int(0)
-                guard words.count < 100, allowed(file), seen.insert(file).inserted else { return }
+                guard words.count < 100, allowed(file), filtered?.files.contains(file) ?? true,
+                      seen.insert(file).inserted else { return }
                 // Text that normalizing changed is quoted as it's written (with its hamza, harakat, joiners).
                 let snippet = row.text(3).flatMap { SearchText.snippet($0, terms: terms) } ?? row.text(2)
                 words.append((file, row.int(1), snippet))
             }
-            if !words.isEmpty {
-                let files = words.map { String($0.file) }.joined(separator: ",")
+            // With a filter, every file it holds for is ranked, also those beyond the best 100 keyword matches.
+            if !words.isEmpty || filtered != nil {
+                let within = filtered != nil ? "" : " AND s.file IN (\(words.map { String($0.file) }.joined(separator: ",")))"
                 for pattern in patterns {
                     try store.db.query("""
                         SELECT DISTINCT s.file FROM fts JOIN segments s ON s.id = fts.rowid
-                        WHERE fts MATCH ? AND s.file IN (\(files))
-                        """, [.text(pattern)]) { coverage[$0.int(0), default: 0] += 1 / Double(patterns.count) }
+                        WHERE fts MATCH ?\(within)
+                        """, [.text(pattern)]) { row in
+                        guard filtered?.files.contains(row.int(0)) ?? true else { return }
+                        coverage[row.int(0), default: 0] += 1 / Double(patterns.count)
+                    }
                 }
             }
         }
@@ -187,6 +209,7 @@ public final class Searcher {
         let hinted = Self.kindHints(text)
         var candidates = Set(best.filter { $0.value.z >= zGate }.keys)
         for (file, share) in coverage where share >= 0.5 { candidates.insert(file) }
+        if let filtered { candidates = filtered.files }   // no gate: the filter says which
         var scored: [Int64: Double] = [:]
         for file in candidates {
             var score = meaningWeight * max(best[file]?.z ?? 0, 0) + wordsWeight * pow(coverage[file] ?? 0, 1.5)
@@ -194,33 +217,54 @@ public final class Searcher {
             scored[file] = score
         }
 
+        var ranked = scored.sorted(by: { $0.value > $1.value || ($0.value == $1.value && $0.key < $1.key) })
+        if let filtered {
+            ranked = try Self.rank(filtered, scored: scored, best: best, mainEmpty: mainEmpty, in: store)
+        }
         let wordRank = Dictionary(words.enumerated().map { ($0.element.file, ($0.offset + 1, $0.element)) },
                                   uniquingKeysWith: { first, _ in first })
         var hits: [SearchHit] = []
-        for (file, score) in scored.sorted(by: { $0.value > $1.value || ($0.value == $1.value && $0.key < $1.key) })
-            .prefix(limit) {
+        for (file, score) in ranked.prefix(limit) {
             let rank = hits.count
             let semantic = best[file]
             let keyword = wordRank[file]
             // Point at the best meaning segment if it stands out; else at the segment the words matched.
             let useMeaning = semantic.map { $0.z >= zGate || keyword == nil } ?? false
-            guard var segmentID = useMeaning ? semantic.map({ rowSegment[$0.row] }) : keyword?.1.segment else { continue }
+            var segmentID: Int64
+            if let filtered {
+                segmentID = try filterSegment(file, filtered, segmentZ: queryVector == nil ? nil : segmentZ,
+                                              meaning: semantic.map { rowSegment[$0.row] }, words: keyword?.1.segment)
+            } else {
+                guard let pointed = useMeaning ? semantic.map({ rowSegment[$0.row] }) : keyword?.1.segment else { continue }
+                segmentID = pointed
+            }
             var focus: Double?
             if isCode {
                 // Where a name is defined is looked for in the first 10 results only: a name used all over a big repo
                 // (ggml_tensor) is in hundreds of stretches of every file that has it (2026-10-09, llama.cpp and two
-                // more repos: 560 → 100 ms a search; the others take 10–50 ms).
-                (segmentID, focus) = try codePlace(file: file, segment: segmentID,
-                                                   identifier: rank < 10 ? identifier : nil, query: text, terms: terms,
+                // more repos: 560 → 100 ms a search; the others take 10–50 ms). With a filter, only where none of the
+                // stretches has its words: the hit stays on one that has, and opens at the first line with them.
+                let lookUp = rank < 10 && (filtered?.segments[file]?.isEmpty ?? true)
+                (segmentID, focus) = try codePlace(file: file, segment: segmentID, identifier: lookUp ? identifier : nil,
+                                                   query: text, terms: terms,
                                                    wordsHere: keyword?.1.segment == segmentID || identifier != nil)
+                if let keywordFilter, filtered?.segments[file]?[segmentID] != nil,
+                   let line = try filterLine(segmentID, keywordFilter) {
+                    focus = Double(line)
+                }
             }
             let about = try self.file(file)
             let (segment, loc, locEnd, storedExcerpt) = try self.segment(segmentID)
             // Quote the matched words only when they come from the segment we point at, so a PDF hit on page 5
             // never shows page 2's words. A segment with no place and no text of its own (a screenshot's image
-            // vector) can borrow them from its file's OCR text, which describes the same picture.
+            // vector) can borrow them from its file's OCR text, which describes the same picture. With a filter, its
+            // words are the ones marked.
             var snippet = keyword.flatMap { $0.1.segment == segmentID ? $0.1.snippet : nil }
                 .flatMap { $0.contains("«") ? excerpt($0, limit: 400) : nil }
+            if let keywordFilter, filtered?.segments[file]?[segmentID] != nil, let words = try self.text(ofSegment: segmentID),
+               let marked = SearchText.snippet(words, marks: keywordFilter.marks(in: words)) {
+                snippet = excerpt(marked, limit: 400)
+            }
             if snippet == nil, storedExcerpt == nil, loc == nil, let match = keyword?.1,
                let text = match.snippet, text.contains("«") {
                 var matchedKind: String?
@@ -236,6 +280,64 @@ public final class Searcher {
                                   textSegmentID: try textSegment(of: segmentID, kind: segment, file: file, loc: loc)))
         }
         return hits
+    }
+
+    /// The order of a filter's files (`search`). With a main query: its score, then meaning below the gate (`best`'s
+    /// z, also when it's under 0 and adds nothing to the score), then how well the filter's words match. Without one:
+    /// how well the filter's words match (bm25 of its words, phrases and prefixes; a file found only by a suffix, an
+    /// infix or a NOT comes after those), then the newest first; scores from 2 down to just over 1, so the app folds
+    /// none of them (each matches the filter as much as any other).
+    static func rank(_ filtered: FilterMatch, scored: [Int64: Double], best: [Int64: (z: Double, cosine: Double, row: Int)],
+                     mainEmpty: Bool, in store: IndexStore) throws -> [(key: Int64, value: Double)] {
+        let words = { (file: Int64) in filtered.fileRank[file] ?? .infinity }
+        guard mainEmpty else {
+            return scored.sorted { a, b in
+                let (za, zb) = (best[a.key]?.z ?? -.infinity, best[b.key]?.z ?? -.infinity)
+                if a.value != b.value { return a.value > b.value }
+                if za != zb { return za > zb }
+                if words(a.key) != words(b.key) { return words(a.key) < words(b.key) }
+                return a.key < b.key
+            }
+        }
+        var modified: [Int64: Double] = [:]
+        try store.db.query("SELECT id, mtime FROM files") { row in
+            if filtered.files.contains(row.int(0)) { modified[row.int(0)] = row.double(1) }
+        }
+        let order = filtered.files.sorted { a, b in
+            if words(a) != words(b) { return words(a) < words(b) }
+            if modified[a] != modified[b] { return modified[a] ?? 0 > modified[b] ?? 0 }
+            return a < b
+        }
+        return order.enumerated().map { ($0.element, 2 - Double($0.offset) / Double(order.count)) }
+    }
+
+    /// The segment a filter's hit points at: of the file's segments with a positive term, the one that fits the main
+    /// query best (`segmentZ`, nil without a query vector: then the one the query's words matched, if it's among them),
+    /// then the one with most of the filter's terms, then its best bm25, then the first. A recording's moment, a PDF's
+    /// page, a document's part. When only the file's name or folder matched: the meaning's own segment, else the words',
+    /// else the name's row.
+    private func filterSegment(_ file: Int64, _ filtered: FilterMatch, segmentZ: [Int64: Double]?, meaning: Int64?,
+                               words: Int64?) throws -> Int64 {
+        if let matched = filtered.segments[file], !matched.isEmpty {
+            func key(_ segment: Int64) -> (Double, Int, Double, Int64) {
+                let fit = segmentZ.map { $0[segment] ?? -.infinity } ?? (segment == words ? 1 : 0)
+                return (fit, matched[segment] ?? 0, -(filtered.segmentRank[segment] ?? .infinity), -segment)
+            }
+            return matched.keys.max { key($0) < key($1) }!
+        }
+        if let segment = meaning ?? words { return segment }
+        var name: Int64 = 0
+        try store.db.query("SELECT id FROM segments WHERE file = ? AND kind = 'name'", [.int(file)]) { name = $0.int(0) }
+        return name
+    }
+
+    /// Code: the first line of a stretch with the filter's words (`*_delay` in "base_delay"), as the file numbers it.
+    private func filterLine(_ segment: Int64, _ filter: KeywordFilter) throws -> Int? {
+        guard let text = try text(ofSegment: segment) else { return nil }
+        var first = 1
+        try store.db.query("SELECT loc FROM segments WHERE id = ?", [.int(segment)]) { first = Int($0.double(0)) }
+        let lines = text.split(omittingEmptySubsequences: false, whereSeparator: { $0 == "\n" || $0 == "\r\n" })
+        return lines.firstIndex { !filter.marks(in: String($0)).isEmpty }.map { first + $0 }
     }
 
     /// The segment whose words go with `segment` when it has none of its own (`SearchHit.textSegmentID`): a

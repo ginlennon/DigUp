@@ -140,3 +140,45 @@ Migration (`digup status` on copies; the time minus a second `status` on the mig
 substring MATCH needs) it was 17.7 MB on the real index, more than everything else together; candidates are checked
 against `fts`'s text in Swift instead (F2). Only rows whose words change (those with ß or a grouped number) are
 rewritten in place: a rebuilt `fts` left 12 MB of free pages behind.
+
+## Keyword filter F2 — the filter (2026-10-14)
+
+`digup search <words> --filter '<expr>'`, the search service's `"filter"`, and `"filter"` per query in the evals
+(`KeywordFilter`, `Searcher.search(…, filter:)`). Same index as F1 (the testbed with transcripts, built fresh by the F1
+build: its four evals equal the migrated copy's line for line).
+
+`european.json` gains 25 queries tagged `filter` (plurals and codes by `*`, compounds by `*kaution*`, a suffix, NOT,
+OR, a phrase, an unclosed quote, ß typed, codes and a Swiss number, a kind limit, recordings at the moment, two of
+code; 14 with no main query), each with exactly the files its expression implies and, where it matters, the page or
+moment. A filter query passes only when the hits are exactly those files, each at its place.
+
+| | n | R@1 | R@5 | MRR | exact |
+|---|---|---|---|---|---|
+| `filter` | 25 | 1.00 | 1.00 | 1.00 | **25 of 25** |
+| european without them | 76 | 0.86 | 0.93 | 0.88 | — |
+| european, all | 101 | 0.89 | 0.95 | 0.91 | — |
+| synthetic / multilingual / code (no filters) | 37 / 48 / 41 | 0.97 / 0.94 / 1.00 | 1.00 / 0.98 / 1.00 | 0.99 / 0.95 / 1.00 | — |
+
+Without a filter nothing changed: every line of the four evals' output equals F1's. The expected sets were checked
+against an independent reading of the index's text (a Python script: every file's names and text folded, regexes per
+expression): all 25 agree. Examples: “Offerten für die Sanierung des Bootsstegs” ⧩ `Zollinger` points at 1:15 (the
+query alone points at 2:05, the `de-audio` miss); `facture* NOT garage` is the French call only (FTS5's Porter stemmer
+would have made it `factur*`, Spanish *factura* included: prefixes are checked on the text, not the stemmed words);
+`RE-2041` is the German call, not the screenshot with `INV-2041`; `*_delay` opens `retry.py` at line 8.
+
+Speed (`digup search … -n 20`, the search alone, best of three, 860M laptop):
+
+| Filter (+ main query) | testbed (111 files): with / without | copy of the real index (4,059 segments): with / without |
+|---|---|---|
+| `Rechnung*` | 3 ms | 4 ms (4 files) |
+| `*ung` (+ "invoice from the carpenter") | 2 ms (4 / 3) | 13 ms (19 / 6), 226 files |
+| `*tion*` (+ the same) | 3 ms (4 / 3) | 16 ms (24 / 6), 245 files |
+| `NOT the` (+ the same) | 1 ms (2 / 3) | 1 ms (7 / 6), 452 files |
+| `(the OR und OR la) -Rechnung*` | 4 ms | 8 ms |
+| `the AND a AND to` + query | 5 / 3 ms | 12 / 6 ms |
+| six invoice words OR-ed + query | 6 / 4 ms | 11 / 8 ms |
+
+At most 18 ms on top of the search (target < 50 ms). Two things made that: suffixes, infixes and prefixes are checked
+on bytes of text folded by hand (Foundation's case- and accent-blind search took 37 ms for `*tion*`'s candidates,
+folding the whole text with Foundation 161 ms), and the snippet's marks fold a segment's text once for all terms, ASCII
+as it is (`SearchText.Folded`: a hit list of 20 took 200 ms before).

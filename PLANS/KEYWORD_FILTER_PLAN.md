@@ -1,6 +1,7 @@
 # PLAN — A keyword filter beside the search field (AND, OR, NOT, wildcards, phrases)
 
-**Status (2026-10-14): F1 built (normalization + `fts_tri`, schema 6); F2–F5 not yet.** Starts after transcripts Stage 2
+**Status (2026-10-14): F1 (normalization + `fts_tri`, schema 6) and F2 (the filter in the engine, CLI, search
+service, evals) built; F3–F5 not yet.** Starts after transcripts Stage 2
 (PLANS/TRANSCRIPTS_PLAN.md) is merged, since both touch the keyword index. Input: the German keyword weaknesses
 measured in `docs/linux-port/EVAL_RESULTS.md` ("European languages — baseline").
 
@@ -123,6 +124,38 @@ written or deleted, incl. transcripts' rows); migration from the stored text; te
 Parser (A3) with tests; set evaluation (A5); ranking (A4) incl. below-gate candidates and filter-only mode; hit
 location (A4); `digup search … --filter '…'`; search-service `filter` field (old shells unaffected); `digup eval`
 reads `"filter"`. **Check:** the filter queries in european.json all exact; < 50 ms.
+- **Done (2026-10-14).** Decided on the way:
+  - *Grammar* (`KeywordFilter`, a value type): or := and ("OR" and)* · and := unary (["AND"] unary)* ·
+    unary := ("NOT" | "-") unary | "(" or ")" | term. `-` is NOT only at a token's start (`RE-2041` stays a code);
+    quotes `"…"` and „…“/“…”; `"…"*` is a phrase whose last word is a prefix; a word with inner punctuation is its parts
+    as a phrase (`2'380.50` → "2380 50"). `*ab` (under three letters) is read as the word, with a note. Unclosed quote,
+    unbalanced bracket or a dangling operator → every word a term, ANDed, operators and quotes dropped, and a note
+    ("unclosed quote: read as plain words"). Nothing but operators/punctuation → no filter.
+  - *Membership* per term, on file-id sets, combined with ∩ ∪ and universe − x for NOT (universe = the search's
+    kinds and folders, in the main or the code index). Words and phrases: `fts` MATCH (so English endings match through
+    Porter, as in the main field). **Prefixes, suffixes and infixes: `fts_tri` candidates (rows with all the term's
+    three-letter pieces) checked on `fts.body`** for a word start / word end / anywhere. Not prefixes through `fts`:
+    Porter cuts the typed word too ("facture*" became "factur*" and found the Spanish *factura*; "connecti*" would miss
+    "connection", kept as "connect"). A two-letter prefix or a phrase prefix (`"RE 20"*`) stays `fts`'s.
+  - *Ranking B*: candidates = the filter's files; score = the main query's as today (meaning z + coverage, coverage
+    now counted over every candidate, not only the best 100 keyword files); ties by raw z (below the gate, below 0),
+    then the filter's bm25. Main query empty: bm25 of the positive words/phrases/prefixes (a file found only by a
+    suffix, infix or NOT after those), then newest; scores 2 → just over 1, so nothing is folded. A filter with an
+    empty main query ignores a query vector; without a filter, search is exactly as before.
+  - *Where a hit points*: the file's segments (not its name row) holding a positive term; best z for the main query
+    (without a query vector: the main words' segment), then most positive terms, then bm25, then the first. Only the
+    name/folder matched → the meaning's segment, else the words', else the name row. Code: the stretch with the term,
+    opening at its first line with a mark; a name's definition is looked up only when no stretch has the filter's
+    words. The snippet marks the filter's words (whole words, a phrase/code as one: «2'380.50», «RE-2041»).
+  - *Interfaces*: `digup search [words] --filter EXPR` (note on stderr), search-service `"filter"` →
+    `"filter_note"` when it fell back (old requests unchanged), `digup eval` `"filter"` + an "exact" column and
+    "filter queries exact: n of m".
+- **Check passed:** 25 filter queries in european.json (14 filter-only, 2 code), **25 of 25 exact**, their sets also
+  confirmed by an independent regex reading of the index's text; european without them 0.86 / 0.93 / 0.88 and the
+  other three evals identical to F1. Filter cost ≤ 18 ms over the search on a copy of the real index (`*tion*`,
+  245 files), ≤ 3 ms on the testbed. Numbers in `docs/linux-port/EVAL_RESULTS.md`.
+- Open: hits that point at a screenshot's OCR row (no vector) show "text in image" rather than the picture; the panel
+  (F3) may want the picture with the words. A NOT-only filter on a big index lists everything (capped by `limit`).
 
 ### F3 — Panel, HTTP, MCP
 Second field (Tab / Ctrl+F, Esc order, a parse hint), the hit's page/moment as the engine says; HTTP `/search`,
