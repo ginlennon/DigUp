@@ -20,6 +20,8 @@ passes here on both the CPU and the Vulkan GPU, so an index means the same thing
 | Text in screenshots and scanned PDFs (OCR, for exact words) | ✅ tesseract (English + German here; more with language packs) |
 | Desktop app: tray, setup, search panel, open, show in Files | ✅ Tauri shell; the hotkey is a GNOME custom shortcut (Ctrl+Alt+Space) |
 | Open PDFs at the page (Evince, Okular), videos and recordings at the moment (Totem, VLC, mpv); settings window, pause, GPU switch, start at login | ✅ new, being tried out |
+| Search inside folders (`--in`), find similar files, `digup doctor` health check | ✅ (CLI and helper; panel `in:` coming) |
+| MCP server (Claude Code, Cursor, VS Code, Zed) and a localhost HTTP API for RAG apps | ✅ [`integrations/`](integrations/README.md) |
 | Packages (.deb / AppImage), updates | ⏳ not yet |
 | RAW photos, legacy .doc, SVG | ⏳ not yet |
 
@@ -117,7 +119,7 @@ Optional check that your GPU makes the same vectors as the Mac:
 ## Using it
 
 Ctrl+Alt+Space, describe what you're looking for, ↩ to open it at the page or moment. The
-[user guide](docs/USER_GUIDE_LINUX.md) has 18 ways to use it, from screenshots of error messages to recordings,
+[user guide](docs/USER_GUIDE_LINUX.md) has 19 ways to use it, from screenshots of error messages to recordings,
 languages, code and scripts.
 
 ## How it differs from the Mac app

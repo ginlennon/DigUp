@@ -24,7 +24,7 @@ Index Now, Settings… and Quit.
 DigUp does both at once: the meaning of your words, and the words themselves (in file names, document text, and
 the text inside screenshots and scans). Results that are clearly weaker are folded under "N weaker matches".
 
-## 18 ways to use it
+## 19 ways to use it
 
 The queries below were tried on DigUp's own test files (`scripts/linux/make-testbed.sh`), so you can try them
 there before pointing DigUp at your own folders.
@@ -61,12 +61,13 @@ there before pointing DigUp at your own folders.
    each class has"* finds the notebook cell; *"code: retry a failed call with backoff"* finds the function whatever
    it's called. (In the desktop app: coming. From the terminal today:
    `digup index --code ~/projects && digup search "code: retry with backoff"`.)
-10. **Your coding assistant asks DigUp** (coming: `integrations/`). With the MCP server, Claude Code, Cursor, VS Code
-    or Zed can search your files: "find the design doc that mentions the rate limiter", "which screenshot shows the
-    staging error?", and read the matching passage.
-11. **Your own files as a RAG source** (coming). The local HTTP API's `/context` endpoint returns the best passages
-    for a question with their file and page, ready to paste into a prompt for a local model; it listens on
-    localhost only.
+10. **Your coding assistant asks DigUp.** The MCP server in [`integrations/`](../integrations/README.md) lets Claude
+    Code, Cursor, VS Code or Zed search your files: "find the design doc that mentions the rate limiter", "which
+    screenshot shows the staging error?", then read the matching passage (`read_segment`). For Claude Code:
+    `claude mcp add --scope user digup -- uv run --project <checkout>/integrations digup-mcp`.
+11. **Your own files as a RAG source.** `uv run --project integrations digup-http` starts a local API on
+    `127.0.0.1:8484`; `POST /context {"query": "…", "limit": 5}` returns the best passages with their file and page,
+    ready for a local model's prompt. Open WebUI and other tools can import `/openapi.json` as a tool server.
 
 ### Scripts and the terminal
 
@@ -82,11 +83,15 @@ there before pointing DigUp at your own folders.
     ```
     pastes into a spreadsheet as a list of every recording, page and note on it.
 
+19. **More like this.** `digup similar ~/Pictures/IMG_2041.jpg` finds the photos, frames and pages most like a given
+    file: the other shots of the same scene, the other copy of a document, the scan of a printout. A file already
+    in the index needs no model at all; any other file is read and embedded on the spot.
+
 ### Keeping it out of your way
 
 15. **Only some folders.** Settings → Folders: add or remove folders, skip subfolders (an old sync conflict, a
-    downloads dump), or leave out file types (`heic, txt`). Search follows at once. Searching *inside* one folder
-    from the panel: coming (`in:` in the query).
+    downloads dump), or leave out file types (`heic, txt`). Search follows at once. To search *inside* one folder:
+    `digup search "beach sunset" --in ~/Documents/Trips` (repeat `--in` for several); in the panel: coming.
 16. **Pause it.** Presenting, gaming, on a train? Tray → Pause Indexing. Search keeps working; new files wait until
     you resume. It stays paused across restarts.
 17. **CPU or GPU.** Settings → Indexing → "Use the GPU". On an AMD or Intel GPU (Vulkan) indexing is about 2.7× faster
@@ -104,4 +109,7 @@ there before pointing DigUp at your own folders.
   that a new file is searchable a few seconds after it lands.
 - **Where things live:** index `~/.local/share/digup/index`, model `~/.local/share/digup/Models` (865 MB),
   settings `~/.config/com.abdurrahim.DigUp/settings.json`, logs `~/.local/share/com.abdurrahim.DigUp/logs`.
-- **Private:** DigUp goes online only to download the model once. No account, no telemetry.
+- **Health check:** `digup doctor` checks the model, the GPU, ffmpeg, tesseract and the index, and embeds two
+  reference sentences to prove the vectors are right (`--deep` also checks the model files' SHA-256).
+- **Private:** DigUp goes online only to download the model once. No account, no telemetry. The HTTP API and the
+  MCP server listen on this machine only.
