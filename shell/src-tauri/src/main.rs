@@ -19,6 +19,8 @@ mod control;
 mod desktop;
 mod editors;
 mod fallback;
+#[cfg(target_os = "linux")]
+mod gtk_log;
 mod helper;
 mod opener;
 mod options;
@@ -710,6 +712,8 @@ fn debug_report(app: AppHandle, shell: State<'_, Arc<Shell>>, report: Value) {
 }
 
 fn main() {
+    #[cfg(target_os = "linux")]
+    gtk_log::quiet_theme_warnings();
     let options = match Options::from_args() {
         Ok(options) => options,
         Err(error) => {

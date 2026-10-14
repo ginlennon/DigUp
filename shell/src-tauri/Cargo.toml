@@ -25,6 +25,8 @@ libc = "0.2"
 # Whether DigUp is running (its single-instance name on the session bus): the same zbus the single-instance plugin uses.
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = "5.9"
+# GTK's log writer (gtk_log.rs): the glib that Tauri's GTK already builds.
+glib = "0.18"
 
 [profile.release]
 codegen-units = 1
