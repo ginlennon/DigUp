@@ -10,7 +10,9 @@ import Foundation
 ///       → {"hits":[…], "strong":n, "meaning":bool, "ms":{"embed":…,"search":…}}
 ///         `meaning` false: keyword-only (while typing, or while the encoder isn't ready); `strong`: the weaker-matches
 ///         fold (`Searcher.strongCount`); each hit has the fields of `digup search --json` plus segment_id, modified,
-///         size and info. `folders`: only files inside these (absolute paths; missing or empty: everywhere).
+///         size and info, and text_segment_id when the segment has no words of its own but another one has them (a
+///         screenshot's OCR, a scanned page's text: for `text`). `folders`: only files inside these (absolute paths;
+///         missing or empty: everywhere).
 ///   {"op":"similar","path":…,"kinds":[…],"limit":n,"folders":[…]}
 ///       → as search's (and "stored": whether the file's vectors came from the index): the files most like that one,
 ///         by meaning alone (`digup similar`)
@@ -334,6 +336,7 @@ func hitFields(_ hit: SearchHit) -> [String: Any] {
     if let end = hit.locEnd { row["loc_end"] = end }
     if let focus = hit.focus { row["focus"] = focus }
     if let excerpt = hit.excerpt { row["excerpt"] = excerpt }
+    if let text = hit.textSegmentID { row["text_segment_id"] = text }
     return row
 }
 

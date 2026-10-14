@@ -21,6 +21,9 @@ public struct SearchHit: Sendable {
     /// Code: the line to open at, in the stretch (`loc`…`locEnd`): where the name looked up is defined, or the first
     /// line with the query's words. Nil: the stretch's first line.
     public var focus: Double? = nil
+    /// The segment with the words that go with this one, when it has none of its own: what OCR read off a screenshot
+    /// whose picture matched, a page's text where its other vector matched (`Searcher.text(ofSegment:)` reads it).
+    public var textSegmentID: Int64? = nil
 }
 
 /// Hybrid search: meaning (EmbeddingGemma's vectors) + words (FTS5).
@@ -229,9 +232,26 @@ public final class Searcher {
             hits.append(SearchHit(path: about.path, kind: about.kind, score: score, z: semantic?.z,
                                   cosine: semantic?.cosine, keywordRank: keyword?.0, segment: segment,
                                   segmentID: segmentID, loc: loc, locEnd: locEnd, excerpt: snippet ?? storedExcerpt,
-                                  modified: about.modified, size: about.size, info: about.info, focus: focus))
+                                  modified: about.modified, size: about.size, info: about.info, focus: focus,
+                                  textSegmentID: try textSegment(of: segmentID, kind: segment, file: file, loc: loc)))
         }
         return hits
+    }
+
+    /// The segment whose words go with `segment` when it has none of its own (`SearchHit.textSegmentID`): a
+    /// screenshot's OCR beside its picture, or the page whose picture holds the text when the page's other vector
+    /// (from garbled words) is the one that matched. Only pictures and pages can have one.
+    private func textSegment(of segment: Int64, kind: SegmentKind, file: Int64, loc: Double?) throws -> Int64? {
+        guard [.image, .page, .pageImage].contains(kind) else { return nil }
+        var hasWords = false
+        try store.db.query("SELECT 1 FROM fts WHERE rowid = ?", [.int(segment)]) { _ in hasWords = true }
+        guard !hasWords else { return nil }
+        var found: Int64?
+        try store.db.query("""
+            SELECT s.id FROM segments s JOIN fts ON fts.rowid = s.id
+            WHERE s.file = ? AND s.id != ? AND s.kind IN ('ocr', 'page', 'page_image') AND s.loc IS ? LIMIT 1
+            """, [.int(file), .int(segment), loc.map { .double($0) } ?? .null]) { found = $0.int(0) }
+        return found
     }
 
     // MARK: Similar files
@@ -300,7 +320,9 @@ public final class Searcher {
                 return SearchHit(path: about.path, kind: about.kind, score: match.z, z: match.z,
                                  cosine: Double(scores[match.row]), keywordRank: nil, segment: segment.kind,
                                  segmentID: segmentID, loc: segment.loc, locEnd: segment.locEnd,
-                                 excerpt: segment.excerpt, modified: about.modified, size: about.size, info: about.info)
+                                 excerpt: segment.excerpt, modified: about.modified, size: about.size, info: about.info,
+                                 textSegmentID: try textSegment(of: segmentID, kind: segment.kind, file: file,
+                                                                loc: segment.loc))
             }
     }
 
