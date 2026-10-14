@@ -1,8 +1,8 @@
 // DigUp's settings window: the folders and what's skipped in them, the code folders, pausing indexing and the GPU
-// switch (and what's left of it after a GPU problem), where recordings and code open, the shortcut (on GNOME a GNOME
-// shortcut, which this window can write), starting at login, turning DigUp off, where DigUp keeps things and a check
-// of it. Each change applies at once, as in the Mac app's Settings; the shell saves it and the helpers follow
-// (search-service is told the folders, the watcher and indexing start over with them).
+// switch (and what's left of it after a GPU problem), transcripts of recordings, where recordings and code open, the
+// shortcut (on GNOME a GNOME shortcut, which this window can write), starting at login, turning DigUp off, where DigUp
+// keeps things and a check of it. Each change applies at once, as in the Mac app's Settings; the shell saves it and
+// the helpers follow (search-service is told the folders, the watcher and indexing start over with them).
 "use strict";
 
 const tauri = window.__TAURI__;
@@ -36,6 +36,7 @@ function render() {
   showStatus(info.status);
   $("gpu").checked = info.gpu;
   renderGpuProblem();
+  renderTranscripts();
   renderMomentPlayer();
   renderEditor();
 
@@ -68,6 +69,57 @@ function renderGpuProblem() {
     ? "The model failed on the graphics chip twice within 10 minutes, so DigUp uses the processor until it restarts."
     : "Search's model couldn't start on the graphics chip, so search uses the processor until DigUp restarts.";
 }
+
+// MARK: Transcripts
+
+/// Transcribe recordings: off unless turned on. On, the shell fetches their model first (its progress here, with
+/// Cancel); a download that fails turns them off again, and the reason shows here. Without whisper-cli in this build
+/// they can't be turned on.
+function renderTranscripts() {
+  const model = info.transcriptModel || { state: "idle" };
+  const box = $("transcripts");
+  box.checked = info.transcripts;
+  box.disabled = !info.transcriber;
+  const what = "Makes what's said in recordings and videos searchable word for word.";
+  let text = !info.transcriber
+    ? "Not installed in this build."
+    : info.transcriptsOnGpu
+      ? `${what} Slower: about 7 minutes per hour of recordings on this GPU. Downloads 575 MB once.`
+      : `${what} Without the GPU it uses a smaller model on the processor: less exact, and it keeps the processor `
+        + "busy (about 9 minutes per hour of recordings). Downloads 489 MB once.";
+  if (model.state === "failed" && !info.transcripts) {
+    text = `The model couldn't download: ${model.message || "unknown error"}. ${text}`;
+  }
+  $("transcripts-text").textContent = text;
+  $("transcripts-text").classList.toggle("warn", model.state === "failed" && !info.transcripts);
+
+  // The download, as setup shows the model's.
+  const downloading = info.transcripts && ["checking", "downloading", "waiting"].includes(model.state);
+  $("transcripts-download").hidden = !downloading;
+  if (downloading) {
+    const megabytes = (bytes) => Math.round(bytes / 1e6).toLocaleString();
+    let progress = {
+      checking: "Checking the model…",
+      waiting: "Waiting for the network to download the model",
+    }[model.state];
+    if (model.state === "downloading") {
+      progress = model.total
+        ? `Downloading the model · ${Math.floor((100 * model.bytes) / model.total)}% of ${megabytes(model.total)} MB`
+        : "Downloading the model…";
+      if (model.problem) progress += ` (${model.problem}, trying again)`;
+    }
+    $("transcripts-progress").textContent = progress;
+  }
+  $("music-row").hidden = !info.transcripts;
+  $("music").checked = info.transcribeMusic;
+}
+
+$("transcripts").addEventListener("change", () =>
+  run("set_transcripts", { on: $("transcripts").checked }, $("transcripts")));
+// Cancel turns them off again, as a failed download does.
+$("transcripts-cancel").addEventListener("click", () =>
+  run("set_transcripts", { on: false }, $("transcripts-cancel")));
+$("music").addEventListener("change", () => run("set_transcribe_music", { on: $("music").checked }, $("music")));
 
 // MARK: Folders
 
@@ -368,6 +420,12 @@ function problem(error) {
 }
 
 tauri.event.listen("settings-changed", load);
+tauri.event.listen("transcript-model", ({ payload }) => {
+  if (info) {
+    info.transcriptModel = payload;
+    renderTranscripts();
+  }
+});
 tauri.event.listen("status", ({ payload }) => {
   if (info) {
     info.status = payload;

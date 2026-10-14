@@ -459,7 +459,8 @@ function facts(hit) {
   reason.innerHTML = ICONS.found;
   reason.append(element("span", "", reasonOf(hit)));
   box.append(reason);
-  if (hit.excerpt && hit.excerpt.includes("«") && hit.kind !== "doc" && hit.kind !== "code") {
+  // The words found (a picture's, a page's), or what's said at the moment in a recording's transcript.
+  if (hit.excerpt && (hit.excerpt.includes("«") && hit.kind !== "doc" && hit.kind !== "code" || said(hit))) {
     const words = element("div", "reason-text");
     words.innerHTML = marked(hit.excerpt);
     box.append(words);
@@ -566,8 +567,10 @@ function reasonOf(hit) {
     return `Like ${state.like.name}` + (place ? ` at ${place}` : "");
   }
   const meaning = (hit.z ?? 0) >= 2, words = hit.keyword_rank != null;
-  if (!meaning) return words ? "Has your words" : "Matches its name";
   const at = hit.loc != null ? clock(hit.loc) : "";
+  // Its transcript has the words, at this moment (the line said shows below).
+  if (said(hit)?.includes("«")) return `Said at ${at || "0:00"}`;
+  if (!meaning) return words ? "Has your words" : "Matches its name";
   const page = hit.loc != null ? `page ${Math.trunc(hit.loc)}` : "a page";
   switch (hit.segment) {
     case "image": return hit.kind === "screenshot" ? "Matches what's on screen" : "Matches the picture";
@@ -581,6 +584,12 @@ function reasonOf(hit) {
     case "cells": return `Matches ${span(hit) ?? "the code"}`;
     default: return "Matches its name";
   }
+}
+
+/// What's said at the moment in a recording or a video's sound, from its transcript (PLANS/TRANSCRIPTS_PLAN.md): the
+/// hit's excerpt, with the words keyword search found in « »; null for a hit without one.
+function said(hit) {
+  return hit.segment === "audio" && hit.info?.transcript === "done" && hit.excerpt ? hit.excerpt : null;
 }
 
 /// "Screenshot · Oct 7, 2026 · 1440 × 900 · 62 KB", "PDF · … · 463 pages, 120 read so far · 23 MB"
@@ -772,6 +781,10 @@ tauri.event.listen("helper", ({ payload }) => {
       state.indexing = { done: event.done, total: event.total };
       $activity.textContent = `Indexing ${event.done}/${event.total}`;
       $activity.hidden = false;
+    } else if (event.event === "transcript" && event.total) {
+      // Transcripts come after everything is searchable: results aren't partial meanwhile.
+      $activity.textContent = `Transcribing ${event.done}/${event.total}`;
+      $activity.hidden = false;
     } else if (event.event === "idle" || event.event === "exit") {
       state.indexing = null;
       $activity.hidden = true;
@@ -814,7 +827,8 @@ function report() {
           text: big.classList.contains("passage") ? big.textContent.slice(0, 80) : null,
         },
         thumbnails: `${thumbs.filter((image) => image.complete && image.naturalWidth > 0).length} of ${thumbs.length} drawn`,
-        facts: [...$preview.querySelectorAll(".facts .title, .facts .line, .reason span")].map((node) => node.textContent),
+        facts: [...$preview.querySelectorAll(".facts .title, .facts .line, .reason span, .reason-text")]
+          .map((node) => node.textContent),
         footer: [$summary.textContent, $keys.textContent],
       },
     }).catch(() => {});

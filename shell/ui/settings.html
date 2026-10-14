@@ -65,6 +65,20 @@
           <div class="label"><b class="warn" id="gpu-problem-title"></b><span id="gpu-problem-text"></span></div>
           <button id="try-gpu">Try the GPU Again</button>
         </div>
+        <label class="row">
+          <div class="label"><b>Transcribe recordings</b><span id="transcripts-text"></span></div>
+          <input type="checkbox" class="switch" id="transcripts">
+        </label>
+        <div class="row" id="transcripts-download" hidden>
+          <div class="label"><b>Transcripts' model</b><span id="transcripts-progress"></span></div>
+          <button id="transcripts-cancel">Cancel</button>
+        </div>
+        <label class="row" id="music-row" hidden>
+          <div class="label"><b>Also transcribe music</b>
+            <span>Songs (audio with artist and album tags) are skipped unless this is on: sung words are rarely what
+              you look for.</span></div>
+          <input type="checkbox" class="switch" id="music">
+        </label>
       </div>
     </section>
 
@@ -135,15 +149,16 @@
         <div class="row"><span class="key-name">Logs</span><span class="value path" id="path-logs"></span></div>
         <div class="row"><span class="key-name">Settings</span><span class="value path" id="path-settings"></span></div>
         <div class="row">
-          <div class="label"><b>Check DigUp</b><span id="check-text">Whether the model, the GPU, ffmpeg, tesseract
-            and the index are all as they should be.</span></div>
+          <div class="label"><b>Check DigUp</b><span id="check-text">Whether the model, the GPU, ffmpeg, tesseract,
+            transcripts and the index are all as they should be.</span></div>
           <button id="check">Check DigUp</button>
         </div>
         <div id="checks" hidden></div>
       </div>
       <p class="note">DigUp reads the folders you choose and keeps what it learns in its index, on this computer. It
-        goes online only to download its model, once. EmbeddingGemma 2 by Google (Apache 2.0), run by llama.cpp
-        (MIT).</p>
+        goes online only to download its model, once (and the transcripts' model, if you turn them on). EmbeddingGemma 2
+        by Google (Apache 2.0), run by llama.cpp (MIT); transcripts by OpenAI's Whisper (MIT), run by whisper.cpp (MIT),
+        with the Silero VAD (MIT).</p>
     </section>
   </main>
   <footer id="problem" hidden></footer>

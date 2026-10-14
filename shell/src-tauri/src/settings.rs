@@ -1,8 +1,9 @@
 //! What the person chose: the folders DigUp searches, what it skips in them, the hotkey, whether setup is done,
 //! whether indexing is paused and may use the GPU, where recordings open at a moment, the code folders and the editor
-//! code opens in. A JSON file in the app's config folder (%APPDATA%\com.abdurrahim.DigUp on Windows,
-//! ~/.config/com.abdurrahim.DigUp on Linux). Launch arguments (`--roots`, `--hotkey`) stand in for it in dev runs. A
-//! field a file doesn't have yet (one saved by an older shell) takes its default.
+//! code opens in, and transcripts of recordings. A JSON file in the app's config folder
+//! (%APPDATA%\com.abdurrahim.DigUp on Windows, ~/.config/com.abdurrahim.DigUp on Linux). Launch arguments (`--roots`,
+//! `--hotkey`) stand in for it in dev runs. A field a file doesn't have yet (one saved by an older shell) takes its
+//! default.
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -38,6 +39,11 @@ pub struct Settings {
     /// Where code results open (editors.rs): an editor's id, "default" (the file's default app), or "" (not chosen
     /// yet: the first editor installed).
     pub code_editor: String,
+    /// Transcripts of recordings (transcripts.rs): what's said in recordings and videos is searchable word for word.
+    /// Off unless turned on: they cost about 7× the audio's indexing time, and a model download.
+    pub transcripts: bool,
+    /// Songs (audio with artist and album tags) get transcripts too; off, they're skipped.
+    pub transcribe_music: bool,
 }
 
 impl Default for Settings {
@@ -55,6 +61,8 @@ impl Default for Settings {
             code_folders: Vec::new(),
             code_skipped: Vec::new(),
             code_editor: String::new(),
+            transcripts: false,
+            transcribe_music: false,
         }
     }
 }
@@ -105,6 +113,9 @@ mod tests {
         assert!(old.set_up && old.gpu && !old.paused && old.paused_why.is_none(), "new fields take their defaults");
         assert!(old.prefers_vlc());
         assert!(old.code_folders.is_empty() && old.code_skipped.is_empty() && old.code_editor.is_empty());
+        assert!(!old.transcripts && !old.transcribe_music, "transcripts are off unless turned on");
+        let words: Settings = serde_json::from_str(r#"{"transcripts":true,"transcribeMusic":true}"#).unwrap();
+        assert!(words.transcripts && words.transcribe_music);
         let chosen: Settings = serde_json::from_str(r#"{"momentPlayer":"default"}"#).unwrap();
         assert!(!chosen.prefers_vlc());
         let code: Settings = serde_json::from_str(r#"{"codeFolders":["/home/me/git"],"codeEditor":"zed"}"#).unwrap();

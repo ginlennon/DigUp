@@ -372,7 +372,7 @@ impl IndexService {
                     match event["event"].as_str() {
                         Some("exit") => progress.leaving = true,
                         Some("idle" | "waiting") => progress.idle = true,
-                        Some("file" | "rest") => progress.idle = false,
+                        Some("file" | "rest" | "transcript") => progress.idle = false,
                         Some("error") if event["fatal"] == true => progress.fatal = true,
                         Some("sync") if event["code"] != true => {
                             progress.synced = true;
@@ -456,6 +456,11 @@ impl ModelDownload {
         });
         *running = Some(process);
         Ok(())
+    }
+
+    /// One is under way.
+    pub fn is_running(&self) -> bool {
+        self.running.lock().unwrap().as_ref().is_some_and(Process::is_running)
     }
 
     pub fn stop(&self) {

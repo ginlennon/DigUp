@@ -26,6 +26,7 @@ mod opener;
 mod options;
 mod scope;
 mod settings;
+mod transcripts;
 mod watcher;
 
 use helper::{IndexService, Launch, ModelDownload, SearchService};
@@ -64,6 +65,16 @@ struct Shell {
     model: ModelDownload,
     /// The model for the setup window and the tray: {"state": "checking|downloading|waiting|ready|failed", …}.
     model_state: Mutex<Value>,
+    /// `digup download-model --transcripts`: the transcripts' model, fetched when they're turned on (transcripts.rs).
+    transcript_model: ModelDownload,
+    /// Its state for Settings, as `model_state` (transcripts::state), or {"state": "idle"} when none was asked for.
+    transcript_state: Mutex<Value>,
+    /// When the transcripts' model is in, the index helper starts over: one started without it has no transcriber.
+    /// Set by turning transcripts on, and by a file the download fetched.
+    transcripts_restart: AtomicBool,
+    /// The transcripts' download was stopped on purpose (turned off, or replaced): its "the download stopped" is no
+    /// failure.
+    transcripts_cancelled: AtomicBool,
     watcher: Mutex<Option<FolderWatcher>>,
     /// The tray menu's first line: what's going on.
     status: Mutex<Option<MenuItem<Wry>>>,
@@ -172,10 +183,19 @@ impl Shell {
             args.extend(["--exclude-ext".to_string(), extension.clone()]);
         }
         args.extend(code_arguments(&settings));
+        // Transcripts on the GPU, or with the small model on the CPU, or off (transcripts.rs).
+        args.extend(transcripts::arguments(&settings, self.gpu_in_use()));
         args.extend(self.folders());
         let mut launch = self.launch(args, "index.log");
         launch.also_logs.extend(self.options.index_folder().map(|index| index.join("worker.log")));
         launch
+    }
+
+    /// whisper-cli is in this build, where the helper looks for it (transcripts.rs): without it Settings can't turn
+    /// transcripts on.
+    fn transcripts_installed(&self) -> bool {
+        let chosen = std::env::var("DIGUP_WHISPER").ok();
+        transcripts::whisper(&self.options.helper, chosen.as_deref(), std::env::var_os("PATH").as_deref()).is_some()
     }
 
     fn model_ready(&self) -> bool {
@@ -371,6 +391,13 @@ async fn settings_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Result<V
         "editors": shell.editors.installed(),
         "codeEditor": shell.code_editor().map_or(editors::DEFAULT_APP.to_string(), |editor| editor.id),
         "vlc": shell.apps.vlc().is_some(),
+        // Transcripts of recordings: the setting, whether this build has whisper-cli, whether they'd run on the GPU
+        // (else with the small model on the CPU), and their model's download.
+        "transcripts": settings.transcripts,
+        "transcribeMusic": settings.transcribe_music,
+        "transcriber": shell.transcripts_installed(),
+        "transcriptsOnGpu": shell.gpu_in_use(),
+        "transcriptModel": shell.transcript_state.lock().unwrap().clone(),
         "hotkey": shortcut_text(&shell.hotkey()),
         "gnome": gnome,
         "shortcut": shortcut,
@@ -412,14 +439,17 @@ async fn set_paused(app: AppHandle, paused: bool) -> Result<(), String> {
 }
 
 /// The GPU switch: the helpers start over with it (DIGUP_GPU=0 when it's off), the search service at once. Switching
-/// it on is also trying the GPU again after it failed this session.
+/// it on is also trying the GPU again after it failed this session. With transcripts on, their model for the GPU or
+/// the CPU is fetched if it isn't here.
 #[tauri::command]
 async fn set_gpu(app: AppHandle, shell: State<'_, Arc<Shell>>, gpu: bool) -> Result<(), String> {
     shell.change_settings(|settings| settings.gpu = gpu)?;
     if gpu {
         shell.health.lock().unwrap().try_gpu_again();
     }
-    restart_helpers_now(app, shell.inner().clone()).await
+    restart_helpers_now(app.clone(), shell.inner().clone()).await?;
+    fetch_transcript_model_if_on(&app);
+    Ok(())
 }
 
 /// Settings' "Try the GPU again" after it failed this session (fallback.rs): the helpers start over on it.
@@ -427,7 +457,81 @@ async fn set_gpu(app: AppHandle, shell: State<'_, Arc<Shell>>, gpu: bool) -> Res
 async fn try_gpu_again(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Result<(), String> {
     shell.health.lock().unwrap().try_gpu_again();
     set_status(&app, "Trying the GPU again…");
-    restart_helpers_now(app, shell.inner().clone()).await
+    restart_helpers_now(app.clone(), shell.inner().clone()).await?;
+    fetch_transcript_model_if_on(&app);
+    Ok(())
+}
+
+/// Settings → Indexing → Transcribe recordings. On: their model is fetched if it isn't here (its progress shows in
+/// Settings), then the index helper starts over with them; a failed download turns them off again, saying why. Off
+/// (also Settings' Cancel of the download): a download under way stops, and the helper starts over with `--transcripts
+/// off`, which takes the index's transcripts out.
+#[tauri::command]
+async fn set_transcripts(app: AppHandle, shell: State<'_, Arc<Shell>>, on: bool) -> Result<(), String> {
+    if on && !shell.transcripts_installed() {
+        return Err("Transcripts aren't installed in this build (no whisper-cli)".into());
+    }
+    shell.change_settings(|settings| settings.transcripts = on)?;
+    let shell = shell.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if on {
+            fetch_transcript_model(&app, true);
+        } else {
+            stop_transcript_download(&shell);
+            transcript_state(&app, json!({"state": "idle"}));
+            run_index(&app);
+        }
+        settings_changed(&app);
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+/// "Also transcribe music": the index helper starts over with it (songs get transcripts, or theirs go).
+#[tauri::command]
+async fn set_transcribe_music(app: AppHandle, shell: State<'_, Arc<Shell>>, on: bool) -> Result<(), String> {
+    shell.change_settings(|settings| settings.transcribe_music = on)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        run_index(&app);
+        settings_changed(&app);
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+/// With transcripts on: their model for how indexing runs now (`fetch_transcript_model`), after the GPU switch.
+fn fetch_transcript_model_if_on(app: &AppHandle) {
+    if app.state::<Arc<Shell>>().settings.lock().unwrap().transcripts {
+        fetch_transcript_model(app, false);
+    }
+}
+
+/// Fetches the transcripts' model for how indexing runs now (whisper small for the CPU), unless it's here already
+/// (then `digup download-model` says "done" at once). A download of the other one stops first. Once it's in, the index
+/// helper starts over if `restart` asks (transcripts just turned on) or a file had to be fetched.
+fn fetch_transcript_model(app: &AppHandle, restart: bool) {
+    let shell = app.state::<Arc<Shell>>().inner().clone();
+    stop_transcript_download(&shell);
+    shell.transcripts_restart.store(restart, Ordering::SeqCst);
+    transcript_state(app, json!({"state": "checking"}));
+    let args = transcripts::download_arguments(shell.gpu_in_use(), shell.options.models.as_deref());
+    if let Err(error) = shell.transcript_model.run(&shell.launch(args, "transcripts-model.log")) {
+        transcript_model_event(app, json!({"event": "error", "message": error}));
+    }
+}
+
+/// Stops the transcripts' download, if one runs, so that its end isn't taken for a failure.
+fn stop_transcript_download(shell: &Shell) {
+    if shell.transcript_model.is_running() {
+        shell.transcripts_cancelled.store(true, Ordering::SeqCst);
+        shell.transcript_model.stop();
+    }
+}
+
+/// The transcripts' download state, kept for Settings and sent to it.
+fn transcript_state(app: &AppHandle, state: Value) {
+    *app.state::<Arc<Shell>>().transcript_state.lock().unwrap() = state.clone();
+    let _ = app.emit_to("settings", "transcript-model", state);
 }
 
 /// The helpers start over as they're launched now, and the search service is warmed again, so the next search doesn't
@@ -756,7 +860,7 @@ fn main() {
             ask, estimate, setup_info, pick_folders, finish_setup, resolve_folder, open_path, open_hit, open_title, reveal,
             hide_panel, panel_height, settings_info, save_folders, set_paused, set_gpu, set_starts_at_login, set_up_shortcut,
             turn_off, try_gpu_again, check_digup, set_moment_player, panel_info, save_code_folders, set_code_editor,
-            debug_query, debug_report
+            set_transcripts, set_transcribe_music, debug_query, debug_report
         ])
         .build(context)
         .expect("DigUp couldn't start");
@@ -800,6 +904,10 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         let app = handle.clone();
         move |event| model_event(&app, event)
     });
+    let transcript_model = ModelDownload::new({
+        let app = handle.clone();
+        move |event| transcript_model_event(&app, event)
+    });
     // Previews show files from the chosen folders (and the helper's renders, once it says where the index is).
     for root in &settings.folders {
         let _ = app.asset_protocol_scope().allow_directory(root, true);
@@ -815,6 +923,10 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         index,
         model,
         model_state: Mutex::new(json!({"state": "checking"})),
+        transcript_model,
+        transcript_state: Mutex::new(json!({"state": "idle"})),
+        transcripts_restart: AtomicBool::new(false),
+        transcripts_cancelled: AtomicBool::new(false),
         watcher: Mutex::new(None),
         status: Mutex::new(None),
         pause_item: Mutex::new(None),
@@ -853,6 +965,8 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
     if let Err(error) = shell.model.run(&shell.launch(download, "model.log")) {
         model_event(&handle, json!({"event": "error", "message": error}));
     }
+    // Transcripts on: their model too, in case it's missing (a download that was under way when DigUp quit).
+    fetch_transcript_model_if_on(&handle);
     if shell.is_set_up() {
         watch_folders(&handle);
     } else {
@@ -1022,6 +1136,8 @@ fn settings_changed(app: &AppHandle) {
 fn stop_helpers(app: &AppHandle) {
     let shell = app.state::<Arc<Shell>>();
     shell.model.stop();
+    // Not a failure: transcripts stay on, and the next start picks the download up where it stopped.
+    stop_transcript_download(&shell);
     shell.index.stop();
     shell.search.stop();
 }
@@ -1212,6 +1328,9 @@ fn make_tray(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<()> {
 }
 
 fn set_status(app: &AppHandle, text: &str) {
+    if cfg!(debug_assertions) {
+        log!("status: {text}");
+    }
     if let Some(status) = app.state::<Arc<Shell>>().status.lock().unwrap().as_ref() {
         let _ = status.set_text(text);
     }
@@ -1275,6 +1394,11 @@ fn index_event(app: &AppHandle, event: Value) {
         }
         "rest" => {
             say(&format!("Reading the rest of {} long files", count("files")));
+            reload(app, false);
+        }
+        // The transcript pass, after everything else: an event a recording, as "file"'s.
+        "transcript" => {
+            say(&format!("Transcribing {} of {}", count("done"), count("total")));
             reload(app, false);
         }
         "idle" => {
@@ -1401,6 +1525,43 @@ fn model_event(app: &AppHandle, event: Value) {
                 log!("search: reload_encoder {reply:?}");
             }
         });
+    }
+}
+
+/// The transcripts' download (`fetch_transcript_model`): its state to Settings. Once it's in, the index helper starts
+/// over when it should (and transcripts are still on). Failed: transcripts are turned off again, and Settings says
+/// why; one stopped on purpose is just over.
+fn transcript_model_event(app: &AppHandle, event: Value) {
+    if cfg!(debug_assertions) && event["event"] != "progress" {
+        log!("transcript model: {event}");
+    }
+    let Some(state) = transcripts::state(&event) else { return };
+    let shell = app.state::<Arc<Shell>>().inner().clone();
+    if event["event"] == "file" {
+        shell.transcripts_restart.store(true, Ordering::SeqCst);   // something new for the helper
+    }
+    match state["state"].as_str().unwrap_or_default() {
+        "failed" if shell.transcripts_cancelled.swap(false, Ordering::SeqCst) => {}
+        "failed" => {
+            log_error!("digup-shell: the transcripts' model couldn't download: {}",
+                       event["message"].as_str().unwrap_or("no reason given"));
+            if let Err(error) = shell.change_settings(|settings| settings.transcripts = false) {
+                log_error!("digup-shell: {error}");
+            }
+            transcript_state(app, state);
+            run_index(app);
+            settings_changed(app);
+        }
+        "ready" => {
+            shell.transcripts_cancelled.store(false, Ordering::SeqCst);
+            transcript_state(app, state);
+            if shell.transcripts_restart.swap(false, Ordering::SeqCst) && shell.settings.lock().unwrap().transcripts {
+                shell.index.stop();
+                run_index(app);
+            }
+            settings_changed(app);
+        }
+        _ => transcript_state(app, state),
     }
 }
 

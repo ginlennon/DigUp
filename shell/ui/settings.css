@@ -106,7 +106,7 @@ button.link { background: none; border: 0; color: var(--ember); padding: 8px 2px
   background: var(--surface); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px;
 }
 
-.label b.warn { color: var(--ember); }
+.label b.warn, .label span.warn { color: var(--ember); }
 
 /* "Check DigUp": one line per check of `digup doctor`. */
 #checks { border-top: 1px solid var(--line); padding: 6px 12px 10px; }
