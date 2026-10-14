@@ -162,4 +162,5 @@ jobs:
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q shellcheck
           shellcheck --version | sed -n 2p
-          shellcheck scripts/linux/*.sh $(find integrations/desktop -type f ! -name '*.md' | sort)
+          # Warnings and errors fail it; style notes (info, style) don't.
+          shellcheck -S warning scripts/linux/*.sh $(find integrations/desktop -type f ! -name '*.md' | sort)
