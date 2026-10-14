@@ -248,6 +248,8 @@ struct Progress {
     /// When a sync was last asked of it that it hasn't started yet, in seconds since 1970 like its sync events'
     /// "started".
     wanted: Option<f64>,
+    /// Between passes: its last word was "idle" (it lingers for more) or "waiting" (for the model).
+    idle: bool,
 }
 
 fn seconds_now() -> f64 {
@@ -294,6 +296,8 @@ impl IndexService {
                     let mut progress = known.lock().unwrap();
                     match event["event"].as_str() {
                         Some("exit") => progress.leaving = true,
+                        Some("idle" | "waiting") => progress.idle = true,
+                        Some("file" | "rest") => progress.idle = false,
                         Some("sync") if event["code"] != true => {
                             progress.synced = true;
                             let started = event["started"].as_f64().unwrap_or(f64::MAX);
@@ -316,6 +320,15 @@ impl IndexService {
         });
         *running = Some(Indexing { process, stdin, args: launch.args.clone(), progress });
         Ok(())
+    }
+
+    /// A helper is in the middle of a pass (starting, syncing, reading files), not lingering between passes or gone.
+    pub fn is_busy(&self) -> bool {
+        let running = self.running.lock().unwrap();
+        running.as_ref().is_some_and(|indexing| {
+            let progress = indexing.progress.lock().unwrap();
+            !progress.leaving && !progress.idle && indexing.process.is_running()
+        })
     }
 
     pub fn stop(&self) {
@@ -382,10 +395,10 @@ mod tests {
     use std::time::Instant;
 
     /// A stand-in for `digup`: a shell script that logs each line it's sent (to `$FAKE_LOG`) and behaves as
-    /// `$FAKE_MODE` says. "serve": a sync event at the start and one for each "sync", exits on "stop" or EOF.
-    /// "quit": a sync event and an exit event, then exits at once (a helper with nothing to do). "hang": says it exits
-    /// and doesn't (a helper before the readLine fix). "late": exits half a second after its sync, reading nothing (a
-    /// sync sent then comes too late).
+    /// `$FAKE_MODE` says. "serve": a sync event at the start, a sync and an idle event for each "sync", exits on "stop"
+    /// or EOF. "quit": a sync event and an exit event, then exits at once (a helper with nothing to do). "hang": says
+    /// it exits and doesn't (a helper before the readLine fix). "late": exits half a second after its sync, reading
+    /// nothing (a sync sent then comes too late).
     pub(super) fn fake_helper(folder: &Path, mode: &str) -> Launch {
         std::fs::create_dir_all(folder).unwrap();
         let script = folder.join("fake-digup");
@@ -401,7 +414,7 @@ esac
 while read -r line; do
     echo "$line" >> "$FAKE_LOG"
     case "$line" in
-    sync) synced ;;
+    sync) synced; echo '{"event": "idle"}' ;;
     stop) echo '{"event": "exit"}'; exit 0 ;;
     esac
 done
@@ -455,8 +468,10 @@ done
         let service = IndexService::new(sink);
         service.run(&launch).unwrap();
         wait_for("its first sync", || seen.lock().unwrap().iter().any(|event| event["event"] == "sync"));
+        assert!(service.is_busy(), "no idle yet");
         service.run(&launch).unwrap();
         wait_for("the sync it was sent", || log(&folder).contains(&"sync".to_string()));
+        wait_for("it to linger", || !service.is_busy());
         assert_eq!(log(&folder).iter().filter(|line| line.starts_with("start")).count(), 1, "the same helper");
         let mut other = launch.clone();
         other.args.push("/b".into());
@@ -477,6 +492,7 @@ done
         let pid = service.running.lock().unwrap().as_ref().unwrap().process.id().unwrap();
         wait_for("its exit", || seen.lock().unwrap().iter().filter(|event| event["event"] == "exit").count() == 2);
         assert_eq!(seen.lock().unwrap().last().unwrap()["again"], false, "nothing was asked of it after its start");
+        assert!(!service.is_busy(), "gone isn't busy");
         assert!(reaped(pid), "no <defunct> left behind");
         // The next run starts another one rather than writing to the one that's gone.
         service.run(&launch).unwrap();

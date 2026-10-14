@@ -30,6 +30,13 @@ use watcher::FolderWatcher;
 const PANEL_WIDTH: f64 = 780.0;
 const FIELD_HEIGHT: f64 = 56.0;
 
+/// How often the folders are synced with no change seen. The watcher can miss changes: inotify drops events when its
+/// queue overflows and stops adding watches at fs.inotify.max_user_watches (a big home folder gets there), a network or
+/// FUSE folder may send none, and a folder that wasn't there when the watcher started (a drive plugged in later, with
+/// files changed elsewhere) isn't watched at all. A sync of ~500 unchanged files takes the helper ~70 ms, and with
+/// nothing to read it exits right after, so this is cheap.
+const RESYNC_EVERY: Duration = Duration::from_secs(5 * 60);
+
 /// What the commands and events share.
 struct Shell {
     options: Options,
@@ -555,6 +562,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
     } else {
         show_setup(&handle)?;
     }
+    resync_now_and_then(handle.clone());
     if shell.options.debug_show {
         show_panel(&handle);
     }
@@ -598,6 +606,18 @@ fn watch_folders(app: &AppHandle) {
         set_status(app, "Paused");
     }
     run_index(app);
+}
+
+/// Syncs every `RESYNC_EVERY` (when indexing would run at all: `run_index` checks), unless a helper is in the middle of
+/// a pass: asking it would only send it crawling sooner, and the next round comes after it's done. A lingering one is
+/// asked; with none running, one starts.
+fn resync_now_and_then(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(RESYNC_EVERY);
+        if !app.state::<Arc<Shell>>().index.is_busy() {
+            run_index(&app);
+        }
+    });
 }
 
 /// Has the index helper sync and index, once there's a model and a folder, unless indexing is paused.
