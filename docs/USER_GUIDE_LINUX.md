@@ -90,8 +90,12 @@ there before pointing DigUp at your own folders.
 ### Keeping it out of your way
 
 15. **Only some folders.** Settings → Folders: add or remove folders, skip subfolders (an old sync conflict, a
-    downloads dump), or leave out file types (`heic, txt`). Search follows at once. To search *inside* one folder:
-    `digup search "beach sunset" --in ~/Documents/Trips` (repeat `--in` for several); in the panel: coming.
+    downloads dump), or leave out file types (`heic, txt`). Search follows at once. To search *inside* one folder,
+    start the query with `in:` and the folder: *"in:Documents invoice"*, *"in:~/Pictures/2026 beach"*,
+    *"in:\"Big Folder\" notes"*. A chosen folder's name works, and so does the name of a folder right inside one
+    (*"in:Trips"*); the folder becomes a chip before the query, and Backspace at the start (or its ×) removes it.
+    With code: `in:billing-service code: retry`. From the terminal:
+    `digup search "beach sunset" --in ~/Documents/Trips` (repeat `--in` for several).
 16. **Pause it.** Presenting, gaming, on a train? Tray → Pause Indexing. Search keeps working; new files wait until
     you resume. It stays paused across restarts.
 17. **CPU or GPU.** Settings → Indexing → "Use the GPU". On an AMD or Intel GPU (Vulkan) indexing is about 2.7× faster

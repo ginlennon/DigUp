@@ -19,6 +19,7 @@ mod desktop;
 mod helper;
 mod opener;
 mod options;
+mod scope;
 mod settings;
 mod watcher;
 
@@ -398,6 +399,13 @@ async fn set_up_shortcut(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Result
     Ok(())
 }
 
+/// The folder a query's `in:` names (scope.rs), among the folders searched: what the panel's chip searches in.
+#[tauri::command]
+fn resolve_folder(shell: State<'_, Arc<Shell>>, name: String) -> Result<scope::Folder, String> {
+    let home = std::env::var("HOME").ok();
+    scope::resolve(&name, &shell.folders(), home.as_deref(), scope::subfolders, Path::is_dir)
+}
+
 /// Opens a result in its default app.
 #[tauri::command]
 fn open_path(app: AppHandle, path: String) -> Result<(), String> {
@@ -508,8 +516,8 @@ fn main() {
         )
         .setup(move |app| setup(app, options))
         .invoke_handler(tauri::generate_handler![
-            ask, estimate, setup_info, pick_folders, finish_setup, open_path, open_hit, open_title, reveal, hide_panel,
-            panel_height, settings_info, save_folders, set_paused, set_gpu, set_starts_at_login, set_up_shortcut,
+            ask, estimate, setup_info, pick_folders, finish_setup, resolve_folder, open_path, open_hit, open_title, reveal,
+            hide_panel, panel_height, settings_info, save_folders, set_paused, set_gpu, set_starts_at_login, set_up_shortcut,
             set_moment_player, debug_query, debug_report
         ])
         .build(tauri::generate_context!())

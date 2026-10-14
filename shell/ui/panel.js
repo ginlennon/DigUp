@@ -29,13 +29,22 @@ const KIND_TITLE = { screenshot: "Screenshot", image: "Image", pdf: "PDF", doc: 
 const $ = (id) => document.getElementById(id);
 const $query = $("query"), $body = $("body"), $list = $("list"), $preview = $("preview");
 const $footer = $("footer"), $summary = $("summary"), $keys = $("keys"), $activity = $("activity");
+const $chips = $("chips");
+
+/// A query that starts with in:<folder> and a space searches inside that folder: the folder becomes a chip before the
+/// field and the rest is the query (the shell finds the folder: scope.rs). `in:` comes first and `code:` after it
+/// ("in:billing code: retry"), since `code:` is always the start of what's searched.
+const SCOPE = /^\s*in:(?:"([^"]*)"|([^"\s]\S*))\s/i;
+const SCOPE_TYPING = /^\s*in:(?:"[^"]*"?|\S*)$/i;   // the folder is still being typed
 
 const state = {
   generation: 0,
   finalGeneration: -1,   // the generation whose meaning results are showing: late keyword results don't replace them
   timer: null,
-  phase: "empty",        // empty | words | meaning | wordsOnly | codeHint
+  phase: "empty",        // empty | words | meaning | wordsOnly | codeHint | scopeHint | scopeProblem
   text: "",              // what was searched (without "code:")
+  scope: null,           // the folder searched in ({path, name, ambiguous}), or null: all of them
+  scopeProblem: null,    // what the panel says when in: names no chosen folder
   isCode: false,
   strong: [],
   weaker: [],
@@ -58,16 +67,27 @@ function queryChanged() {
   clearTimeout(state.timer);
   state.navigated = false;
   state.error = null;
+  state.scopeProblem = null;
+  const scoped = SCOPE.exec($query.value);
+  if (scoped) {
+    takeScope(scoped, generation);
+    return;
+  }
+  if (SCOPE_TYPING.test($query.value)) {
+    show({ hits: [], strong: 0 }, "", "scopeHint");
+    return;
+  }
   const typed = $query.value.trim();
   const code = /^code:/i.test(typed);
   const text = code ? typed.slice(5).trim() : typed;
+  const folders = state.scope ? [state.scope.path] : undefined;
   state.isCode = code;
   if (!typed || (code && !text)) {
     show({ hits: [], strong: 0 }, text, typed ? "codeHint" : "empty");
     return;
   }
   // Words now. The last word is probably half-typed, so it matches as a prefix.
-  ask({ op: "search", q: text, code, meaning: false, prefix_last: true, limit: 40 })
+  ask({ op: "search", q: text, code, meaning: false, prefix_last: true, limit: 40, folders })
     .then((reply) => {
       if (generation === state.generation && state.finalGeneration !== generation) show(reply, text, "words");
     })
@@ -75,7 +95,7 @@ function queryChanged() {
   // The meaning is embedded now, so its vector is ready when typing pauses: the pause is the whole wait.
   ask({ op: "embed_ahead", q: text, code }).catch(() => {});
   state.timer = setTimeout(() => {
-    ask({ op: "search", q: text, code, meaning: true, limit: 40 })
+    ask({ op: "search", q: text, code, meaning: true, limit: 40, folders })
       .then((reply) => {
         if (generation !== state.generation) return;
         state.finalGeneration = generation;
@@ -84,6 +104,34 @@ function queryChanged() {
       })
       .catch(failed);
   }, TYPING_PAUSE);
+}
+
+/// The query's in:<folder>: found, it becomes the chip and what follows it is searched; not found, the panel says so
+/// and the text stays as typed.
+async function takeScope(match, generation) {
+  let folder;
+  try {
+    folder = await invoke("resolve_folder", { name: match[1] ?? match[2] });
+  } catch (error) {
+    if (generation !== state.generation) return;
+    state.scopeProblem = String(error);
+    show({ hits: [], strong: 0 }, "", "scopeProblem");
+    return;
+  }
+  // Typing went on meanwhile: the in: is still at the start (an edit there starts another lookup).
+  if (!$query.value.startsWith(match[0])) return;
+  state.scope = folder;
+  $query.value = $query.value.slice(match[0].length);
+  $query.setSelectionRange($query.value.length, $query.value.length);
+  renderChips();
+  queryChanged();
+}
+
+function removeScope() {
+  state.scope = null;
+  renderChips();
+  queryChanged();
+  $query.focus();
 }
 
 function show(reply, text, phase) {
@@ -257,16 +305,25 @@ function thumbnail(hit) {
 function renderPreview() {
   $preview.replaceChildren();
   if (!state.strong.length && !state.weaker.length) {
+    const inside = state.scope ? ` in ${state.scope.name}` : "";
     if (state.phase === "codeHint") {
       $preview.append(message("Search your code", "Say what the code does, or type a name that's in it."));
+    } else if (state.phase === "scopeHint") {
+      $preview.append(message("Search inside a folder", "Name one of your folders, or a folder right inside one, "
+        + "then what you're looking for: in:Documents invoice, in:~/Pictures/2026 beach, in:\"Big Folder\" notes."));
+    } else if (state.phase === "scopeProblem") {
+      $preview.append(message(state.scopeProblem, "in: looks among the folders DigUp searches (Settings) and the "
+        + "folders right inside them, or takes a path: in:~/Documents/Trips."));
     } else if (state.indexing) {
       const { done, total } = state.indexing;
       $preview.append(message("Nothing yet", `Still indexing (${done} of ${total} files). Until a file is read, `
         + "DigUp finds it only by its name."));
     } else if (state.isCode) {
-      $preview.append(message("No good matches in your code", "Try saying what the code does, or a name that's in it."));
+      $preview.append(message(`No good matches in your code${inside}`,
+        "Try saying what the code does, or a name that's in it."));
     } else {
-      $preview.append(message("No good matches", "Try what you'd see or hear in it, or words you remember from it."));
+      $preview.append(message(`No good matches${inside}`,
+        "Try what you'd see or hear in it, or words you remember from it."));
     }
     return;
   }
@@ -368,11 +425,38 @@ function renderFooter() {
     summary = state.encoder === "starting" ? "Matching words; meaning search is warming up…" : "Matching words…";
   } else if (state.phase === "wordsOnly") summary = "Words only: meaning search isn't available";
   else if (state.phase === "codeHint") summary = "Searching your code";
+  else if (state.phase === "scopeHint") summary = "Searching inside a folder";
+  else if (state.phase === "scopeProblem") summary = "No folder to search in";
   else summary = `${strong} ${strong === 1 ? "result" : "results"}` + (weaker ? ` · ${weaker} weaker` : "");
   // Results while indexing are partial: say so where they're counted.
   if (state.indexing && !state.error) summary += ` · still indexing (${state.indexing.done} of ${state.indexing.total})`;
   $summary.textContent = summary;
   $keys.textContent = `↩ ${openTitle(selectedHit())}   ${MOD}↩ Show in ${FILE_MANAGER}`;
+}
+
+/// The chips before the field: the folder searched in, removed with its × or with Backspace at the field's start.
+function renderChips() {
+  const chips = [];
+  if (state.scope) {
+    // Another folder has the same name: the path says which one this is.
+    const name = state.scope.ambiguous ? tilde(state.scope.path) : state.scope.name;
+    chips.push(chip(`in ${name}`, tilde(state.scope.path), removeScope));
+  }
+  $chips.replaceChildren(...chips);
+  $chips.hidden = !chips.length;
+}
+
+function chip(text, title, remove) {
+  const node = element("span", "chip");
+  node.title = title;
+  node.append(element("span", "", text));
+  const close = element("button", "", "×");
+  close.tabIndex = -1;
+  close.setAttribute("aria-label", `Remove “${text}”`);
+  close.onmousedown = (event) => event.preventDefault();   // the field keeps the keyboard
+  close.onclick = remove;
+  node.append(close);
+  return node;
 }
 
 function message(title, text) {
@@ -460,6 +544,11 @@ function folderOf(hit) {
   if (hit.kind === "code" && repo && hit.path.startsWith(repo + "/")) {
     return folder.slice(repo.slice(0, repo.search(/[\\/][^\\/]*$/)).length + 1);
   }
+  return tilde(folder);
+}
+
+/// "~/Pictures/2026" for a folder in the home folder.
+function tilde(folder) {
   const shown = state.home && folder.startsWith(state.home) ? "~" + folder.slice(state.home.length) : folder;
   return isWindows ? shown.replaceAll("/", "\\") : shown;
 }
@@ -560,6 +649,13 @@ document.addEventListener("keydown", (event) => {
       else if (state.selection === WEAKER) toggleWeaker();
       else openSelected();
       break;
+    case "Backspace":
+      // At the field's very start (nothing selected): the chip before it goes.
+      if ($query.selectionStart === 0 && $query.selectionEnd === 0 && state.scope) {
+        event.preventDefault();
+        removeScope();
+      }
+      break;
   }
 });
 
@@ -611,6 +707,7 @@ function report() {
     invoke("debug_report", {
       report: {
         query: $query.value,
+        scope: state.scope && state.scope.path,
         phase: state.phase,
         groups: state.groups.map((group) => ({ title: group.title, rows: group.rows.map((hit) => nameOf(hit.path)) })),
         weaker: state.weaker.length,

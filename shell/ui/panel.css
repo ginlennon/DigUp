@@ -89,6 +89,42 @@ html, body {
 
 #query::placeholder { color: var(--tertiary); }
 
+/* What the search is narrowed to, before the field: "in Documents", "Like Zebra.jpg". */
+.chips { display: flex; gap: 6px; flex: none; max-width: 45%; }
+.chips[hidden] { display: none; }
+
+.chip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--moss);
+  padding: 3px 4px 3px 10px;
+  border-radius: 99px;
+  background: var(--chip);
+  white-space: nowrap;
+}
+
+.chip span { overflow: hidden; text-overflow: ellipsis; }
+
+.chip button {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--secondary);
+  font: inherit;
+  font-size: 14px;
+  line-height: 18px;
+}
+
+.chip button:hover { background: var(--line); color: var(--text); }
+
 .activity {
   font-size: 11px;
   font-weight: 500;
