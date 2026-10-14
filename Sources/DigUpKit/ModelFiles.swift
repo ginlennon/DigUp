@@ -17,10 +17,22 @@ public enum ModelFiles {
         public let name: String
         public let bytes: Int64
         public let sha256: String
+        /// The Hugging Face repo and the pinned revision it comes from (EmbeddingGemma's, unless said otherwise).
+        public let repository: String
+        public let revision: String
+
+        public init(name: String, bytes: Int64, sha256: String, repository: String = ModelFiles.repository,
+                    revision: String = ModelFiles.revision) {
+            self.name = name
+            self.bytes = bytes
+            self.sha256 = sha256
+            self.repository = repository
+            self.revision = revision
+        }
 
         /// Hugging Face's address for this file at the pinned revision (it redirects to a CDN that takes HTTP ranges).
         public var url: URL {
-            URL(string: "https://huggingface.co/\(ModelFiles.repository)/resolve/\(ModelFiles.revision)/\(name)")!
+            URL(string: "https://huggingface.co/\(repository)/resolve/\(revision)/\(name)")!
         }
     }
 
@@ -39,7 +51,10 @@ public enum ModelFiles {
 
     /// The pinned revision's folder in the Hugging Face cache (`hf download` puts the files there): `$HF_HUB_CACHE`,
     /// `$HF_HOME/hub`, or `~/.cache/huggingface/hub`.
-    public static var huggingFaceSnapshot: URL {
+    public static var huggingFaceSnapshot: URL { huggingFaceSnapshot(repository: repository, revision: revision) }
+
+    /// A revision's folder of a repo in the Hugging Face cache.
+    public static func huggingFaceSnapshot(repository: String, revision: String) -> URL {
         let environment = ProcessInfo.processInfo.environment
         let hub = environment["HF_HUB_CACHE"].map { URL(fileURLWithPath: $0) }
             ?? environment["HF_HOME"].map { URL(fileURLWithPath: $0).appendingPathComponent("hub") }
@@ -49,14 +64,17 @@ public enum ModelFiles {
 
     /// `file` in the Hugging Face cache, when it's there at the right size (its checksum is for the caller to check).
     public static func cachedCopy(of file: File) -> URL? {
-        let url = huggingFaceSnapshot.appendingPathComponent(file.name).resolvingSymlinksInPath()
+        let url = huggingFaceSnapshot(repository: file.repository, revision: file.revision)
+            .appendingPathComponent(file.name).resolvingSymlinksInPath()
         let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value
         return size == file.bytes ? url : nil
     }
 
     /// The files that aren't in `folder` yet. Only verified files get their final name, so being there is enough.
-    public static func missing(in folder: URL) -> [File] {
-        all.filter { !FileManager.default.fileExists(atPath: folder.appendingPathComponent($0.name).path) }
+    public static func missing(in folder: URL) -> [File] { missing(all, in: folder) }
+
+    public static func missing(_ files: [File], in folder: URL) -> [File] {
+        files.filter { !FileManager.default.fileExists(atPath: folder.appendingPathComponent($0.name).path) }
     }
 
     /// The SHA-256 of a file as lowercase hex, read in 8 MB pieces (a 555 MB file takes about half a second).
@@ -73,5 +91,37 @@ public enum ModelFiles {
             if done { break }
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+/// The whisper.cpp files for transcripts of recordings (optional, off unless turned on: PLANS/TRANSCRIPTS_PLAN.md),
+/// each at a pinned revision of its Hugging Face repo, checked as the model's files are. `digup download-model
+/// --transcripts` puts them in `folder`; whisper-cli runs them (`Transcriber`).
+public enum TranscriptModels {
+    /// large-v3-turbo quantized to q5_0 (574 MB): the default, about 5× real time on the GPU (ASR_SPIKE.md).
+    public static let turbo = ModelFiles.File(
+        name: "ggml-large-v3-turbo-q5_0.bin", bytes: 574_041_195,
+        sha256: "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
+        repository: "ggerganov/whisper.cpp", revision: "5359861c739e955e79d9a303bcbc70fb988958b1")
+    /// small (488 MB): the light choice, for the CPU (3.7× real time there, less exact).
+    public static let small = ModelFiles.File(
+        name: "ggml-small.bin", bytes: 487_601_967,
+        sha256: "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+        repository: "ggerganov/whisper.cpp", revision: "5359861c739e955e79d9a303bcbc70fb988958b1")
+    /// Silero VAD v6.2.0 (0.9 MB): what's speech, so that silence, noise and music get no made-up text.
+    public static let vad = ModelFiles.File(
+        name: "ggml-silero-v6.2.0.bin", bytes: 885_098,
+        sha256: "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987",
+        repository: "ggml-org/whisper-vad", revision: "9ffd54a1e1ee413ddf265af9913beaf518d1639b")
+    public static let all = [turbo, small, vad]
+
+    /// What transcripts need, in download order: one speech model (turbo, or small) and the VAD.
+    public static func needed(small light: Bool) -> [ModelFiles.File] { [light ? small : turbo, vad] }
+
+    /// `<Models>/whisper`: in $DIGUP_MODELS when that's set (the app's choice, as for the model), else in DigUp's own
+    /// Models folder.
+    public static var folder: URL {
+        let chosen = ProcessInfo.processInfo.environment["DIGUP_MODELS"].flatMap { $0.isEmpty ? nil : $0 }
+        return (chosen.map { URL(fileURLWithPath: $0) } ?? ModelFiles.installed).appendingPathComponent("whisper")
     }
 }

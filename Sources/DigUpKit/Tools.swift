@@ -25,6 +25,18 @@ public enum Tools {
     public static var ocrLanguages: [String] { OCR.languages }
     #endif
 
+    /// Transcripts of recordings (optional, off unless turned on) are made by whisper.cpp's whisper-cli here, version
+    /// `whisperVersion` ("1.9.5"). macOS has none yet.
+    #if canImport(AVFoundation)
+    public static let transcribesWithWhisper = false
+    public static var whisper: String? { nil }
+    public static var whisperVersion: String? { nil }
+    #else
+    public static let transcribesWithWhisper = true
+    public static var whisper: String? { Transcriber.whisper }
+    public static var whisperVersion: String? { Transcriber.version }
+    #endif
+
     /// git, which code search asks what a repo ignores.
     public static var git: String? { FileSystem.git }
 }

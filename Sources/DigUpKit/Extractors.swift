@@ -33,6 +33,10 @@ enum ImageExtractor {
 /// Text recognition in screenshots and scans, for keyword search only: Apple Vision on macOS, tesseract elsewhere.
 enum OCR {}
 
+/// Transcripts of recordings, for keyword search (optional, off unless turned on): whisper.cpp's whisper-cli on Linux
+/// and Windows; nothing on macOS yet (Apple's speech recognition could fill it). See PLANS/TRANSCRIPTS_PLAN.md.
+enum Transcriber {}
+
 /// PDF pages as text, or as pictures when they have little text (scans, slides): PDFKit on macOS, PDFium elsewhere.
 enum PDFExtractor {
     struct Page: Sendable {

@@ -95,6 +95,37 @@ import WinSDK
         #expect(ModelFiles.totalBytes == 864_676_480)
     }
 
+    @Test func transcriptFilesComeFromTheirOwnRepos() throws {
+        #expect(TranscriptModels.needed(small: false) == [TranscriptModels.turbo, TranscriptModels.vad])
+        #expect(TranscriptModels.needed(small: true) == [TranscriptModels.small, TranscriptModels.vad])
+        #expect(TranscriptModels.vad.url.absoluteString == "https://huggingface.co/ggml-org/whisper-vad/resolve/"
+            + "9ffd54a1e1ee413ddf265af9913beaf518d1639b/ggml-silero-v6.2.0.bin")
+        #expect(ModelFiles.text.url.absoluteString.hasPrefix("https://huggingface.co/ggml-org/embeddinggemma-2-GGUF/"
+            + "resolve/\(ModelFiles.revision)/"))
+        #expect(ModelFiles.missing(TranscriptModels.needed(small: false), in: folder).count == 2)
+        #expect(TranscriptModels.folder.lastPathComponent == "whisper")
+    }
+
+    #if !canImport(AVFoundation)
+    @Test func whisperIsFoundWhereItIsChosenBesideTheHelperOrInADevBuildsVendor() throws {
+        func program(in folder: URL) throws -> String {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let path = folder.appendingPathComponent("whisper-cli").path
+            FileManager.default.createFile(atPath: path, contents: Data("#!/bin/sh\n".utf8),
+                                           attributes: [.posixPermissions: 0o755])
+            return path
+        }
+        let chosen = try program(in: folder.appendingPathComponent("chosen"))
+        #expect(Transcriber.find(chosen: chosen, executable: nil) == chosen)                        // the program
+        #expect(Transcriber.find(chosen: folder.appendingPathComponent("chosen").path, executable: nil) == chosen)
+        let beside = try program(in: folder.appendingPathComponent("helper"))
+        #expect(Transcriber.find(chosen: nil, executable: folder.appendingPathComponent("helper/digup")) == beside)
+        let vendor = try program(in: folder.appendingPathComponent("checkout/Vendor/whisper/bin"))
+        #expect(Transcriber.find(chosen: nil, executable: folder.appendingPathComponent("checkout/.build/release/digup"))
+            == vendor)
+    }
+    #endif
+
     @Test func modelFilesComeFromTheHuggingFaceCacheWhenThere() throws {
         // As `hf download` leaves them: snapshots/<revision>/<name> → a blob. Sparse, so no disk is used.
         let hub = folder.appendingPathComponent("hub")

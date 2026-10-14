@@ -33,8 +33,9 @@ let usage = """
                                               what indexing has measured here (costs.json in the index folder)
       digup eval <queries.json> [-n 10]       recall of known answers (see evals/; "code: …" queries search code)
       digup doctor [--deep] [--json]          whether DigUp can work here: the model and a self-test of it, the GPU,
-                                              ffmpeg, tesseract, git, the index, free space (exit 1: an essential
-                                              check failed); --deep also checks the model files' SHA-256 and the index
+                                              ffmpeg, tesseract, git, transcripts (optional), the index, free space
+                                              (exit 1: an essential check failed); --deep also checks the model
+                                              files' SHA-256 and the index
       digup index-service <folder>... [--code-root DIR]... [--code-exclude DIR]... [--backfill] [--prune]
                           [--memory-limit MB] [--time-limit S]
                                               the app's indexing helper (JSON lines; see IndexService); it stops
@@ -45,6 +46,10 @@ let usage = """
                                               see SearchService): for shells that can't link DigUpKit
       digup download-model [--to DIR]         the model files, from the Hugging Face cache or downloaded with
                                               resume, checked (JSON lines: see DownloadModel)
+      digup download-model --transcripts [--small] [--to DIR]
+                                              the optional transcript files instead, into DIR/whisper: whisper
+                                              large-v3-turbo (574 MB; --small: small, 488 MB, for the CPU) and the
+                                              Silero VAD (needs whisper-cli: scripts/linux/build-whisper.sh)
 
     Options:
       --index DIR          index folder (default: in \(dataFolder); see `digup status`)

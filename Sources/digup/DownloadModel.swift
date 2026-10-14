@@ -6,6 +6,10 @@ import Foundation
 /// Hugging Face cache is copied from there; anything else is downloaded, picking up where an earlier try stopped. Every
 /// file is checked (size, SHA-256) before it gets its name, so a file there is a good one.
 ///
+/// `--transcripts [--small]`: the transcript files instead (optional, `TranscriptModels`): whisper large-v3-turbo
+/// (574 MB; `--small`: whisper small, 488 MB, for the CPU) and the Silero VAD, into DIR/whisper (default: the Models
+/// folder's whisper/, in $DIGUP_MODELS when that's set). The same events, the same checks.
+///
 /// JSON lines on stdout:
 ///   {"event":"file","name":…,"bytes":n,"from":"cache|download"}             a file started
 ///   {"event":"progress","name":…,"bytes":n,"total":n,"all_bytes":n,"all_total":n}   at most 5 times a second
@@ -14,10 +18,16 @@ import Foundation
 ///   {"event":"retry","message":…,"seconds":n}                               a failure it will try again after
 ///   {"event":"done","folder":…} | {"event":"error","message":…}             the end (exit 0 | 1)
 func downloadModel(_ args: Arguments) throws -> Int32 {
-    let folder = args.values["--to"].map(Arguments.folderURL) ?? ModelFiles.installed
+    let transcripts = args.flags.contains("--transcripts")
+    if args.flags.contains("--small") && !transcripts { throw CLIError("--small goes with --transcripts") }
+    let files = transcripts ? TranscriptModels.needed(small: args.flags.contains("--small")) : ModelFiles.all
+    let chosen = args.values["--to"].map(Arguments.folderURL)
+    let folder = transcripts ? chosen?.appendingPathComponent("whisper") ?? TranscriptModels.folder
+        : chosen ?? ModelFiles.installed
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-    let missing = ModelFiles.missing(in: folder)
-    var done = ModelFiles.totalBytes - missing.reduce(0) { $0 + $1.bytes }
+    let missing = ModelFiles.missing(files, in: folder)
+    let total = files.reduce(0) { $0 + $1.bytes }
+    var done = total - missing.reduce(0) { $0 + $1.bytes }
     for file in missing {
         let final = folder.appendingPathComponent(file.name)
         if let cached = ModelFiles.cachedCopy(of: file), (try? ModelFiles.sha256(of: cached)) == file.sha256 {
@@ -32,7 +42,7 @@ func downloadModel(_ args: Arguments) throws -> Int32 {
         emit(["event": "file", "name": file.name, "bytes": file.bytes, "from": "download"])
         var failures = 0
         while true {
-            switch fetch(file, into: folder, before: done) {
+            switch fetch(file, into: folder, before: done, of: total) {
             case .downloaded(let partial):
                 emit(["event": "verifying", "name": file.name])
                 guard try ModelFiles.sha256(of: partial) == file.sha256 else {
@@ -67,12 +77,13 @@ func downloadModel(_ args: Arguments) throws -> Int32 {
 }
 
 /// One try at one file: blocks until `FileFetcher` is through with it.
-private func fetch(_ file: ModelFiles.File, into folder: URL, before done: Int64) -> FileFetcher.Outcome {
+private func fetch(_ file: ModelFiles.File, into folder: URL, before done: Int64, of total: Int64)
+    -> FileFetcher.Outcome {
     let finished = DispatchSemaphore(value: 0)
     let result = OutcomeBox()
     let fetcher = FileFetcher(file: file, folder: folder, progress: { written in
         emit(["event": "progress", "name": file.name, "bytes": written, "total": file.bytes,
-              "all_bytes": done + written, "all_total": ModelFiles.totalBytes])
+              "all_bytes": done + written, "all_total": total])
     }, waiting: {
         emit(["event": "waiting"])
     }, done: { outcome in

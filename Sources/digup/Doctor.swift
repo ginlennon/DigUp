@@ -24,6 +24,7 @@ func doctor(_ args: Arguments) -> Int32 {
     add(computeCheck())
     add(selfTest())
     toolChecks().forEach(add)
+    transcriptChecks(deep: deep).forEach(add)
     indexChecks(args.indexFolder, deep: deep).forEach(add)
     add(diskCheck(args.indexFolder))
     #if os(Linux)
@@ -193,6 +194,63 @@ private func toolChecks() -> [Check] {
     } else {
         checks.append(Check(name: "git", ok: false, essential: false, detail: "not found",
                             fix: "install git: without it, code search reads what .gitignore leaves out too"))
+    }
+    return checks
+}
+
+// MARK: Transcripts
+
+/// Transcripts of recordings are optional and off unless turned on, so nothing missing here is a problem: only a
+/// whisper-cli that doesn't run, a model file of the wrong size (or SHA-256, with `deep`), or a speech model without
+/// the VAD (or the other way round) is marked.
+private func transcriptChecks(deep: Bool) -> [Check] {
+    guard Tools.transcribesWithWhisper else { return [] }
+    let folder = TranscriptModels.folder
+    var checks: [Check] = []
+    if let whisper = Tools.whisper {
+        let version = Tools.whisperVersion
+        checks.append(Check(name: "whisper", ok: version != nil, essential: false,
+                            detail: tilde(whisper) + (version.map { " (whisper.cpp \($0)), for transcripts" }
+                                                      ?? ": doesn't run"),
+                            fix: "build it again: scripts/linux/build-whisper.sh (a static whisper-cli)"))
+    } else {
+        checks.append(Check(name: "whisper", ok: true, essential: false,
+                            detail: "not installed (optional: transcripts of recordings; scripts/linux/build-whisper.sh, "
+                                + "or whisper-cli on PATH or in DIGUP_WHISPER)"))
+    }
+    var present: [String] = [], problems: [String] = []
+    for file in TranscriptModels.all {
+        let url = folder.appendingPathComponent(file.name)
+        guard let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value
+        else { continue }
+        if size != file.bytes {
+            problems.append("\(file.name) is \(bytes(size)), should be \(bytes(file.bytes))")
+        } else if deep, (try? ModelFiles.sha256(of: url)) != file.sha256 {
+            problems.append("\(file.name)'s SHA-256 is wrong (damaged)")
+        } else {
+            present.append("\(file.name) (\(bytes(size)))")
+        }
+    }
+    let speech = [TranscriptModels.turbo, TranscriptModels.small].contains {
+        FileManager.default.fileExists(atPath: folder.appendingPathComponent($0.name).path)
+    }
+    let vad = FileManager.default.fileExists(atPath: folder.appendingPathComponent(TranscriptModels.vad.name).path)
+    if present.isEmpty && problems.isEmpty {
+        checks.append(Check(name: "transcripts", ok: true, essential: false,
+                            detail: "no models in \(tilde(folder.path)) (optional: digup download-model --transcripts)"))
+    } else if !problems.isEmpty {
+        checks.append(Check(name: "transcripts", ok: false, essential: false,
+                            detail: "in \(tilde(folder.path)): " + problems.joined(separator: "; "),
+                            fix: "delete it, then digup download-model --transcripts"))
+    } else if speech != vad {
+        checks.append(Check(name: "transcripts", ok: false, essential: false,
+                            detail: present.joined(separator: ", ") + " in \(tilde(folder.path)): "
+                                + (speech ? "no VAD" : "no speech model"),
+                            fix: "digup download-model --transcripts (or --small) adds what's missing"))
+    } else {
+        checks.append(Check(name: "transcripts", ok: true, essential: false,
+                            detail: present.joined(separator: ", ") + " in \(tilde(folder.path))"
+                                + (deep ? ", SHA-256 right" : " (--deep checks their SHA-256)")))
     }
     return checks
 }
