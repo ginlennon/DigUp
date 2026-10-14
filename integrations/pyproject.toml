@@ -1,0 +1,35 @@
+[project]
+name = "digup-integrations"
+version = "0.1.0"
+description = "DigUp's on-device search for other apps: an MCP server for coding agents and a localhost HTTP API"
+license = "MIT"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "mcp>=2.3,<3",
+]
+
+[project.scripts]
+digup-mcp = "digup_mcp:main"
+digup-http = "digup_http:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+sources = ["src"]
+only-include = [
+    "src/digup_client.py",
+    "src/digup_tools.py",
+    "src/digup_mcp.py",
+    "src/digup_http.py",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
