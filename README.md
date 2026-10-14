@@ -2,6 +2,8 @@
 
 # DigUp for Linux (tested on Ubuntu 24.04): an unofficial port
 
+[![Linux CI](https://github.com/ginlennon/DigUp-Linux/actions/workflows/linux.yml/badge.svg)](https://github.com/ginlennon/DigUp-Linux/actions/workflows/linux.yml)
+
 This fork of [ARahim3/DigUp](https://github.com/ARahim3/DigUp) brings DigUp to **Linux**: Ubuntu 24.04 on GNOME and
 Wayland, with the embedding model running on an **AMD iGPU through llama.cpp's Vulkan backend**. It builds on the
 Linux groundwork upstream added in October 2026 (a portable engine and a Tauri shell) and finishes it into an app you
