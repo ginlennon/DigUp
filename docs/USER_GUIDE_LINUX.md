@@ -101,7 +101,10 @@ there before pointing DigUp at your own folders.
 16. **Pause it.** Presenting, gaming, on a train? Tray → Pause Indexing. Search keeps working; new files wait until
     you resume. It stays paused across restarts.
 17. **CPU or GPU.** Settings → Indexing → "Use the GPU". On an AMD or Intel GPU (Vulkan) indexing is about 2.7× faster
-    than on the CPU; turn it off on battery or if your graphics driver misbehaves. Searching is fast either way.
+    than on the CPU; turn it off on battery or if your graphics driver misbehaves. Searching is fast either way. If
+    the graphics driver crashes twice within ten minutes, DigUp switches to the CPU by itself until it restarts (the
+    tray says "GPU problem — indexing on the CPU"; Settings has "Try the GPU Again"). A file whose reading runs away
+    is skipped after its helper is restarted; if that keeps happening, indexing pauses and says which file.
 18. **Turn it off completely.** Tray → Quit stops DigUp and its helpers. To keep it off: Settings → Turn off → "Turn
     DigUp Off" quits it and stops it starting at login; the shortcut stays (pressing it starts DigUp again) unless you
     also tick "Also remove the shortcut", which removes only DigUp's own GNOME shortcut. From a script or another
@@ -118,7 +121,7 @@ there before pointing DigUp at your own folders.
   that a new file is searchable a few seconds after it lands.
 - **Where things live:** index `~/.local/share/digup/index`, model `~/.local/share/digup/Models` (865 MB),
   settings `~/.config/com.abdurrahim.DigUp/settings.json`, logs `~/.local/share/com.abdurrahim.DigUp/logs`.
-- **Health check:** `digup doctor` checks the model, the GPU, ffmpeg, tesseract and the index, and embeds two
+- **Health check:** Settings → About → Check DigUp, or `digup doctor`, checks the model, the GPU, ffmpeg, tesseract and the index, and embeds two
   reference sentences to prove the vectors are right (`--deep` also checks the model files' SHA-256).
 - **Private:** DigUp goes online only to download the model once. No account, no telemetry. The HTTP API and the
   MCP server listen on this machine only.

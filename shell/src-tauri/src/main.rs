@@ -17,6 +17,7 @@ macro_rules! log_error {
 
 mod control;
 mod desktop;
+mod fallback;
 mod helper;
 mod opener;
 mod options;
@@ -72,6 +73,8 @@ struct Shell {
     logs: PathBuf,
     /// The files' default apps, for opening at a page or moment.
     apps: opener::Apps,
+    /// The helpers' troubles this session, and what was done about them (fallback.rs).
+    health: Mutex<fallback::Health>,
 }
 
 impl Shell {
@@ -100,13 +103,26 @@ impl Shell {
         self.settings.lock().unwrap().paused
     }
 
+    /// The model may use the GPU: Settings allow it, the shell wasn't started with DIGUP_GPU=0 (which the helpers get
+    /// too), and it hasn't failed this session (fallback.rs).
+    fn gpu_in_use(&self) -> bool {
+        let allowed = self.settings.lock().unwrap().gpu && std::env::var("DIGUP_GPU").map_or(true, |value| value != "0");
+        allowed && !self.health.lock().unwrap().on_cpu
+    }
+
+    /// search-service's encoder may use the GPU: as `gpu_in_use`, unless it couldn't start there.
+    fn search_gpu_in_use(&self) -> bool {
+        self.gpu_in_use() && !self.health.lock().unwrap().search_on_cpu
+    }
+
     /// A background helper (indexing, the download), below the person's own programs for the processor.
     fn launch(&self, args: Vec<String>, log: &str) -> Launch {
         Launch {
             program: self.options.helper.clone(),
             args,
-            env: helper_env(&self.options, &self.settings.lock().unwrap()),
+            env: helper_env(&self.options, !self.gpu_in_use()),
             log: Some(self.logs.join(log)),
+            also_logs: Vec::new(),
             background: true,
         }
     }
@@ -114,7 +130,10 @@ impl Shell {
     /// `search-service` for the folders and settings as they are now.
     fn search_launch(&self) -> Launch {
         let settings = self.settings.lock().unwrap().clone();
-        search_launch(&self.options, &settings, self.folders(), &self.logs)
+        let mut launch = search_launch(&self.options, &settings, self.folders(), &self.logs, !self.search_gpu_in_use());
+        // llama.cpp's own log: a Vulkan error may be there rather than on stderr.
+        launch.also_logs.extend(self.options.index_folder().map(|index| index.join("worker-query.log")));
+        launch
     }
 
     fn index_arguments(&self) -> Vec<String> {
@@ -133,7 +152,9 @@ impl Shell {
             args.extend(["--exclude-ext".to_string(), extension.clone()]);
         }
         args.extend(self.folders());
-        self.launch(args, "index.log")
+        let mut launch = self.launch(args, "index.log");
+        launch.also_logs.extend(self.options.index_folder().map(|index| index.join("worker.log")));
+        launch
     }
 
     fn model_ready(&self) -> bool {
@@ -148,18 +169,20 @@ impl Shell {
     }
 }
 
-/// What every helper is started with: where the model is, and the CPU only when the GPU is switched off.
-fn helper_env(options: &Options, settings: &Settings) -> Vec<(String, String)> {
+/// What every helper is started with: where the model is, and the CPU only (DIGUP_GPU=0) when the GPU is switched off
+/// or failed this session (`cpu`).
+fn helper_env(options: &Options, cpu: bool) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> =
         options.models.iter().map(|models| ("DIGUP_MODELS".to_string(), models.display().to_string())).collect();
-    if !settings.gpu {
+    if cpu {
         env.push(("DIGUP_GPU".to_string(), "0".to_string()));
     }
     env
 }
 
-/// `search-service` for these folders, with what's skipped in them. Not a background helper: it answers typing.
-fn search_launch(options: &Options, settings: &Settings, folders: Vec<String>, logs: &Path) -> Launch {
+/// `search-service` for these folders, with what's skipped in them, on the CPU only when `cpu`. Not a background
+/// helper: it answers typing.
+fn search_launch(options: &Options, settings: &Settings, folders: Vec<String>, logs: &Path, cpu: bool) -> Launch {
     let mut args = vec!["search-service".to_string()];
     args.extend(options.index.iter().flat_map(|index| ["--index".to_string(), index.display().to_string()]));
     for folder in &settings.skipped {
@@ -172,8 +195,9 @@ fn search_launch(options: &Options, settings: &Settings, folders: Vec<String>, l
     Launch {
         program: options.helper.clone(),
         args,
-        env: helper_env(options, settings),
+        env: helper_env(options, cpu),
         log: Some(logs.join("search.log")),
+        also_logs: Vec::new(),
         background: false,
     }
 }
@@ -292,8 +316,16 @@ async fn settings_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Result<V
     let path = |folder: Option<PathBuf>| folder.map(|folder| folder.display().to_string());
     let status = shell.status.lock().unwrap().as_ref().and_then(|status| status.text().ok());
     let launcher = desktop::launcher();
+    let (on_cpu, search_on_cpu, paused_why) = {
+        let health = shell.health.lock().unwrap();
+        (health.on_cpu, health.search_on_cpu, health.paused_why.clone())
+    };
     Ok(json!({
         "status": status,
+        // The GPU failed this session: everything, or only search, runs on the CPU (fallback.rs).
+        "gpuFailed": on_cpu,
+        "searchGpuFailed": search_on_cpu,
+        "pausedWhy": paused_why,
         // The saved folders. Dev runs search the folders they're given (--roots) instead: the window says so, and
         // what's changed is saved for later.
         "folders": settings.folders,
@@ -344,25 +376,71 @@ async fn set_paused(app: AppHandle, paused: bool) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || pause(&app, paused)).await.map_err(|error| error.to_string())?
 }
 
-/// The GPU switch: the helpers start over with it (DIGUP_GPU=0 when it's off), the search service at once.
+/// The GPU switch: the helpers start over with it (DIGUP_GPU=0 when it's off), the search service at once. Switching
+/// it on is also trying the GPU again after it failed this session.
 #[tauri::command]
 async fn set_gpu(app: AppHandle, shell: State<'_, Arc<Shell>>, gpu: bool) -> Result<(), String> {
     shell.change_settings(|settings| settings.gpu = gpu)?;
-    let shell = shell.inner().clone();
-    shell.search.set_launch(shell.search_launch());
-    let stopping = shell.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        stopping.search.stop();
-        // A running index helper keeps the model where it loaded it: it stops, and starts again with the setting.
-        stopping.index.stop();
-        run_index(&app);
-        settings_changed(&app);
-    })
-    .await
-    .map_err(|error| error.to_string())?;
-    // Warm again, so the next search doesn't wait for the start.
+    if gpu {
+        shell.health.lock().unwrap().try_gpu_again();
+    }
+    restart_helpers_now(app, shell.inner().clone()).await
+}
+
+/// Settings' "Try the GPU again" after it failed this session (fallback.rs): the helpers start over on it.
+#[tauri::command]
+async fn try_gpu_again(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Result<(), String> {
+    shell.health.lock().unwrap().try_gpu_again();
+    set_status(&app, "Trying the GPU again…");
+    restart_helpers_now(app, shell.inner().clone()).await
+}
+
+/// The helpers start over as they're launched now, and the search service is warmed again, so the next search doesn't
+/// wait for its start.
+async fn restart_helpers_now(app: AppHandle, shell: Arc<Shell>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || restart_helpers(&app)).await.map_err(|error| error.to_string())?;
     let _ = shell.search.ask(json!({"op": "status"})).await;
     Ok(())
+}
+
+/// The helpers start over as they're launched now (the GPU switch, the CPU fallback): the search service at once, a
+/// running index helper too (it keeps the model where it loaded it). Blocks while they stop: not on the main thread.
+fn restart_helpers(app: &AppHandle) {
+    let shell = app.state::<Arc<Shell>>().inner().clone();
+    shell.search.set_launch(shell.search_launch());
+    shell.search.stop();
+    shell.index.stop();
+    run_index(app);
+    settings_changed(app);
+}
+
+/// Settings → About's "Check DigUp": `digup doctor --json` for this index and model, with the helpers' environment
+/// (the GPU as they use it): {"ok", "checks": [{"name", "ok", "essential", "detail", "fix"?}], "seconds"}.
+#[tauri::command]
+async fn check_digup(shell: State<'_, Arc<Shell>>) -> Result<Value, String> {
+    let shell = shell.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut command = std::process::Command::new(&shell.options.helper);
+        command.arg("doctor").arg("--json").args(shell.index_arguments())
+            .envs(helper_env(&shell.options, !shell.gpu_in_use()))
+            .stdin(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        let output = command.output().map_err(|error| format!("can't run {}: {error}", shell.options.helper.display()))?;
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|answer| answer.get("checks").is_some())
+            .ok_or_else(|| {
+                let said = String::from_utf8_lossy(&output.stderr);
+                format!("digup doctor didn't answer: {}", said.lines().last().unwrap_or("no output"))
+            })
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// Where recordings open at a moment: "vlc" (when it's installed) or "default" (the default app). The panel asks for
@@ -550,7 +628,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             ask, estimate, setup_info, pick_folders, finish_setup, resolve_folder, open_path, open_hit, open_title, reveal,
             hide_panel, panel_height, settings_info, save_folders, set_paused, set_gpu, set_starts_at_login, set_up_shortcut,
-            turn_off, set_moment_player, debug_query, debug_report
+            turn_off, try_gpu_again, check_digup, set_moment_player, debug_query, debug_report
         ])
         .build(context)
         .expect("DigUp couldn't start");
@@ -580,7 +658,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         options.roots.iter().map(|root| root.display().to_string()).collect()
     };
     let search = SearchService::new(
-        search_launch(&options, &settings, roots, &logs),
+        search_launch(&options, &settings, roots, &logs, !settings.gpu),
         {
             let app = handle.clone();
             move |event| search_event(&app, event)
@@ -616,8 +694,11 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         debug_query_sent: AtomicBool::new(false),
         logs,
         apps: opener::Apps::new(),
+        health: Mutex::new(fallback::Health::default()),
     });
     app.manage(shell.clone());
+    // Now with all it's started with (the logs it's watched by too).
+    shell.search.set_launch(shell.search_launch());
 
     make_panel(&handle)?;
     // No tray (a session without a taskbar, a Linux desktop without one): the hotkey and the panel still work.
@@ -752,8 +833,11 @@ fn pause(app: &AppHandle, paused: bool) -> Result<(), String> {
     show_pause(app, paused);
     if paused {
         shell.index.stop();
-        set_status(app, "Paused");
+        // Paused by the shell itself (fallback.rs): it says why.
+        let why = shell.health.lock().unwrap().paused_why.clone();
+        set_status(app, why.as_deref().unwrap_or("Paused"));
     } else {
+        shell.health.lock().unwrap().paused_why = None;
         set_status(app, if shell.folders().is_empty() { "No folders chosen yet" } else { "Looking for changes…" });
         run_index(app);
     }
@@ -984,6 +1068,34 @@ fn search_event(app: &AppHandle, event: Value) {
             let _ = app.asset_protocol_scope().allow_directory(Path::new(index).join("previews"), false);
         }
     }
+    let shell = app.state::<Arc<Shell>>().inner().clone();
+    // A crash on the GPU counts towards going to the CPU (the next search starts it again by itself).
+    if event["event"] == "exit" {
+        let code = event["code"].as_i64().map(|code| code as i32);
+        let signal = event["signal"].as_i64().map(|signal| signal as i32);
+        let ending = fallback::ending(code, signal, false, event["gpu_error"].as_str());
+        if ending != fallback::Ending::Fine {
+            let gpu = shell.search_gpu_in_use();
+            let next = shell.health.lock().unwrap().search_ended(&ending, gpu, Instant::now());
+            log_error!("digup-shell: the search helper ended: {ending:?} → {next:?}");
+            if next == fallback::Next::UseCpu {
+                use_cpu(app);
+            }
+        }
+    }
+    // Its query encoder can't start on the GPU: it starts over on the CPU, once (keyword search goes on meanwhile).
+    if event["event"] == "encoder" && event["state"] == "unavailable" {
+        let gpu = shell.search_gpu_in_use();
+        if shell.health.lock().unwrap().encoder_unavailable(gpu, shell.model_ready()) {
+            log_error!("digup-shell: the query encoder can't start on the GPU ({}): search uses the CPU",
+                       event["error"].as_str().unwrap_or("no reason given"));
+            shell.search.set_launch(shell.search_launch());
+            // Stopped off this thread: it's the one reading that helper's output. The next search starts it anew.
+            let stopping = shell.clone();
+            std::thread::spawn(move || stopping.search.stop());
+            settings_changed(app);
+        }
+    }
     let _ = app.emit("helper", json!({"from": "search", "event": event}));
 }
 
@@ -1005,7 +1117,9 @@ fn index_event(app: &AppHandle, event: Value) {
             reload(app, false);
         }
         "idle" => {
-            say(&format!("Up to date · {} files", count("searchable")));
+            // On the CPU after the GPU failed: said here too, as "Up to date" stays up longest.
+            let cpu = if app.state::<Arc<Shell>>().health.lock().unwrap().on_cpu { " · on the CPU" } else { "" };
+            say(&format!("Up to date · {} files{cpu}", count("searchable")));
             reload(app, true);
             // A debug run through setup searches once the first index is in.
             let shell = app.state::<Arc<Shell>>();
@@ -1023,10 +1137,68 @@ fn index_event(app: &AppHandle, event: Value) {
             if event["again"] == true {
                 run_index(app);
             }
+            // The shell's own last word of it (helper.rs): how it ended.
+            if event["ended"] == true {
+                index_ended(app, &event);
+            }
         }
         _ => {}
     }
     let _ = app.emit("helper", json!({"from": "index", "event": event}));
+}
+
+/// What the tray says once the helpers have gone to the CPU.
+const GPU_PROBLEM: &str = "GPU problem — indexing on the CPU";
+
+/// The index helper is gone: one its watchdog ended is started again (at most 3 times in 10 minutes, then indexing
+/// pauses, saying which file), one that crashed too, and the GPU's second failure sends the helpers to the CPU
+/// (fallback.rs).
+fn index_ended(app: &AppHandle, event: &Value) {
+    let shell = app.state::<Arc<Shell>>().inner().clone();
+    let code = event["code"].as_i64().map(|code| code as i32);
+    let signal = event["signal"].as_i64().map(|signal| signal as i32);
+    let ending = fallback::ending(code, signal, event["fatal"] == true, event["gpu_error"].as_str());
+    if ending == fallback::Ending::Fine {
+        return;
+    }
+    // Read before the next helper starts: it takes the note away.
+    let stopped = match ending {
+        fallback::Ending::Watchdog => shell.options.index_folder().and_then(|index| fallback::stopped_file(&index)),
+        _ => None,
+    };
+    let gpu = shell.gpu_in_use();
+    let next = shell.health.lock().unwrap().index_ended(&ending, gpu, Instant::now());
+    log_error!("digup-shell: the index helper ended: {ending:?}{} → {next:?}",
+               stopped.as_ref().map(|(path, why)| format!(" ({path} {why})")).unwrap_or_default());
+    match next {
+        fallback::Next::Nothing => {}
+        fallback::Next::Restart => run_index(app),
+        fallback::Next::Pause => {
+            let file = stopped.map(|(path, _)| Path::new(&path).file_name().map_or(path.clone(), |name| {
+                name.to_string_lossy().into_owned()
+            }));
+            shell.health.lock().unwrap().paused_why =
+                Some(format!("Indexing paused: {} kept failing", file.as_deref().unwrap_or("a file")));
+            let app = app.clone();
+            std::thread::spawn(move || {
+                if let Err(error) = pause(&app, true) {
+                    set_status(&app, &error);
+                }
+            });
+        }
+        fallback::Next::UseCpu => use_cpu(app),
+        fallback::Next::GiveUp => set_status(app, "Indexing stopped: DigUp's helper kept crashing (see index.log)"),
+    }
+}
+
+/// The GPU failed twice in ten minutes: every helper starts over on the CPU, for the rest of this session.
+fn use_cpu(app: &AppHandle) {
+    app.state::<Arc<Shell>>().health.lock().unwrap().on_cpu = true;
+    log_error!("digup-shell: the GPU failed twice in 10 minutes: the helpers use the CPU until DigUp restarts");
+    set_status(app, GPU_PROBLEM);
+    let app = app.clone();
+    // Not on the thread that read the helper's output (stopping the other helper takes a moment).
+    std::thread::spawn(move || restart_helpers(&app));
 }
 
 fn model_event(app: &AppHandle, event: Value) {
@@ -1112,12 +1284,12 @@ mod tests {
             command: None, offered: None, debug_setup: false, debug_query: None, debug_quit: false, debug_show: false,
             background: false,
         };
-        assert!(helper_env(&options, &Settings::default()).is_empty());
-        let cpu = Settings { gpu: false, ..Settings::default() };
-        assert_eq!(helper_env(&options, &cpu), [("DIGUP_GPU".to_string(), "0".to_string())]);
-        let launch = search_launch(&options, &Settings { skipped: vec!["/a/b".into()], ..cpu }, vec!["/a".into()],
-                                   Path::new("/logs"));
+        assert!(helper_env(&options, false).is_empty());
+        assert_eq!(helper_env(&options, true), [("DIGUP_GPU".to_string(), "0".to_string())]);
+        let skipping = Settings { skipped: vec!["/a/b".into()], ..Settings::default() };
+        let launch = search_launch(&options, &skipping, vec!["/a".into()], Path::new("/logs"), true);
         assert_eq!(launch.args, ["search-service", "--exclude", "/a/b", "/a"]);
+        assert_eq!(launch.env, [("DIGUP_GPU".to_string(), "0".to_string())]);
         assert!(!launch.background);
     }
 }

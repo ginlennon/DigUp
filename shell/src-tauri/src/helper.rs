@@ -23,12 +23,57 @@ pub struct Launch {
     pub env: Vec<(String, String)>,
     /// Where its standard error goes (llama.cpp and the helper write their warnings there).
     pub log: Option<PathBuf>,
+    /// Other logs it writes to (llama.cpp's, in the index folder): read with `log` for GPU errors when it ends.
+    pub also_logs: Vec<PathBuf>,
     /// Work in the background (indexing, the download): below the person's own programs for the processor.
     pub background: bool,
 }
 
+/// A helper's logs as they were when it started, so what it wrote can be read when it ends.
+struct Logs(Vec<(PathBuf, u64)>);
+
+impl Logs {
+    fn at_start(launch: &Launch) -> Logs {
+        let size = |path: &PathBuf| std::fs::metadata(path).map_or(0, |meta| meta.len());
+        Logs(launch.log.iter().chain(&launch.also_logs).map(|path| (path.clone(), size(path))).collect())
+    }
+
+    /// The first Vulkan error it wrote (fallback.rs): read from where each log was at its start (the last 256 KB of
+    /// that at most; from the beginning if a log was started over).
+    fn gpu_error(&self) -> Option<String> {
+        use std::io::{Read, Seek, SeekFrom};
+        self.0.iter().find_map(|(path, start)| {
+            let mut file = std::fs::File::open(path).ok()?;
+            let length = file.metadata().ok()?.len();
+            let from = if length < *start { 0 } else { (*start).max(length.saturating_sub(256 << 10)) };
+            file.seek(SeekFrom::Start(from)).ok()?;
+            let mut written = Vec::new();
+            file.read_to_end(&mut written).ok()?;
+            crate::fallback::gpu_error(&String::from_utf8_lossy(&written))
+        })
+    }
+}
+
+/// How a process ended: its exit code, or the signal that ended it (Unix).
+#[derive(Clone, Copy, Debug, Default)]
+struct Exit {
+    code: Option<i32>,
+    signal: Option<i32>,
+}
+
+impl Exit {
+    fn of(status: std::process::ExitStatus) -> Exit {
+        #[cfg(unix)]
+        let signal = std::os::unix::process::ExitStatusExt::signal(&status);
+        #[cfg(not(unix))]
+        let signal = None;
+        Exit { code: status.code(), signal }
+    }
+}
+
 impl Launch {
-    fn spawn(&self) -> Result<(Child, ChildStdin, ChildStdout), String> {
+    fn spawn(&self) -> Result<(Child, ChildStdin, ChildStdout, Logs), String> {
+        let logs = Logs::at_start(self);
         let mut command = Command::new(&self.program);
         command
             .args(&self.args)
@@ -59,7 +104,7 @@ impl Launch {
         let mut child = command.spawn().map_err(|error| format!("can't start {}: {error}", self.program.display()))?;
         let stdin = child.stdin.take().ok_or("no stdin")?;
         let stdout = child.stdout.take().ok_or("no stdout")?;
-        Ok((child, stdin, stdout))
+        Ok((child, stdin, stdout, logs))
     }
 }
 
@@ -96,14 +141,14 @@ impl Process {
         self.0.lock().unwrap().take()
     }
 
-    /// Once its output has ended: waits for it to exit and says how (its exit code; None after a signal, or when
-    /// `stop` took it meanwhile). It asks now and then rather than blocking in `wait`, which would hold the lock that
-    /// `stop` and `is_running` need: a process can close its output a while before it exits.
-    fn reap(&self) -> Option<i32> {
+    /// Once its output has ended: waits for it to exit and says how (its exit code or signal; None when `stop` took it
+    /// meanwhile: the shell ended it). It asks now and then rather than blocking in `wait`, which would hold the lock
+    /// that `stop` and `is_running` need: a process can close its output a while before it exits.
+    fn reap(&self) -> Option<Exit> {
         let mut pause = Duration::from_millis(10);
         loop {
             match self.0.lock().unwrap().as_mut()?.try_wait() {
-                Ok(Some(status)) => return status.code(),
+                Ok(Some(status)) => return Some(Exit::of(status)),
                 Ok(None) => {}
                 Err(_) => return None,
             }
@@ -185,7 +230,7 @@ impl SearchService {
 
     fn start(&self) -> Result<Searching, String> {
         let launch = self.launch.lock().unwrap().clone();
-        let (child, stdin, stdout) = launch.spawn()?;
+        let (child, stdin, stdout, logs) = launch.spawn()?;
         let process = Process::new(child);
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>> = Arc::default();
         let (replies, on_event, reaped) = (pending.clone(), self.on_event.clone(), process.clone());
@@ -202,10 +247,12 @@ impl SearchService {
                     None => on_event(message),
                 }
             }
-            // Gone: its waiting requests fail (their senders drop here), and the next request starts another.
+            // Gone: its waiting requests fail (their senders drop here), and the next request starts another. How it
+            // ended (no code or signal: the shell stopped it) and a Vulkan error it logged, for fallback.rs.
             replies.lock().unwrap().clear();
-            reaped.reap();
-            on_event(json!({"event": "exit"}));
+            let exit = reaped.reap().unwrap_or_default();
+            let gpu_error = exit.code.or(exit.signal).and_then(|_| logs.gpu_error());
+            on_event(json!({"event": "exit", "code": exit.code, "signal": exit.signal, "gpu_error": gpu_error}));
         });
         Ok(Searching { process, stdin, pending })
     }
@@ -222,9 +269,11 @@ impl SearchService {
 /// `digup index-service`: syncs the index with the folders, indexes what's new, and exits once it's done. `run` starts
 /// it, asks the running one to sync again, or, when the folders changed (another launch), starts it over with them.
 ///
-/// When it's gone, the shell's own last event is {"event": "exit", "code": its exit code, "again": …}; "again" is true
-/// when a sync asked of it never started (asked while it was on its way out), so the caller runs it again, as the Mac
-/// app does (`syncWantedAt` in Engine.swift).
+/// When it's gone, the shell's own last event is {"event": "exit", "ended": true, "code": its exit code, "signal": …,
+/// "fatal": …, "gpu_error": …, "again": …} (no code nor signal: the shell stopped it; "fatal": it said a fatal error
+/// first; "gpu_error": a Vulkan error it logged, fallback.rs); "again" is true when a sync asked of it never started
+/// (asked while it was on its way out), so the caller runs it again, as the Mac app does (`syncWantedAt` in
+/// Engine.swift).
 pub struct IndexService {
     running: Mutex<Option<Indexing>>,
     on_event: EventSink,
@@ -250,6 +299,8 @@ struct Progress {
     wanted: Option<f64>,
     /// Between passes: its last word was "idle" (it lingers for more) or "waiting" (for the model).
     idle: bool,
+    /// It said a fatal error (it can't open the index…): its exit is its own doing, not a crash.
+    fatal: bool,
 }
 
 fn seconds_now() -> f64 {
@@ -287,7 +338,7 @@ impl IndexService {
                 }
             }
         }
-        let (child, stdin, stdout) = launch.spawn()?;
+        let (child, stdin, stdout, logs) = launch.spawn()?;
         let process = Process::new(child);
         // Its first sync is the one asked for now.
         let progress = Arc::new(Mutex::new(Progress { wanted: Some(seconds_now()), ..Progress::default() }));
@@ -301,6 +352,7 @@ impl IndexService {
                         Some("exit") => progress.leaving = true,
                         Some("idle" | "waiting") => progress.idle = true,
                         Some("file" | "rest") => progress.idle = false,
+                        Some("error") if event["fatal"] == true => progress.fatal = true,
                         Some("sync") if event["code"] != true => {
                             progress.synced = true;
                             let started = event["started"].as_f64().unwrap_or(f64::MAX);
@@ -314,12 +366,14 @@ impl IndexService {
                     on_event(event);
                 }
             }
-            let code = reaped.reap();
-            let again = {
+            let exit = reaped.reap().unwrap_or_default();
+            let gpu_error = exit.code.or(exit.signal).and_then(|_| logs.gpu_error());
+            let (again, fatal) = {
                 let progress = known.lock().unwrap();
-                progress.synced && progress.wanted.is_some() && code == Some(0)
+                (progress.synced && progress.wanted.is_some() && exit.code == Some(0), progress.fatal)
             };
-            on_event(json!({"event": "exit", "code": code, "again": again}));
+            on_event(json!({"event": "exit", "ended": true, "code": exit.code, "signal": exit.signal, "fatal": fatal,
+                            "gpu_error": gpu_error, "again": again}));
         });
         *running = Some(Indexing { process, stdin, args: launch.args.clone(), progress });
         Ok(())
@@ -361,7 +415,7 @@ impl ModelDownload {
         if running.as_ref().is_some_and(Process::is_running) {
             return Ok(());
         }
-        let (child, stdin, stdout) = launch.spawn()?;
+        let (child, stdin, stdout, _) = launch.spawn()?;
         drop(stdin);
         let process = Process::new(child);
         let (on_event, reaped) = (self.on_event.clone(), process.clone());
@@ -401,7 +455,8 @@ mod tests {
     /// `$FAKE_MODE` says. "serve": a sync event at the start, a sync and an idle event for each "sync", exits on "stop"
     /// or EOF. "quit": a sync event and an exit event, then exits at once (a helper with nothing to do). "hang": says
     /// it exits and doesn't (a helper before the readLine fix). "late": exits half a second after its sync, reading
-    /// nothing (a sync sent then comes too late).
+    /// nothing (a sync sent then comes too late). "crash": killed by SIGSEGV; "watchdog": exits 75; "vulkan": writes
+    /// a Vulkan error to its log and exits 0; "fatal": says a fatal error and exits 1.
     pub(super) fn fake_helper(folder: &Path, mode: &str) -> Launch {
         std::fs::create_dir_all(folder).unwrap();
         let script = folder.join("fake-digup");
@@ -413,6 +468,10 @@ case "$FAKE_MODE" in
 quit) echo '{"event": "exit"}'; exit 0 ;;
 hang) echo '{"event": "exit"}'; exec sleep 30 ;;
 late) sleep 0.5; echo '{"event": "exit"}'; exit 0 ;;
+crash) kill -SEGV $$ ;;
+watchdog) exit 75 ;;
+vulkan) echo "terminate called after throwing an instance of 'vk::DeviceLostError'" >&2; exit 0 ;;
+fatal) echo '{"event": "error", "fatal": true, "message": "no index"}'; exit 1 ;;
 esac
 while read -r line; do
     echo "$line" >> "$FAKE_LOG"
@@ -428,7 +487,8 @@ done
             program: script,
             args: vec!["index-service".into(), "/a".into()],
             env: vec![("FAKE_LOG".into(), folder.join("log").display().to_string()), ("FAKE_MODE".into(), mode.into())],
-            log: None,
+            log: Some(folder.join("stderr.log")),
+            also_logs: Vec::new(),
             background: false,
         }
     }
@@ -544,6 +604,44 @@ done
         wait_for("its end", || seen.lock().unwrap().iter().any(|event| event.get("code").is_some()));
         let last = seen.lock().unwrap().last().unwrap().clone();
         assert_eq!((last["code"].as_i64(), last["again"].as_bool()), (Some(0), Some(true)));
+        let _ = std::fs::remove_dir_all(folder);
+    }
+
+    /// The shell's last event of a helper that ended in `mode`.
+    fn ended(mode: &str) -> Value {
+        let folder = folder(mode);
+        let launch = fake_helper(&folder, mode);
+        // An earlier helper's Vulkan error in the same log isn't this one's.
+        std::fs::write(folder.join("stderr.log"), "vk::Queue::submit: ErrorDeviceLost (yesterday)\n").unwrap();
+        let (seen, sink) = events();
+        let service = IndexService::new(sink);
+        service.run(&launch).unwrap();
+        wait_for("its end", || seen.lock().unwrap().iter().any(|event| event["ended"] == true));
+        let _ = std::fs::remove_dir_all(folder);
+        let last = seen.lock().unwrap().last().unwrap().clone();
+        last
+    }
+
+    #[test]
+    fn how_a_helper_ended() {
+        let crash = ended("crash");
+        assert_eq!((crash["code"].as_i64(), crash["signal"].as_i64()), (None, Some(11)), "SIGSEGV");
+        assert_eq!(crash["gpu_error"], Value::Null, "the old line in its log isn't counted");
+        assert_eq!(ended("watchdog")["code"].as_i64(), Some(75));
+        let vulkan = ended("vulkan");
+        assert_eq!(vulkan["code"].as_i64(), Some(0));
+        assert_eq!(vulkan["gpu_error"], "terminate called after throwing an instance of 'vk::DeviceLostError'");
+        let fatal = ended("fatal");
+        assert_eq!((fatal["code"].as_i64(), fatal["fatal"].as_bool()), (Some(1), Some(true)));
+        assert_eq!(ended("quit")["fatal"], false);
+
+        // The search service's end says the same.
+        let folder = folder("search-crash");
+        let (seen, sink) = events();
+        let search = SearchService::new(fake_helper(&folder, "crash"), sink);
+        let _ = search.send(1, &json!({"op": "status"}));
+        wait_for("its end", || seen.lock().unwrap().iter().any(|event| event["event"] == "exit"));
+        assert_eq!(seen.lock().unwrap().last().unwrap()["signal"].as_i64(), Some(11));
         let _ = std::fs::remove_dir_all(folder);
     }
 }

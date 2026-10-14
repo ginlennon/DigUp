@@ -105,6 +105,19 @@ button.link { background: none; border: 0; color: var(--ember); padding: 8px 2px
   background: var(--surface); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px;
 }
 
+.label b.warn { color: var(--ember); }
+
+/* "Check DigUp": one line per check of `digup doctor`. */
+#checks { border-top: 1px solid var(--line); padding: 6px 12px 10px; }
+#checks[hidden] { display: none; }
+.check { display: flex; gap: 8px; padding: 3px 0; font-size: 12px; line-height: 1.4; }
+.check .mark { flex: none; width: 14px; font-weight: 700; color: var(--moss); }
+.check.failed .mark { color: var(--danger); }
+.check .name { flex: none; width: 82px; font-weight: 500; }
+.check .detail { flex: 1; min-width: 0; color: var(--secondary); overflow-wrap: anywhere; user-select: text;
+  -webkit-user-select: text; cursor: text; }
+.check .fix { color: var(--text); }
+
 .note { font-size: 11px; color: var(--secondary); margin: 8px 2px 0; line-height: 1.45; }
 .note.warn { color: var(--ember); }
 

@@ -33,6 +33,7 @@ function render() {
   $("pause-title").textContent = info.paused ? "Indexing is paused" : "Indexing";
   showStatus(info.status);
   $("gpu").checked = info.gpu;
+  renderGpuProblem();
   renderMomentPlayer();
 
   renderShortcut();
@@ -47,9 +48,22 @@ function render() {
 }
 
 function showStatus(text) {
+  // Paused by DigUp itself (a file its helper kept stopping on): why, first.
   $("status").textContent = info.paused
-    ? "Nothing is indexed until you resume, also after a restart. Search works as before."
+    ? (info.pausedWhy ? `${info.pausedWhy}. ` : "")
+      + "Nothing is indexed until you resume, also after a restart. Search works as before."
     : text || "";
+}
+
+/// The GPU failed this session, so the helpers (or only search) run on the processor until DigUp restarts.
+function renderGpuProblem() {
+  const failed = info.gpu && (info.gpuFailed || info.searchGpuFailed);
+  $("gpu-problem").hidden = !failed;
+  if (!failed) return;
+  $("gpu-problem-title").textContent = info.gpuFailed ? "GPU problem: indexing on the CPU" : "GPU problem: search on the CPU";
+  $("gpu-problem-text").textContent = info.gpuFailed
+    ? "The model failed on the graphics chip twice within 10 minutes, so DigUp uses the processor until it restarts."
+    : "Search's model couldn't start on the graphics chip, so search uses the processor until DigUp restarts.";
 }
 
 // MARK: Folders
@@ -141,6 +155,35 @@ $("moment-player").addEventListener("change", () =>
   run("set_moment_player", { player: $("moment-player").value }, $("moment-player")));
 $("login").addEventListener("change", () => run("set_starts_at_login", { on: $("login").checked }, $("login")));
 $("set-up-shortcut").addEventListener("click", () => run("set_up_shortcut", {}, $("set-up-shortcut")));
+$("try-gpu").addEventListener("click", () => run("try_gpu_again", {}, $("try-gpu")));
+
+/// Check DigUp: `digup doctor`'s checks, ✓ or ✗ each, with what to do about one that fails.
+$("check").addEventListener("click", async () => {
+  const button = $("check"), list = $("checks");
+  button.disabled = true;
+  $("check-text").textContent = "Checking… (a few seconds: it loads the model once)";
+  try {
+    const answer = await invoke("check_digup");
+    const failed = answer.checks.filter((check) => !check.ok);
+    list.replaceChildren(...answer.checks.map((check) => {
+      const line = element("div", "check" + (check.ok ? "" : " failed"));
+      const detail = element("span", "detail", check.detail);
+      if (!check.ok && check.fix) detail.append(" → ", element("span", "fix", check.fix));
+      line.append(element("span", "mark", check.ok ? "✓" : "✗"), element("span", "name", check.name), detail);
+      return line;
+    }));
+    list.hidden = false;
+    $("check-text").textContent = answer.ok
+      ? (failed.length ? `DigUp can work here; ${failed.length} optional ${failed.length === 1 ? "thing is" : "things are"} missing.`
+                       : "All is well.") + ` (${answer.seconds} s)`
+      : "DigUp can't work fully here: see what's marked ✗.";
+    problem(null);
+  } catch (error) {
+    $("check-text").textContent = "The check didn't run.";
+    problem(error);
+  }
+  button.disabled = false;
+});
 
 /// A command, with its control disabled until it's done (stopping a helper takes a moment).
 async function run(command, args, control) {

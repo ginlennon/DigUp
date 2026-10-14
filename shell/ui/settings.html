@@ -47,6 +47,10 @@
               processor only: slower, but it leaves the GPU alone.</span></div>
           <input type="checkbox" class="switch" id="gpu">
         </label>
+        <div class="row" id="gpu-problem" hidden>
+          <div class="label"><b class="warn" id="gpu-problem-title"></b><span id="gpu-problem-text"></span></div>
+          <button id="try-gpu">Try the GPU Again</button>
+        </div>
       </div>
     </section>
 
@@ -112,6 +116,12 @@
         <div class="row"><span class="key-name">Model</span><span class="value path" id="path-models"></span></div>
         <div class="row"><span class="key-name">Logs</span><span class="value path" id="path-logs"></span></div>
         <div class="row"><span class="key-name">Settings</span><span class="value path" id="path-settings"></span></div>
+        <div class="row">
+          <div class="label"><b>Check DigUp</b><span id="check-text">Whether the model, the GPU, ffmpeg, tesseract
+            and the index are all as they should be.</span></div>
+          <button id="check">Check DigUp</button>
+        </div>
+        <div id="checks" hidden></div>
       </div>
       <p class="note">DigUp reads the folders you choose and keeps what it learns in its index, on this computer. It
         goes online only to download its model, once. EmbeddingGemma 2 by Google (Apache 2.0), run by llama.cpp
