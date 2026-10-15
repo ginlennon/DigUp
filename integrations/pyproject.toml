@@ -1,7 +1,7 @@
 [project]
 name = "digup-integrations"
 version = "0.1.0"
-description = "DigUp's on-device search for other apps: an MCP server for coding agents and a localhost HTTP API"
+description = "DigUp's on-device search for other apps: an MCP server for coding agents, a localhost HTTP API, and digup-ask"
 license = "MIT"
 requires-python = ">=3.13,<3.14"
 dependencies = [
@@ -12,6 +12,7 @@ dependencies = [
 [project.scripts]
 digup-mcp = "digup_mcp:main"
 digup-http = "digup_http:main"
+digup-ask = "digup_ask:main"
 
 [dependency-groups]
 dev = [
@@ -30,6 +31,7 @@ only-include = [
     "src/digup_tools.py",
     "src/digup_mcp.py",
     "src/digup_http.py",
+    "src/digup_ask.py",
 ]
 
 [tool.pytest.ini_options]

@@ -763,8 +763,9 @@ class DigUp:
 # MARK: Command lines
 
 
-def add_helper_arguments(parser: argparse.ArgumentParser) -> None:
-    """The flags both servers take to say which helper, index and folders."""
+def add_helper_arguments(parser: argparse.ArgumentParser, pinning: bool = True) -> None:
+    """The flags both servers take to say which helper, index and folders (`pinning`: and --scope,
+    --allow-add-folders, --max-files)."""
     group = parser.add_argument_group("DigUp")
     group.add_argument("--helper", help="the digup binary (default: $DIGUP_HELPER, digup on PATH, the repo's build)")
     group.add_argument("--index", help="the index folder (default: $DIGUP_INDEX, else DigUp's own)")
@@ -778,7 +779,8 @@ def add_helper_arguments(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--no-settings", action="store_true", help="don't read the desktop app's settings")
     group.add_argument("--encoder-idle", type=float, help="seconds before the idle encoder exits (default 300)")
     group.add_argument("--timeout", type=float, default=60.0, help="seconds to wait for a reply (default 60)")
-
+    if not pinning:
+        return
 
     group = parser.add_argument_group("Pinning and adding folders")
     group.add_argument("--scope", action="append", default=[], metavar="DIR",
