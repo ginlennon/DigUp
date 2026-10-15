@@ -5,6 +5,7 @@ description = "DigUp's on-device search for other apps: an MCP server for coding
 license = "MIT"
 requires-python = ">=3.13,<3.14"
 dependencies = [
+    "jeepney>=0.9,<1 ; sys_platform == 'linux'",
     "mcp>=2.3,<3",
 ]
 
@@ -24,6 +25,7 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 sources = ["src"]
 only-include = [
+    "src/digup_app.py",
     "src/digup_client.py",
     "src/digup_tools.py",
     "src/digup_mcp.py",

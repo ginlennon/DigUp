@@ -5,16 +5,18 @@ import threading
 import pytest
 
 from digup_client import HelperConfig
-from digup_http import ApiServer
-from digup_tools import DigUp
+import digup_mcp
+from digup_http import ApiServer, parse_arguments, serve
+from digup_tools import DigUp, Scope
 
 
 @pytest.fixture
 def api(fake_helper):
     servers = []
 
-    def start(**options):
-        digup = DigUp(config=HelperConfig.load(roots=["/data"], code_roots=["/data/code"], use_settings=False))
+    def start(digup_options=None, **options):
+        digup = DigUp(config=HelperConfig.load(roots=["/data"], code_roots=["/data/code"], use_settings=False),
+                      **(digup_options or {}))
         server = ApiServer(("127.0.0.1", 0), digup, **options)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         servers.append(server)
@@ -137,3 +139,56 @@ def test_cors_is_off_unless_asked(api):
     _, _, response = call(server, "GET", "/health")
     assert response.getheader("Access-Control-Allow-Origin") == "http://localhost:3000"
     assert call(server, "OPTIONS", "/search")[0] == 204
+
+
+def test_scope(api):
+    server = api(digup_options={"scope": Scope.of(["/data/docs"])})
+    status, body, _ = call(server, "POST", "/search", {"query": "zebra"})
+    assert status == 200 and [hit["path"] for hit in body["hits"]] == ["/data/docs/lease.pdf"]
+    assert "partial" not in body
+    status, body, _ = call(server, "POST", "/search", {"query": "zebra", "folders": ["/data/video"]})
+    assert status == 403 and "outside the folders this server searches" in body["error"]
+    assert call(server, "GET", "/segments/31")[0] == 200
+    assert call(server, "GET", "/segments/12")[0] == 403
+    status, body, _ = call(server, "GET", "/status")
+    assert body["scope"][0]["indexed"] == "fully" and body["app"] == {"running": False}
+    status, spec, _ = call(server, "GET", "/openapi.json")
+    assert "pinned to /data/docs" in spec["info"]["description"] and "/folders" not in spec["paths"]
+    status, body, _ = call(server, "POST", "/folders", {"path": "/data/docs/x"})
+    assert status == 404 and "--allow-add-folders" in body["error"]
+    server = api(digup_options={"scope": Scope.of(["/home/me/git/foo"])})
+    status, body, _ = call(server, "POST", "/search", {"query": "zebra"})
+    assert status == 409 and "isn't indexed" in body["error"]
+
+
+def test_adding_folders_only_from_this_computer(api, tmp_path):
+    server = api(digup_options={"allow_add": True}, cors="http://localhost:3000")
+    status, spec, _ = call(server, "GET", "/openapi.json")
+    assert spec["paths"]["/folders"]["post"]["operationId"] == "add_folder"
+    # A web page's form or text post isn't JSON; another origin is refused.
+    status, body, _ = call(server, "POST", "/folders", b'{"path": "/home/me/x"}', {"Content-Type": "text/plain"})
+    assert status == 415
+    status, body, _ = call(server, "POST", "/folders", {"path": "/home/me/x"}, {"Origin": "http://evil.example"})
+    assert status == 403 and "another origin" in body["error"]
+    status, body, _ = call(server, "POST", "/folders", {"path": "/home/me/x"}, {"Origin": "http://localhost:3000"})
+    assert status == 503 and "DigUp isn't running" in body["error"]
+    assert call(server, "GET", "/folders")[0] == 405
+
+
+def test_adding_folders_isnt_for_other_computers(fake_helper):
+    assert serve(parse_arguments(["--host", "0.0.0.0", "--allow-add-folders", "--no-settings"])) == 2
+    with pytest.raises(SystemExit, match="for this computer only"):
+        digup_mcp.main(["--http", "--host", "0.0.0.0", "--allow-add-folders", "--no-settings"])
+
+
+def test_adding_a_folder_through_the_app(api, fake_app, tmp_path):
+    home = tmp_path / "home"
+    (home / "Sent").mkdir(parents=True)
+    server = api(digup_options={"allow_add": True})
+    status, body, _ = call(server, "POST", "/folders", {"path": str(home / "Sent")})
+    assert status == 200 and body["added"] and "index_status" in body["follow"]
+    assert body["message"] == f"digup added {home}/Sent to DigUp"
+    status, body, _ = call(server, "POST", "/folders", {"path": str(home / "huge")})
+    assert status == 403 and "more than 20000 files" in body["error"]
+    status, body, _ = call(server, "POST", "/folders", {})
+    assert status == 400

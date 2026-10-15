@@ -18,6 +18,11 @@ unless --cors names an origin.
 it, ranked by the query, which may be empty then; `filter_note` in the reply when it was read as plain words.
     GET  /preview?path=…&kind=pdf|video|image&loc=…&pixels=…      → image/jpeg
     GET  /openapi.json                 → this API as OpenAPI 3.1
+    POST /folders  {path}              → the desktop app adds the folder (only with --allow-add-folders)
+
+With --scope DIR every search stays inside DIR (digup_tools's `Scope`). POST /folders is the one request that changes
+something: it takes a JSON body only and no other web origin than --cors's, and --allow-add-folders doesn't go with
+--host.
 """
 
 from __future__ import annotations
@@ -36,8 +41,9 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from digup_client import DigUpError, HelperDied, HelperError, HelperNotFound, HelperTimeout
-from digup_tools import (FILTER_SYNTAX, KINDS, MAX_FILTER, BadRequest, DigUp, Forbidden, Results, Unsupported,
-                         add_helper_arguments, config_from, where)
+from digup_app import AppNotRunning
+from digup_tools import (FILTER_SYNTAX, KINDS, MAX_FILTER, BadRequest, DigUp, Forbidden, NotIndexed, Results,
+                         Unsupported, add_helper_arguments, digup_from, where)
 
 VERSION = "0.1.0"
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
@@ -58,6 +64,11 @@ def hits_json(results: Results) -> dict[str, Any]:
         body["filter_note"] = results.filter_note
     if results.warning:
         body["warning"] = results.warning
+    if results.partial:
+        body["partial"] = True
+        body["indexing"] = results.partial
+    if results.notes:
+        body["notes"] = results.notes
     if results.ms:
         body["ms"] = results.ms
     return body
@@ -205,6 +216,10 @@ class Handler(BaseHTTPRequestHandler):
             self.fail(HTTPStatus.BAD_REQUEST, str(error))
         except Forbidden as error:
             self.fail(HTTPStatus.FORBIDDEN, str(error))
+        except NotIndexed as error:
+            self.fail(HTTPStatus.CONFLICT, str(error))
+        except AppNotRunning as error:
+            self.fail(HTTPStatus.SERVICE_UNAVAILABLE, str(error))
         except Unsupported as error:
             self.fail(HTTPStatus.NOT_IMPLEMENTED, str(error))
         except HelperTimeout as error:
@@ -227,7 +242,8 @@ class Handler(BaseHTTPRequestHandler):
                                            "helper_running": digup.client.running})
         elif path == "/openapi.json" and method == "GET":
             self.send_json(HTTPStatus.OK, openapi(self.headers.get("Host") or self.server.url.split("//")[1],
-                                                  bool(self.server.token)))
+                                                  bool(self.server.token), adding=digup.allow_add,
+                                                  scope=digup.scope.text() if digup.scope else None))
         elif path == "/status" and method == "GET":
             self.send_json(HTTPStatus.OK, digup.status())
         elif path == "/search" and method in ("GET", "POST"):
@@ -270,18 +286,41 @@ class Handler(BaseHTTPRequestHandler):
             except OSError as error:
                 raise DigUpError(f"the preview can't be read: {error}") from None
             self.send_bytes(HTTPStatus.OK, data, "image/jpeg")
-        elif path in ("/search", "/similar", "/context", "/status", "/preview", "/health", "/openapi.json") \
-                or path.startswith("/segments/"):
+        elif path == "/folders" and method == "POST" and digup.allow_add:
+            self.add_folder()
+        elif path == "/folders" and not digup.allow_add:
+            self.fail(HTTPStatus.NOT_FOUND, "no endpoint /folders: adding folders is off (start digup-http with "
+                                            "--allow-add-folders)")
+        elif path in ("/search", "/similar", "/context", "/status", "/preview", "/health", "/openapi.json",
+                      "/folders") or path.startswith("/segments/"):
             self.fail(HTTPStatus.METHOD_NOT_ALLOWED, f"{method} isn't allowed on {path}")
         else:
             self.fail(HTTPStatus.NOT_FOUND, f"no endpoint {path} (see /openapi.json)")
+
+    def add_folder(self) -> None:
+        """POST /folders {path}: the desktop app adds the folder (digup_tools's `add_folder`). The one request that
+        changes something, so a web page mustn't be able to send it: a JSON body only (a form or a text/plain post
+        from a page can't be one without CORS letting it), and no other origin than --cors's."""
+        kind = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if kind != "application/json":
+            self.fail(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "POST /folders takes a JSON body (Content-Type: "
+                                                          "application/json)")
+            return
+        origin = self.headers.get("Origin")
+        if origin is not None and origin != self.server.cors:
+            self.fail(HTTPStatus.FORBIDDEN, "folders aren't added for a web page from another origin")
+            return
+        body = self.body()
+        answer = self.server.digup.add_folder(body.get("path"))
+        self.send_json(HTTPStatus.OK, answer)
 
 
 # MARK: OpenAPI
 
 
-def openapi(host: str, token: bool) -> dict[str, Any]:
-    """The API as OpenAPI 3.1, for tool servers (Open WebUI) and client generators."""
+def openapi(host: str, token: bool, adding: bool = False, scope: str | None = None) -> dict[str, Any]:
+    """The API as OpenAPI 3.1, for tool servers (Open WebUI) and client generators. `adding`: POST /folders is on
+    (--allow-add-folders); `scope`: the folders the server is pinned to (--scope)."""
     kinds = {"type": "array", "items": {"type": "string", "enum": list(KINDS)},
              "description": "Only these kinds of files (default: all)."}
     folders = {"type": "array", "items": {"type": "string"},
@@ -440,6 +479,11 @@ def openapi(host: str, token: bool) -> dict[str, Any]:
                 "filter_note": {"type": "string", "description": "How a filter that couldn't be parsed was read "
                                                                  "(\"unclosed quote: read as plain words\")"},
                 "warning": {"type": "string"},
+                "partial": {"type": "boolean", "description": "The folders searched are still being indexed: these "
+                                                              "are the results so far (see `indexing`)"},
+                "indexing": {"type": "object", "description": "{folders, state, done, total}: how far it is"},
+                "notes": {"type": "array", "items": {"type": "string"},
+                          "description": "What's worth knowing first (a folder added, one that isn't indexed)"},
             }},
             "Segment": {"type": "object", "properties": {
                 "segment_id": {"type": "integer"}, "code": {"type": "boolean"}, "text": {"type": "string"}}},
@@ -456,6 +500,30 @@ def openapi(host: str, token: bool) -> dict[str, Any]:
             "Error": {"type": "object", "properties": {"error": {"type": "string"}}},
         }},
     }
+    if scope:
+        spec["info"]["description"] += (f" This server is pinned to {scope}: every search is inside it, and nothing "
+                                        "outside it comes back.")
+    if adding:
+        spec["paths"]["/folders"] = {"post": {
+            "operationId": "add_folder",
+            "summary": "Add a folder to DigUp's index",
+            "description": "The running DigUp app adds the folder (a git repo goes to the code index) and shows the "
+                           "user a notification with Undo. Only folders inside the home folder (not hidden ones, not "
+                           "the home folder itself) with at most the server's file cap. It returns at once: searches "
+                           "meanwhile return results so far, with `partial` true, and /status says how far indexing "
+                           "is. 403: not added (the reason in `error`); 503: the DigUp app isn't running.",
+            "requestBody": json_body("FolderRequest", {"path": "~/git/my-project"}),
+            "responses": {"200": json_reply("FolderAdded", "Added (or searched already: added false)"),
+                          "403": error, "415": error, **errors},
+        }}
+        spec["components"]["schemas"]["FolderRequest"] = {"type": "object", "required": ["path"], "properties": {
+            "path": {"type": "string", "description": "The folder: absolute, ~/…, or relative to where the server "
+                                                      "was started"}}}
+        spec["components"]["schemas"]["FolderAdded"] = {"type": "object", "properties": {
+            "ok": {"type": "boolean"}, "added": {"type": "boolean"}, "path": {"type": "string"},
+            "code": {"type": "boolean", "description": "In the code index (a git repo)"},
+            "files": {"type": "integer"}, "skipped": {"type": "array", "items": {"type": "string"}},
+            "message": {"type": "string"}, "follow": {"type": "string"}}}
     if token:
         spec["components"]["securitySchemes"] = {"bearer": {"type": "http", "scheme": "bearer"}}
         spec["security"] = [{"bearer": []}]
@@ -482,10 +550,13 @@ def serve(args: argparse.Namespace) -> int:
     host = args.host or "127.0.0.1"
     loopback = host in LOOPBACK
     token = args.token or os.environ.get("DIGUP_API_TOKEN") or None
+    if not loopback and args.allow_add_folders:
+        print("digup-http: --allow-add-folders is for this computer only: not with --host", file=sys.stderr)
+        return 2
     if not loopback:
         print(f"digup-http: warning: listening on {host}: other computers can reach this API and search your "
               "files" + ("" if token else ", and no token is set (--token)"), file=sys.stderr)
-    digup = DigUp(config=config_from(args))
+    digup = digup_from(args, "digup-http")
     digup.client.request_timeout = args.timeout
     server = ApiServer((host, args.port), digup, token=token, check_host=loopback, cors=args.cors,
                        verbose=args.verbose)

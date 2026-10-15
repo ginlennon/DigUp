@@ -2,7 +2,8 @@
 
 A "filter" keeps the hits whose path or excerpt has its first word. Queries steer it: "die" exits without answering (only the first time when FAKE_STATE has a folder: it leaves a mark
 there), "hang" never answers, "error" answers with an error. FAKE_NO_READY=1: never ready. FAKE_SIMILAR=1: knows the
-`similar` op. FAKE_STATE/argv.json: its arguments; FAKE_STATE/quit: written on `quit`.
+`similar` op. FAKE_STATE/argv.json: its arguments; FAKE_STATE/quit: written on `quit`; FAKE_STATE/ops.jsonl: the
+`folders` and `reload` requests.
 """
 
 import json
@@ -87,6 +88,11 @@ def answer(request):
         return {"encoder": "stopped", "vectors": 0, "code_vectors": 0, "index": "/idx/index.sqlite"}
     if op == "similar" and os.environ.get("FAKE_SIMILAR"):
         return {"hits": HITS[2:], "strong": 1, "meaning": True}
+    if op in ("folders", "reload"):
+        if STATE is not None:
+            with open(STATE / "ops.jsonl", "a") as log:
+                log.write(json.dumps({k: v for k, v in request.items() if k != "id"}) + "\n")
+        return {"ok": True}
     return {"ok": False, "error": f"unknown op {op}"}
 
 
