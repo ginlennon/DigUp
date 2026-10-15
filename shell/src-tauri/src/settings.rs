@@ -1,9 +1,9 @@
 //! What the person chose: the folders DigUp searches, what it skips in them, the hotkey, whether setup is done,
 //! whether indexing is paused and may use the GPU, where recordings open at a moment, the code folders and the editor
-//! code opens in, and transcripts of recordings. A JSON file in the app's config folder
-//! (%APPDATA%\com.abdurrahim.DigUp on Windows, ~/.config/com.abdurrahim.DigUp on Linux). Launch arguments (`--roots`,
-//! `--hotkey`) stand in for it in dev runs. A field a file doesn't have yet (one saved by an older shell) takes its
-//! default.
+//! code opens in, transcripts of recordings, and the search panel's size (on X11 its place too). A JSON file in the
+//! app's config folder (%APPDATA%\com.abdurrahim.DigUp on Windows, ~/.config/com.abdurrahim.DigUp on Linux). Launch
+//! arguments (`--roots`, `--hotkey`) stand in for it in dev runs. A field a file doesn't have yet (one saved by an
+//! older shell) takes its default.
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -44,6 +44,13 @@ pub struct Settings {
     pub transcripts: bool,
     /// Songs (audio with artist and album tags) get transcripts too; off, they're skipped.
     pub transcribe_music: bool,
+    /// The search panel's width and its height with results, as the person resized it (logical pixels; panel.rs
+    /// keeps them within reason).
+    pub panel_width: f64,
+    pub panel_height: f64,
+    /// X11: where the person dragged the panel (physical pixels); none: centered. Wayland doesn't let an app place
+    /// its window, so it stays none there.
+    pub panel_position: Option<[i32; 2]>,
 }
 
 impl Default for Settings {
@@ -63,6 +70,9 @@ impl Default for Settings {
             code_editor: String::new(),
             transcripts: false,
             transcribe_music: false,
+            panel_width: crate::panel::DEFAULT_WIDTH,
+            panel_height: crate::panel::DEFAULT_HEIGHT,
+            panel_position: None,
         }
     }
 }
@@ -114,6 +124,10 @@ mod tests {
         assert!(old.prefers_vlc());
         assert!(old.code_folders.is_empty() && old.code_skipped.is_empty() && old.code_editor.is_empty());
         assert!(!old.transcripts && !old.transcribe_music, "transcripts are off unless turned on");
+        assert_eq!((old.panel_width, old.panel_height, old.panel_position), (780.0, 480.0, None), "the panel's size");
+        let sized: Settings = serde_json::from_str(r#"{"panelWidth":1000,"panelHeight":620.5,"panelPosition":[40,30]}"#)
+            .unwrap();
+        assert_eq!((sized.panel_width, sized.panel_height, sized.panel_position), (1000.0, 620.5, Some([40, 30])));
         let words: Settings = serde_json::from_str(r#"{"transcripts":true,"transcribeMusic":true}"#).unwrap();
         assert!(words.transcripts && words.transcribe_music);
         let chosen: Settings = serde_json::from_str(r#"{"momentPlayer":"default"}"#).unwrap();
@@ -123,6 +137,7 @@ mod tests {
         let why = Some("Indexing paused: Big.pdf kept failing".to_string());
         let written = serde_json::to_value(Settings { paused: true, paused_why: why.clone(), gpu: false, ..old }).unwrap();
         assert_eq!((written["paused"].as_bool(), written["gpu"].as_bool()), (Some(true), Some(false)));
+        assert_eq!((written["panelWidth"].as_f64(), written["panelHeight"].as_f64()), (Some(780.0), Some(480.0)));
         assert_eq!(serde_json::from_value::<Settings>(written).unwrap().paused_why, why, "kept for the next start");
     }
 

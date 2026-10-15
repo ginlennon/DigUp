@@ -1,7 +1,7 @@
 // DigUp's settings window: the folders and what's skipped in them, the code folders, pausing indexing and the GPU
 // switch (and what's left of it after a GPU problem), transcripts of recordings, where recordings and code open, the
-// shortcut (on GNOME a GNOME shortcut, which this window can write), starting at login, turning DigUp off, where DigUp
-// keeps things and a check of it. Each change applies at once, as in the Mac app's Settings; the shell saves it and
+// shortcut (on GNOME a GNOME shortcut, which this window can write), the search panel's size, starting at login,
+// turning DigUp off, where DigUp keeps things and a check of it. Each change applies at once, as in the Mac app's Settings; the shell saves it and
 // the helpers follow (search-service is told the folders, the watcher and indexing start over with them).
 "use strict";
 
@@ -41,6 +41,7 @@ function render() {
   renderEditor();
 
   renderShortcut();
+  renderPanelSize();
   $("login").checked = info.startsAtLogin;
   renderTurnOff();
 
@@ -283,6 +284,7 @@ $("moment-player").addEventListener("change", () =>
   run("set_moment_player", { player: $("moment-player").value }, $("moment-player")));
 $("login").addEventListener("change", () => run("set_starts_at_login", { on: $("login").checked }, $("login")));
 $("set-up-shortcut").addEventListener("click", () => run("set_up_shortcut", {}, $("set-up-shortcut")));
+$("reset-panel-size").addEventListener("click", () => run("reset_panel_size", {}, $("reset-panel-size")));
 $("try-gpu").addEventListener("click", () => run("try_gpu_again", {}, $("try-gpu")));
 
 /// Check DigUp: `digup doctor`'s checks, ✓ or ✗ each, with what to do about one that fails.
@@ -372,6 +374,16 @@ function renderShortcut() {
 }
 
 // MARK: Turning it off
+
+/// The search panel's size as the person resized it, and how: Reset Size is for a size that isn't the default.
+function renderPanelSize() {
+  const [width, height] = info.panelSize;
+  const moved = info.panelMoved ? " and moved" : "";
+  $("panel-size-text").textContent = info.panelSizeDefault
+    ? "Drag its edges to resize it, and its icons or the space around its fields to move it."
+    : `${Math.round(width)} × ${Math.round(height)} with results, as you resized it${moved}.`;
+  $("reset-panel-size").disabled = info.panelSizeDefault;
+}
 
 /// Turn DigUp off: no start at login, and quit. The GNOME shortcut would start it again, so it says so and offers to
 /// remove it too.

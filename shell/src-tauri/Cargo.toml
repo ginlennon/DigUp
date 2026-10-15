@@ -27,6 +27,8 @@ libc = "0.2"
 zbus = "5.9"
 # GTK's log writer (gtk_log.rs): the glib that Tauri's GTK already builds.
 glib = "0.18"
+# The panel's web view: a press on its edge starts Tauri's resize (main.rs, `hear_edge_presses`). Tauri's own GTK.
+gtk = "0.18"
 
 [profile.release]
 codegen-units = 1

@@ -7,6 +7,10 @@
 // Under the field is the filter (PLANS/KEYWORD_FILTER_PLAN.md): exact words, AND OR NOT, "phrases", Rechnung*,
 // *kaution*. It says which files appear, and the field above ranks them; alone it's a keyword search. Tab or Ctrl+F
 // goes to it, Esc clears it first, and it's gone when the panel opens again.
+//
+// The panel has no frame: it's dragged by what isn't for typing or clicking (its icons, the room around the fields,
+// the footer) and resized by its edges (Tauri's border, before the page hears of the press). The shell keeps the
+// person's size (panel.rs).
 "use strict";
 
 const tauri = window.__TAURI__;
@@ -16,8 +20,6 @@ const fileURL = (path) => tauri.core.convertFileSrc(path);
 
 const TYPING_PAUSE = 120;          // ms after the last keystroke until the meaning results show
 const ROWS_PER_GROUP = 6;
-const FIELD_HEIGHT = 88;           // the field and the filter under it (main.rs has it too)
-const PANEL_HEIGHT = 480;
 const WEAKER = "\u0000weaker";     // the selectable row that folds and unfolds the weaker matches
 const isMac = /Mac/.test(navigator.platform);
 const isWindows = /Win/.test(navigator.platform);
@@ -78,7 +80,7 @@ const state = {
   selection: null,       // a result's path, or WEAKER
   navigated: false,      // the arrow keys moved the selection since the last edit
   encoder: "stopped",
-  height: FIELD_HEIGHT,
+  fieldsOnly: true,      // nothing to show under the fields: the panel is their height (panel.rs)
   home: "",
   error: null,
   indexing: null,        // {done, total} while the index helper works through new files
@@ -344,10 +346,10 @@ function revealSelected() {
 
 function render() {
   const empty = state.phase === "empty" && !helpShown();
-  const height = empty ? FIELD_HEIGHT : PANEL_HEIGHT;
-  if (height !== state.height) {
-    state.height = height;
-    invoke("panel_height", { height }).catch(() => {});
+  // The shell gives the panel the person's height with results, and its fields' without.
+  if (empty !== state.fieldsOnly) {
+    state.fieldsOnly = empty;
+    invoke("panel_results", { shown: !empty }).catch(() => {});
   }
   $body.hidden = empty;
   $footer.hidden = empty;
@@ -920,6 +922,35 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+// MARK: Moving
+
+// The desktop moves the window (Tauri's startDragging), as it would by a title bar. A drag starts once the pointer has
+// moved a few pixels with the button down, so a click there is still a click. The shell hears of it first
+// (`panel_drag`): GNOME takes the keyboard away while it moves a window, which mustn't hide the panel as a click
+// elsewhere does. Resizing needs nothing here: the edges are Tauri's, and the shell hears of them from GTK.
+const NOT_FOR_DRAGGING = "input, button, a, select, textarea, video, audio, .chip, .list, .preview";
+const DRAG_AFTER = 4;   // px moved with the button down
+const panelWindow = tauri.window.getCurrentWindow();
+let pressed = null;     // where the button went down on a place the panel is dragged by
+
+document.addEventListener("mousedown", (event) => {
+  pressed = event.button === 0 && !event.target.closest(NOT_FOR_DRAGGING) ? { x: event.screenX, y: event.screenY }
+                                                                         : null;
+});
+document.addEventListener("mousemove", (event) => {
+  if (!pressed) return;
+  if (!(event.buttons & 1)) {
+    pressed = null;   // let go somewhere the page didn't hear of
+    return;
+  }
+  if (Math.hypot(event.screenX - pressed.x, event.screenY - pressed.y) < DRAG_AFTER) return;
+  pressed = null;
+  invoke("panel_drag").catch(() => {}).then(() => panelWindow.startDragging()).catch(() => {});
+});
+document.addEventListener("mouseup", () => { pressed = null; });
+
+// MARK: The shell
+
 /// What the panel knows of the settings (asked again each time it's shown: they may have changed).
 function loadInfo() {
   invoke("panel_info").then((info) => { state.codeFolders = info.codeFolders; }).catch(() => {});
@@ -996,6 +1027,7 @@ function report() {
         scope: state.scope && state.scope.path,
         like: state.like && state.like.path,
         phase: state.phase,
+        size: `${innerWidth}x${innerHeight}`,
         // "Unterlagen Wohnung.pdf · p. 2": the row's name and its badge.
         groups: state.groups.map((group) => ({
           title: group.title,

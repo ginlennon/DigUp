@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "panel",
+  "description": "The search panel moves itself: undecorated, it has no title bar, so its icons, the room around its fields and its footer start the desktop's drag (panel.js). Its edges resize it without the page (Tauri's border).",
+  "windows": ["panel"],
+  "permissions": ["core:window:allow-start-dragging"]
+}

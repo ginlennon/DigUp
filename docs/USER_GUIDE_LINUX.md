@@ -20,6 +20,11 @@ This guide is for the Linux port (tested on Ubuntu 24.04 with GNOME). Setup is i
 The tray icon shows what DigUp is doing ("Indexing 120 of 482", "Transcribing 3 of 12" when transcripts are on,
 "Up to date · 482 files") and has Pause/Resume, Index Now, Settings… and Quit.
 
+**Moving and resizing the panel.** Drag it by its magnifier or funnel icon, the space around the fields or the
+footer; drag its edges to make it wider or, with results showing, taller. It keeps that size (Settings → Search
+panel → Reset Size goes back), but on Wayland GNOME decides where a window opens, so it may put the panel back in
+the middle the next time it opens.
+
 **How to ask.** Describe what you'd see or hear, as you'd tell a friend: "a receipt where the card was declined",
 "the bit where they talk about the storm". Type exact things exactly: an invoice number, an error code, a name.
 DigUp does both at once: the meaning of your words, and the words themselves (in file names, document text, and

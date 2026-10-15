@@ -24,6 +24,7 @@ mod gtk_log;
 mod helper;
 mod opener;
 mod options;
+mod panel;
 mod scope;
 mod settings;
 mod transcripts;
@@ -34,20 +35,17 @@ use options::{Command, Options, DEFAULT_HOTKEY};
 use serde_json::{json, Value};
 use settings::Settings;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, State, WebviewUrl, WebviewWindowBuilder, WindowEvent, Wry};
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PixelUnit, State, WebviewUrl, WebviewWindow,
+            WebviewWindowBuilder, WindowEvent, WindowSizeConstraints, Wry};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_opener::OpenerExt;
 use watcher::FolderWatcher;
-
-const PANEL_WIDTH: f64 = 780.0;
-/// The panel's height with nothing searched: the field and the keyword filter under it (panel.js has it too).
-const FIELD_HEIGHT: f64 = 88.0;
 
 /// How often the folders (and the code folders) are synced with no change seen. The watcher can miss changes: inotify drops events when its
 /// queue overflows and stops adding watches at fs.inotify.max_user_watches (a big home folder gets there), a network or
@@ -92,6 +90,11 @@ struct Shell {
     health: Mutex<fallback::Health>,
     /// The code editors installed, for code results.
     editors: editors::Editors,
+    /// The search panel's size and place (panel.rs), and how many of its changes were saved later (the last saves).
+    panel: Mutex<panel::Panel>,
+    panel_saves: AtomicU64,
+    /// GTK speaks Wayland: the panel can't place itself (panel.rs).
+    wayland: bool,
 }
 
 impl Shell {
@@ -354,7 +357,8 @@ fn finish_setup(app: AppHandle, shell: State<'_, Arc<Shell>>, folders: Vec<Strin
 }
 
 /// What the settings window shows: the folders and what's skipped, the pause, the GPU switch, where recordings open at
-/// a moment (and whether VLC is there), the shortcut, starting at login, and where DigUp keeps things.
+/// a moment (and whether VLC is there), the shortcut, the search panel's size, starting at login, and where DigUp
+/// keeps things.
 #[tauri::command]
 async fn settings_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Result<Value, String> {
     let settings = shell.settings.lock().unwrap().clone();
@@ -400,6 +404,11 @@ async fn settings_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Result<V
         "transcriptsOnGpu": shell.gpu_in_use(),
         "transcriptModel": shell.transcript_state.lock().unwrap().clone(),
         "hotkey": shortcut_text(&shell.hotkey()),
+        // The search panel's width and height with results (and, X11, whether it was dragged somewhere).
+        "panelSize": [settings.panel_width, settings.panel_height],
+        "panelMoved": settings.panel_position.is_some(),
+        "panelSizeDefault": settings.panel_width == panel::DEFAULT_WIDTH && settings.panel_height == panel::DEFAULT_HEIGHT
+            && settings.panel_position.is_none(),
         "gnome": gnome,
         "shortcut": shortcut,
         // What our GNOME shortcut should run: when it runs something else (an older build), it can be set up again.
@@ -788,14 +797,40 @@ fn hide_panel(app: AppHandle) {
     if let Some(panel) = app.get_webview_window("panel") {
         let _ = panel.hide();
     }
+    app.state::<Arc<Shell>>().panel.lock().unwrap().hidden();
 }
 
-/// The panel grows to show results and shrinks back to its field.
+/// The panel grows to the person's height to show results, and shrinks back to its fields.
 #[tauri::command]
-fn panel_height(app: AppHandle, height: f64) {
-    if let Some(panel) = app.get_webview_window("panel") {
-        let _ = panel.set_size(LogicalSize::new(PANEL_WIDTH, height.clamp(FIELD_HEIGHT, 640.0)));
+fn panel_results(app: AppHandle, shell: State<'_, Arc<Shell>>, shown: bool) {
+    let mut state = shell.panel.lock().unwrap();
+    if state.show_results(shown) {
+        if let Some(panel) = app.get_webview_window("panel") {
+            size_panel(&panel, &mut state);
+        }
     }
+}
+
+/// The person started dragging the panel (panel.js): the places it takes until it hides are theirs (X11), and the
+/// focus GNOME takes away for the drag doesn't hide it (panel.rs). Its edges are heard from GTK (`hear_edge_presses`).
+#[tauri::command]
+fn panel_drag(shell: State<'_, Arc<Shell>>) {
+    shell.panel.lock().unwrap().grab(panel::Grab::Move, Instant::now());
+}
+
+/// Settings' Reset Size: the panel's default size, and on X11 centered again.
+#[tauri::command]
+fn reset_panel_size(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Result<(), String> {
+    let mut state = shell.panel.lock().unwrap();
+    state.reset();
+    if let Some(panel) = app.get_webview_window("panel") {
+        size_panel(&panel, &mut state);
+    }
+    let (width, height, position) = (state.width, state.height, state.position);
+    drop(state);
+    shell.change_settings(|settings| {
+        (settings.panel_width, settings.panel_height, settings.panel_position) = (width, height, position);
+    })
 }
 
 /// Debug runs: the query the panel types in when it loads (with setup, it comes later as a "debug-query" event).
@@ -865,9 +900,10 @@ fn main() {
         .setup(move |app| setup(app, options))
         .invoke_handler(tauri::generate_handler![
             ask, estimate, setup_info, pick_folders, finish_setup, resolve_folder, open_path, open_hit, open_title, reveal,
-            hide_panel, panel_height, settings_info, save_folders, set_paused, set_gpu, set_starts_at_login, set_up_shortcut,
-            turn_off, try_gpu_again, check_digup, set_moment_player, panel_info, save_code_folders, set_code_editor,
-            set_transcripts, set_transcribe_music, debug_query, debug_filter, debug_report
+            hide_panel, panel_results, panel_drag, reset_panel_size, settings_info, save_folders, set_paused, set_gpu,
+            set_starts_at_login, set_up_shortcut, turn_off, try_gpu_again, check_digup, set_moment_player, panel_info,
+            save_code_folders, set_code_editor, set_transcripts, set_transcribe_music, debug_query, debug_filter,
+            debug_report
         ])
         .build(context)
         .expect("DigUp couldn't start");
@@ -891,6 +927,8 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         None => app.path().app_config_dir()?.join("settings.json"),
     };
     let settings = Settings::load(&settings_path);
+    let panel = panel::Panel::new(settings.panel_width, settings.panel_height, settings.panel_position,
+                                  cfg!(target_os = "linux"));
     let roots: Vec<String> = if options.roots.is_empty() {
         settings.folders.clone()
     } else {
@@ -943,6 +981,11 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         apps: opener::Apps::new(),
         health: Mutex::new(fallback::Health::default()),
         editors: editors::Editors::new(),
+        panel: Mutex::new(panel),
+        panel_saves: AtomicU64::new(0),
+        wayland: cfg!(target_os = "linux")
+            && panel::is_wayland(std::env::var("WAYLAND_DISPLAY").ok().as_deref(),
+                                 std::env::var("GDK_BACKEND").ok().as_deref()),
     });
     app.manage(shell.clone());
     // Now with all it's started with.
@@ -1157,13 +1200,18 @@ fn quit(app: &AppHandle) {
 // MARK: Windows
 
 fn make_panel(app: &AppHandle) -> tauri::Result<()> {
+    let (width, height) = app.state::<Arc<Shell>>().panel.lock().unwrap().size();
+    // Resizable: Tauri gives it a border to resize it by (panel.rs). What size it may take follows the results
+    // (`size_panel`).
     let panel = WebviewWindowBuilder::new(app, "panel", WebviewUrl::App("index.html".into()))
         .title("DigUp")
-        .inner_size(PANEL_WIDTH, FIELD_HEIGHT)
+        .inner_size(width, height)
+        .min_inner_size(panel::MIN_WIDTH, panel::FIELD_HEIGHT)
+        .max_inner_size(panel::MAX_SIDE, panel::FIELD_HEIGHT)
         .decorations(false)
         .transparent(true)
         .shadow(true)
-        .resizable(false)
+        .resizable(true)
         .maximizable(false)
         .minimizable(false)
         .always_on_top(true)
@@ -1171,31 +1219,148 @@ fn make_panel(app: &AppHandle) -> tauri::Result<()> {
         .skip_taskbar(true)
         .visible(false)
         .build()?;
+    #[cfg(target_os = "linux")]
+    hear_edge_presses(&panel, app.clone());
     let app = app.clone();
+    let window = panel.clone();
     panel.on_window_event(move |event| {
-        // Like Spotlight: it steps away when you click elsewhere.
-        if let WindowEvent::Focused(false) = event {
-            if !app.state::<Arc<Shell>>().options.debug_show {
-                hide_panel(app.clone());
+        let shell = app.state::<Arc<Shell>>();
+        match event {
+            // Like Spotlight: it steps away when you click elsewhere. Not when GNOME takes the keyboard away to move
+            // or resize it (panel.rs).
+            WindowEvent::Focused(false) => {
+                let kept = shell.panel.lock().unwrap().keeps_through_focus_loss(Instant::now());
+                if kept {
+                    log!("panel: kept through a focus loss as it was moved or resized");
+                } else if !shell.options.debug_show {
+                    hide_panel(app.clone());
+                }
             }
+            // The person resizing it by its edge: saved once they stop.
+            WindowEvent::Resized(size) => {
+                let size = size.to_logical::<f64>(window.scale_factor().unwrap_or(1.0));
+                if shell.panel.lock().unwrap().resized(size.width, size.height, Instant::now()) {
+                    save_panel_later(&app);
+                }
+            }
+            // X11 only (Wayland doesn't tell an app where its window is): where the person dragged it.
+            WindowEvent::Moved(place) if !shell.wayland && shell.panel.lock().unwrap().moved(place.x, place.y) => {
+                save_panel_later(&app);
+            }
+            _ => {}
         }
     });
     Ok(())
 }
 
+/// A press on the panel's edge never reaches the page: Tauri's handler on the web view starts the desktop's resize
+/// from it and stops it there. The shell hears of it first (GTK's `event` signal comes before `button-press-event`),
+/// with the same hit test, so the focus GNOME takes away for the resize doesn't hide the panel and the sizes that
+/// follow are saved as the person's (panel.rs).
+#[cfg(target_os = "linux")]
+fn hear_edge_presses(panel: &WebviewWindow, app: AppHandle) {
+    use gtk::prelude::{Cast, GtkWindowExt, WidgetExt};
+    let _ = panel.with_webview(move |webview| {
+        webview.inner().connect_event(move |view, event| {
+            let window = view.toplevel().and_then(|toplevel| toplevel.downcast::<gtk::Window>().ok());
+            let resizable = window.as_ref().is_some_and(|window| {
+                !window.is_decorated() && window.is_resizable() && !window.is_maximized()
+            });
+            let pressed = event.event_type() == gtk::gdk::EventType::ButtonPress && event.button() == Some(1);
+            if let (true, true, Some(surface), Some((x, y))) =
+                (resizable, pressed, window.and_then(|window| window.window()), event.root_coords())
+            {
+                let (left, top) = surface.position();
+                let size = (0.0, 0.0, surface.width() as f64, surface.height() as f64);
+                let border = surface.scale_factor() as f64 * panel::EDGE;
+                if panel::on_edge(size, x - left as f64, y - top as f64, border) {
+                    app.state::<Arc<Shell>>().panel.lock().unwrap().grab(panel::Grab::Resize, Instant::now());
+                }
+            }
+            gtk::glib::Propagation::Proceed
+        });
+    });
+}
+
+/// The panel takes the size it should have now, within the screen it's on, and may be resized only as that allows
+/// (with nothing searched, in width only).
+fn size_panel(panel: &WebviewWindow, state: &mut panel::Panel) {
+    state.asking(Instant::now());
+    let limits = state.limits();
+    let logical = |pixels: f64| Some(PixelUnit::Logical(pixels.into()));
+    let _ = panel.set_size_constraints(WindowSizeConstraints {
+        min_width: logical(limits.min.0),
+        min_height: logical(limits.min.1),
+        // Given a height only, GTK would be told the widest width an i32 has.
+        max_width: limits.max_height.and_then(|_| logical(panel::MAX_SIDE)),
+        max_height: limits.max_height.and_then(logical),
+    });
+    let screen = panel.current_monitor().ok().flatten().map(|screen| {
+        let size = screen.size().to_logical::<f64>(screen.scale_factor());
+        (size.width, size.height)
+    });
+    let (width, height) = panel::fitted(state.size(), screen);
+    let _ = panel.set_size(LogicalSize::new(width, height));
+}
+
+/// The person's size and place, saved half a second after the last change (a resize sends many).
+fn save_panel_later(app: &AppHandle) {
+    let shell = app.state::<Arc<Shell>>().inner().clone();
+    let save = shell.panel_saves.fetch_add(1, Ordering::SeqCst) + 1;
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(500));
+        if shell.panel_saves.load(Ordering::SeqCst) != save {
+            return; // a later change saves it
+        }
+        let (width, height, position) = {
+            let state = shell.panel.lock().unwrap();
+            (state.width, state.height, state.position)
+        };
+        let saved = shell.change_settings(|settings| {
+            (settings.panel_width, settings.panel_height, settings.panel_position) = (width, height, position);
+        });
+        match saved {
+            Ok(()) => {
+                log!("panel: {width}×{height} saved");
+                settings_changed(&app);
+            }
+            Err(error) => log_error!("digup-shell: the panel's size: {error}"),
+        }
+    });
+}
+
 fn show_panel(app: &AppHandle) {
-    if !app.state::<Arc<Shell>>().is_set_up() {
+    let shell = app.state::<Arc<Shell>>();
+    if !shell.is_set_up() {
         let _ = show_setup(app);
         return;
     }
     let Some(panel) = app.get_webview_window("panel") else { return };
-    // On the screen with the pointer, centered, a fifth of the way down.
-    if let Ok(pointer) = app.cursor_position() {
-        if let Ok(Some(screen)) = app.monitor_from_point(pointer.x, pointer.y) {
-            let width = (PANEL_WIDTH * screen.scale_factor()) as i32;
-            let x = screen.position().x + (screen.size().width as i32 - width) / 2;
-            let y = screen.position().y + (screen.size().height as f64 * 0.2) as i32;
-            let _ = panel.set_position(PhysicalPosition::new(x, y));
+    // Wayland: GNOME places it, and an app asking for a place is ignored there, so it isn't asked. It stays where it
+    // was dragged while it's open; hidden and shown again, it's a new window to GNOME (in a check on GNOME 46 with
+    // center-new-windows on, back in the middle). X11: where the person dragged it, while that's on a screen;
+    // else on the screen with the pointer, centered, a fifth of the way down.
+    if !shell.wayland {
+        let (width, dragged) = {
+            let state = shell.panel.lock().unwrap();
+            (state.width, state.position)
+        };
+        let on_a_screen = |[x, y]: [i32; 2]| matches!(app.monitor_from_point(x as f64, y as f64), Ok(Some(_)));
+        match dragged.filter(|&place| on_a_screen(place)) {
+            Some([x, y]) => {
+                let _ = panel.set_position(PhysicalPosition::new(x, y));
+            }
+            None => {
+                if let Ok(pointer) = app.cursor_position() {
+                    if let Ok(Some(screen)) = app.monitor_from_point(pointer.x, pointer.y) {
+                        let width = (width * screen.scale_factor()) as i32;
+                        let x = screen.position().x + (screen.size().width as i32 - width) / 2;
+                        let y = screen.position().y + (screen.size().height as f64 * 0.2) as i32;
+                        let _ = panel.set_position(PhysicalPosition::new(x, y));
+                    }
+                }
+            }
         }
     }
     let _ = panel.show();
