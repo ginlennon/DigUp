@@ -217,10 +217,15 @@ found, and answers with the files it took it from. It works with a model on your
 or any service that speaks the OpenAI chat API.
 
 ```sh
-cd ~/DigUp-Linux
-uv run --project integrations digup-ask ~/Documents/Wohnung "Wie hoch ist die Kaution?"
-uv run --project integrations digup-ask ~/git/my-app       # no question: a chat about the folder
+cd ~/DigUp-Linux && uv tool install --python 3.13 --editable integrations   # once: digup-ask on your PATH
+digup-ask ~/Documents/Wohnung "Wie hoch ist die Kaution?"
+digup-ask ~/git/my-app       # no question: a chat about the folder
 ```
+
+- **No flags each time.** Put the model's address, and the command that starts your model server, in
+  `~/.config/digup/ask.conf` ([integrations README](../integrations/README.md#digup-ask-ask-a-folder-questions)).
+  Then the first question starts the server if it isn't running and waits while it loads; it stays running for
+  the next one, until `digup-ask --stop-server`.
 
 - **One folder only.** The model searches and reads only inside the folder you name (or the one you're in), like a
   coding app pinned with `--scope`. A folder DigUp doesn't search yet is added if you say yes (DigUp has to be

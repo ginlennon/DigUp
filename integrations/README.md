@@ -268,6 +268,16 @@ uv run --project integrations digup-ask ~/git/my-app            # no question: a
 cd ~/git/my-app && uv run --project ~/DigUp-Linux/integrations digup-ask "how is a failed call retried?"
 ```
 
+**As a plain command.** Install the three commands on your PATH once (into `~/.local/bin`, following the checkout,
+so a `git pull` updates them):
+
+```sh
+uv tool install --python 3.13 --editable integrations      # digup-ask, digup-mcp, digup-http
+digup-ask ~/Documents/Wohnung "Wie hoch ist die Mietkaution?"
+```
+
+`uv tool uninstall digup-integrations` takes them away again.
+
 The first word is the folder when it is one; otherwise it's the current folder, and every word is the question.
 DigUp is pinned to the folder as `--scope` pins the servers ([above](#pinned-to-a-folder-and-adding-folders)): the
 model searches and reads nothing outside it. A folder DigUp doesn't index yet is added when you say yes (`--yes`:
@@ -308,6 +318,21 @@ language of the question. An answer that cites nothing lists what was read for i
 for the question go into the prompt instead: one search, then the answer, which is quicker but can't search again
 with other words. Long chats are kept to about 16 000 characters: the older search results are shortened first,
 then the oldest questions go.
+
+**Defaults in a file**, so the command needs no flags: `~/.config/digup/ask.conf`, `key = value` lines (`#` for
+comments); a flag or a `DIGUP_ASK_*` variable goes before it. The key is never read from it.
+
+```ini
+base-url = http://127.0.0.1:8080/v1
+# model = …                      (only when the endpoint has several)
+# Started when nothing answers at base-url (on this computer only); it keeps running for the next question:
+server = ~/llama.cpp/build/bin/llama-server -m ~/models/<model>.gguf --jinja -ngl 99 -c 8192 --host 127.0.0.1 --port 8080
+```
+
+With `server` set (or `--server COMMAND`, `$DIGUP_ASK_SERVER`), the first question starts the model server when
+it isn't running (its output goes to `~/.local/state/digup/ask-server.log`; `~` works in its words), waits until
+it answers (up to 5 minutes while it loads the model), and leaves it running, so the next question is quick.
+`digup-ask --stop-server` stops the one it started; a server you started yourself is never stopped.
 
 Other flags: `--no-stream`, `--temperature T`, `--request-timeout S`, `--max-files N` (for adding, 20000), `--stats`
 (after each answer: requests, searches, the first token's time, tokens per second), and the helper flags above

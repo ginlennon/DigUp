@@ -2,6 +2,9 @@
 scope, adding the folder, and the key never shown. Against the fake helper and a fake OpenAI-compatible server."""
 
 import io
+import os
+import sys
+import time
 import json
 
 import pytest
@@ -321,3 +324,61 @@ def test_without_the_app_nothing_is_added(fake_helper, tmp_path):
         assert "DigUp isn't running" in err.getvalue()
     finally:
         digup.close()
+
+
+def test_defaults_from_ask_conf(tmp_path):
+    conf = tmp_path / "config" / "digup" / "ask.conf"
+    conf.parent.mkdir(parents=True)
+    conf.write_text("# my model\nbase-url = http://127.0.0.1:9999/v1\nmodel = \"small\"\nserver = llama-server -m x\n"
+                    "api-key = never\nnonsense\n")
+    assert digup_ask.read_config() == {"base-url": "http://127.0.0.1:9999/v1", "model": "small",
+                                       "server": "llama-server -m x"}
+    args = digup_ask.parse_arguments(["some", "question"])
+    assert (args.base_url, args.model, args.server) == ("http://127.0.0.1:9999/v1", "small", "llama-server -m x")
+    args = digup_ask.parse_arguments(["--model", "big", "q"])
+    assert args.model == "big", "a flag goes before the file"
+
+
+SERVER = '''
+import http.server, json, sys, time
+time.sleep(1.5)   # loading its model
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = json.dumps({"data": [{"id": "fake-model"}]}).encode()
+        self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *args): pass
+http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
+'''
+
+
+def test_a_model_server_started_when_needed(tmp_path):
+    import socket
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    script = tmp_path / "server.py"
+    script.write_text(SERVER)
+    endpoint = digup_ask.Endpoint(f"http://127.0.0.1:{port}/v1", timeout=5)
+    err = io.StringIO()
+    digup_ask.ensure_server(endpoint, f"{sys.executable} {script} {port}", err, wait=30)
+    try:
+        assert "Started the model server" in err.getvalue()
+        assert digup_ask.choose_model(endpoint) == "fake-model"
+        pid = digup_ask.started_server()
+        assert pid is not None
+        again = io.StringIO()
+        digup_ask.ensure_server(endpoint, "never-run", again)   # it answers: nothing started
+        assert again.getvalue() == ""
+    finally:
+        assert digup_ask.stop_server(io.StringIO()) == 0
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            break
+        time.sleep(0.1)
+    assert digup_ask.started_server() is None
+    with pytest.raises(digup_ask.EndpointError, match="stopped as it started"):
+        digup_ask.ensure_server(endpoint, f"{sys.executable} -c 'raise SystemExit(3)'", io.StringIO(), wait=10)
+    digup_ask.stop_server(io.StringIO())

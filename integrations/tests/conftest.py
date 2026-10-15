@@ -12,6 +12,16 @@ FAKE = Path(__file__).with_name("fake_helper.py")
 FAKE_APP = Path(__file__).with_name("fake_app.py")
 
 
+@pytest.fixture(autouse=True)
+def private_folders(tmp_path, monkeypatch):
+    """Every test: its own config and state folders (never the person's ask.conf, history or model server), and no
+    DIGUP_ASK_* from the environment."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
+    for name in ("DIGUP_ASK_BASE_URL", "DIGUP_ASK_MODEL", "DIGUP_ASK_SERVER", "DIGUP_ASK_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture
 def fake_helper(tmp_path, monkeypatch):
     """An executable that runs the fake helper, as DIGUP_HELPER; its state folder is FAKE_STATE."""

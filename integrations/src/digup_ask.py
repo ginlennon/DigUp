@@ -14,6 +14,11 @@ else, never shown and never written down. The model gets DigUp's search as tools
 `--max-rounds` rounds per question. With `--no-tools`, or an endpoint that doesn't take tools, DigUp's top matches
 for the question go into the prompt instead. Either way each answer ends with the files it came from.
 
+Defaults can live in `~/.config/digup/ask.conf` (`key = value` lines: `base-url`, `model`, `server`); the
+environment and the flags go before it. `server` is the command that starts a local model server: when the endpoint
+is on this computer and doesn't answer, digup-ask starts it, waits until it answers, and leaves it running for the
+next question (`digup-ask --stop-server` stops it). The API key is never read from that file.
+
 Only the standard library talks to the endpoint (urllib, server-sent events for streaming).
 """
 
@@ -23,6 +28,9 @@ import argparse
 import json
 import os
 import re
+import shlex
+import signal
+import subprocess
 import sys
 import time
 import urllib.error
@@ -852,6 +860,119 @@ def split_words(words: list[str], cwd: str | None = None) -> tuple[str, str]:
     return os.path.normpath(base), " ".join(words).strip()
 
 
+# MARK: Defaults, and a local model server started when needed
+
+CONFIG_KEYS = ("base-url", "model", "server")
+SERVER_WAIT = 300.0   # seconds a model server may take to load its model
+
+
+def config_file() -> str:
+    config = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(config, "digup", "ask.conf")
+
+
+def read_config(path: str | None = None) -> dict[str, str]:
+    """`key = value` lines (`#` starts a comment; quotes around a value are taken off); unknown keys are left out,
+    a missing or unreadable file is no defaults."""
+    found: dict[str, str] = {}
+    try:
+        with open(path or config_file(), encoding="utf-8") as file:
+            lines = file.read().splitlines()
+    except OSError:
+        return found
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = (part.strip() for part in line.split("=", 1))
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if key.lower() in CONFIG_KEYS and value:
+            found[key.lower()] = value
+    return found
+
+
+def server_files() -> tuple[str, str]:
+    """Where the started server's process id and its output go."""
+    folder = os.path.dirname(history_file())
+    return os.path.join(folder, "ask-server.pid"), os.path.join(folder, "ask-server.log")
+
+
+def started_server() -> int | None:
+    """The model server digup-ask started, when it's still running."""
+    pid_file, _ = server_files()
+    try:
+        with open(pid_file, encoding="utf-8") as file:
+            pid = int(file.read().split()[0])
+        os.kill(pid, 0)
+        return pid
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def answers(endpoint: Endpoint) -> bool:
+    try:
+        endpoint.models()
+        return True
+    except EndpointError as error:
+        return error.status is not None   # it answered, if with an error (a key it wants, say)
+
+
+def ensure_server(endpoint: Endpoint, command: str | None, err: TextIO, wait: float = SERVER_WAIT) -> None:
+    """With a `server` command and an endpoint on this computer that doesn't answer: starts the command (in its own
+    session, its output in a log), and waits until the endpoint answers; it keeps running afterwards."""
+    if not command or not endpoint.local or answers(endpoint):
+        return
+    pid_file, log_file = server_files()
+    os.makedirs(os.path.dirname(pid_file), exist_ok=True)
+    if started_server() is None:
+        try:
+            with open(log_file, "ab") as log:
+                process = subprocess.Popen([os.path.expanduser(word) for word in shlex.split(command)], stdin=subprocess.DEVNULL,
+                                           stdout=log, stderr=log, start_new_session=True)
+        except (OSError, ValueError) as error:
+            raise EndpointError(f"can't start the model server ({command}): {error}") from None
+        with open(pid_file, "w", encoding="utf-8") as file:
+            file.write(f"{process.pid}\n")
+    else:
+        process = None
+    began = time.monotonic()
+    tty = getattr(err, "isatty", lambda: False)()
+    while not answers(endpoint):
+        waited = time.monotonic() - began
+        if process is not None and process.poll() is not None:
+            raise EndpointError(f"the model server stopped as it started (exit {process.returncode}); its output is "
+                                f"in {log_file}")
+        if waited > wait:
+            raise EndpointError(f"the model server didn't answer within {wait:.0f} s; its output is in {log_file}")
+        if tty:
+            print(f"\rStarting the model server… {waited:.0f} s", end="", file=err, flush=True)
+        time.sleep(1.0)
+    if tty:
+        print("\r\033[K", end="", file=err)
+    print(f"(Started the model server in {time.monotonic() - began:.0f} s; it keeps running for the next question: "
+          "digup-ask --stop-server stops it.)", file=err)
+
+
+def stop_server(err: TextIO) -> int:
+    pid = started_server()
+    pid_file, _ = server_files()
+    if pid is None:
+        print("digup-ask: no model server it started is running.", file=err)
+        return 1
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError as error:
+        print(f"digup-ask: can't stop the model server ({pid}): {error}", file=err)
+        return 1
+    try:
+        os.remove(pid_file)
+    except OSError:
+        pass
+    print(f"Stopped the model server ({pid}).", file=err)
+    return 0
+
+
 def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="digup-ask", formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -861,12 +982,20 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
                "ends it.")
     parser.add_argument("words", nargs="*", metavar="[FOLDER] [QUESTION]",
                         help="the folder (default: the current one), then a question (none: a chat)")
-    group = parser.add_argument_group("The model")
-    group.add_argument("--base-url", default=os.environ.get("DIGUP_ASK_BASE_URL") or DEFAULT_BASE_URL,
-                       help=f"an OpenAI-compatible API (default: $DIGUP_ASK_BASE_URL, else {DEFAULT_BASE_URL}, a "
-                            "local llama.cpp server)")
-    group.add_argument("--model", default=os.environ.get("DIGUP_ASK_MODEL") or None,
-                       help="the model (default: $DIGUP_ASK_MODEL, else the endpoint's only one)")
+    defaults = read_config()
+    group = parser.add_argument_group("The model (defaults: the environment, then ~/.config/digup/ask.conf)")
+    group.add_argument("--base-url", default=os.environ.get("DIGUP_ASK_BASE_URL") or defaults.get("base-url")
+                       or DEFAULT_BASE_URL,
+                       help=f"an OpenAI-compatible API (default: $DIGUP_ASK_BASE_URL, else base-url in ask.conf, "
+                            f"else {DEFAULT_BASE_URL}, a local llama.cpp server)")
+    group.add_argument("--model", default=os.environ.get("DIGUP_ASK_MODEL") or defaults.get("model") or None,
+                       help="the model (default: $DIGUP_ASK_MODEL, else model in ask.conf, else the endpoint's only "
+                            "one)")
+    group.add_argument("--server", default=os.environ.get("DIGUP_ASK_SERVER") or defaults.get("server") or None,
+                       metavar="COMMAND",
+                       help="the command that starts a local model server when the endpoint doesn't answer "
+                            "(default: $DIGUP_ASK_SERVER, else server in ask.conf); it keeps running afterwards")
+    group.add_argument("--stop-server", action="store_true", help="stop the model server digup-ask started, and end")
     group.add_argument("--no-tools", action="store_true",
                        help="don't give the model tools: put DigUp's top matches into the prompt")
     group.add_argument("--max-rounds", type=int, default=MAX_ROUNDS,
@@ -974,6 +1103,8 @@ def chat(asker: Asker, read: Callable[[str], str] = input) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
+    if args.stop_server:
+        return stop_server(sys.stderr)
     folder, question = split_words(args.words)
     endpoint = Endpoint(args.base_url, args.model, api_key(), timeout=args.request_timeout,
                         temperature=args.temperature)
@@ -988,6 +1119,7 @@ def run(args: argparse.Namespace) -> int:
             return 1
         code = row.get("code") in ("yes", "partly")
         files = row.get("files") in ("yes", "partly") or not code
+        ensure_server(endpoint, args.server, sys.stderr)
         if not endpoint.model:
             endpoint.model = choose_model(endpoint)
         if not endpoint.local:
