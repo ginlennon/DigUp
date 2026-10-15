@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Adds DigUp's scripts to GNOME Files (Nautilus): right-click → Scripts → "DigUp: Find similar" and
-# "DigUp: Search in this folder". See README.md.
+# Adds DigUp's scripts to GNOME Files (Nautilus): right-click → Scripts → "DigUp: Find similar",
+# "DigUp: Search in this folder" and "DigUp: Add this folder". See README.md.
 #
 #   install.sh              link the scripts in this checkout into ~/.local/share/nautilus/scripts
-#   install.sh --copy       copy them to ~/.local/share/digup/desktop-integration first (with the helper found now
-#                           written beside them), so the checkout can move or go
+#   install.sh --copy       copy them to ~/.local/share/digup/desktop-integration first (with the helper and the app
+#                           found now written beside them), so the checkout can move or go
 #   install.sh --uninstall  remove ours (only links to these scripts, and the copy)
 #   --dry-run               say what would be done, do nothing
 #   --force                 replace a script of the same name that isn't ours
@@ -14,9 +14,9 @@ here=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
 data_home=${XDG_DATA_HOME:-$HOME/.local/share}
 scripts_dir="$data_home/nautilus/scripts"
 copy_dir="$data_home/digup/desktop-integration"
-programs=(digup-find-similar digup-search-folder)
-titles=("DigUp: Find similar" "DigUp: Search in this folder")
-files=(digup-find-similar digup-search-folder digup-desktop-lib.sh)
+programs=(digup-find-similar digup-search-folder digup-add-folder)
+titles=("DigUp: Find similar" "DigUp: Search in this folder" "DigUp: Add this folder")
+files=(digup-find-similar digup-search-folder digup-add-folder digup-desktop-lib.sh)
 
 mode=install copy=0 dry=0 force=0
 for arg in "$@"; do
@@ -53,7 +53,7 @@ ours() {
     [[ -L "$1" ]] || return 1
     target=$(readlink -- "$1")
     case "$(basename -- "$target")" in
-        digup-find-similar | digup-search-folder) return 0 ;;
+        digup-find-similar | digup-search-folder | digup-add-folder) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -86,7 +86,7 @@ do_uninstall() {
 }
 
 do_install() {
-    local source_dir=$here i entry found helper backends
+    local source_dir=$here i entry found helper backends app
     for i in "${!titles[@]}"; do
         entry="$scripts_dir/${titles[i]}"
         if [[ -e "$entry" || -L "$entry" ]] && ! ours "$entry" && ((!force)); then
@@ -106,6 +106,14 @@ do_install() {
     else
         echo "Note: no DigUp helper (digup) was found yet; the scripts will say so until one is installed."
     fi
+    # And the app "Add this folder" hands folders to.
+    app=$(DIGUP_SCRIPT_NONINTERACTIVE=1 bash -c \
+        'source "$1/digup-desktop-lib.sh" && digup_find_app && printf "%s\n" "$DIGUP_APP_BIN"' _ "$here" 2>/dev/null)
+    if [[ -n "$app" ]]; then
+        printf '"Add this folder" will hand folders to %s\n' "$app"
+    else
+        echo "Note: the DigUp app (digup-shell) wasn't found yet; \"Add this folder\" will say so until it's installed."
+    fi
 
     if ((copy)); then
         source_dir=$copy_dir
@@ -113,12 +121,15 @@ do_install() {
         for i in "${files[@]}"; do
             run cp -f -- "$here/$i" "$copy_dir/$i"
         done
-        if [[ -n "$helper" ]]; then
+        if [[ -n "$helper" || -n "$app" ]]; then
             if ((dry)); then
-                printf 'would write %s: helper=%s backends=%s\n' "$copy_dir/digup-desktop.conf" "$helper" "$backends"
+                printf 'would write %s: helper=%s backends=%s app=%s\n' "$copy_dir/digup-desktop.conf" "$helper" \
+                    "$backends" "$app"
             else
-                printf '# Written by install.sh: the helper the DigUp scripts fall back to.\nhelper=%s\nbackends=%s\n' \
-                    "$helper" "$backends" >"$copy_dir/digup-desktop.conf"
+                {
+                    echo "# Written by install.sh: the helper and the app the DigUp scripts fall back to."
+                    printf '%s\n' "helper=$helper" "backends=$backends" "app=$app"
+                } >"$copy_dir/digup-desktop.conf"
             fi
         fi
     fi
@@ -140,6 +151,7 @@ do_install() {
 Installed into $scripts_dir:
   ${titles[0]}           on a file: the files most like it
   ${titles[1]}  on a folder (or inside one): search it by meaning
+  ${titles[2]}        on a folder (or inside one): add it to DigUp and search in it
 In Files, right-click a file or folder (or the empty space of a folder) → Scripts.
 They show up when Files starts again: nautilus -q, then open Files.
 EOF

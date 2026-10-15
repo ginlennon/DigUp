@@ -134,7 +134,7 @@ there before pointing DigUp at your own folders.
     DigUp Off" quits it and stops it starting at login; the shortcut stays (pressing it starts DigUp again) unless you
     also tick "Also remove the shortcut", which removes only DigUp's own GNOME shortcut. From a script or another
     shortcut: `digup-shell --quit`, `--pause`, `--resume`, `--index-now`, `--settings`, `--show`, `--hide`,
-    `--toggle` (without DigUp running, `--quit` just says so and `--pause`/`--resume` apply at its next start). To
+    `--toggle`, `--add-folder DIR` ([add a folder](#add-a-folder-on-the-spot)) (without DigUp running, `--quit` just says so and `--pause`/`--resume` apply at its next start). To
     remove its data: `rm -rf ~/.local/share/digup ~/.config/com.abdurrahim.DigUp`.
 
 ## Search in some folders
@@ -148,7 +148,7 @@ the folders right inside one. Check one or several: each becomes a chip in the f
 | ↓ ↑ | moves through the folders |
 | → ← | shows or hides the folders inside one (on a folder inside, ← goes back to it) |
 | Space | checks or unchecks the folder (one inside a checked folder is searched already) |
-| ↩, Esc, Tab | done: back to the search field |
+| ↩, Esc, Tab | done: back to the search field (↩ on "Add a folder…" adds one: below) |
 
 You can also type the folder at the start of the query: *"in:Documents invoice"*, *"in:~/Pictures/2026 beach"*,
 *"in:\"Big Folder\" notes"*. A chosen folder's name works, and so does the name of a folder right inside one
@@ -156,6 +156,31 @@ You can also type the folder at the start of the query: *"in:Documents invoice"*
 last one with Backspace at the start of the search field or the filter. Like the filter, the chips are for one
 look: they're gone when the panel opens again. Your code folders are listed apart: they're searched by queries that
 start with `code:`.
+
+## Add a folder on the spot
+
+A folder DigUp doesn't search yet (a new project, a folder someone sent you, a copy from a USB stick) can be added
+while you search, and searched at once:
+
+- in the panel: Ctrl+O → **Add a folder…** at the bottom, then pick it in the folder dialog;
+- in Files: right-click the folder (or the empty space inside it) → Scripts → **DigUp: Add this folder**
+  ([Files scripts](../integrations/desktop/README.md));
+- from a terminal or a script: `digup-shell --add-folder ~/Downloads/from-anna` (DigUp starts if it isn't running).
+
+A small window shows what's in it: its folders with their pictures, PDFs, documents and recordings, and about how
+long the first pass takes. Uncheck what to leave out (→ shows the folders inside one, Space checks, ↩ adds, Esc
+cancels); `build`, `dist`, `target` and caches start unchecked. **Add and Index** saves it among your folders, for
+good (Settings → Folders takes it out again), and indexes its files before anything else waiting. The panel opens
+searching in it and says how far it is ("Indexing Sent: 40 of 300"); type, and you get what's read so far (the
+footer says "indexing 40 of 300, results so far"). Until a file is read, it's found by its name.
+
+- **A git repo** goes into code search, not the documents: the panel opens with `code:` typed in, scoped to the repo
+  ("code: retry with backoff"). Tick "Also search it as documents" to have it in plain searches too (in a code
+  project that's its screenshots: its docs and notebooks are in code search already).
+- **A folder DigUp searches already** (or one inside it) needs no indexing: the panel just searches in it. If some
+  folders in it are skipped, the window lists them to take back in.
+- DigUp won't add the whole computer, your whole home folder (choose the folders in it you keep things in) or a
+  system folder (`/usr`, `/etc`, `/var`…). Drives under `/media`, `/mnt` and `/run/media` are fine.
 
 ## Filter by exact words
 

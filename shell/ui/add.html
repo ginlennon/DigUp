@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Add a Folder to DigUp</title>
+  <link rel="stylesheet" href="add.css">
+</head>
+<body>
+  <main>
+    <h2 id="title">Add a folder</h2>
+    <p class="where" id="where"></p>
+    <p class="subtitle" id="what"></p>
+    <div class="tree" id="tree" role="tree" aria-label="The folders in it"></div>
+    <label class="option" id="documents-option" hidden>
+      <input type="checkbox" id="documents">
+      <span>Also search it as documents<small>In a code project that's its screenshots: its docs and notebooks are in
+        code search already.</small></span>
+    </label>
+    <p class="note" id="note" hidden></p>
+  </main>
+  <footer>
+    <span class="total" id="total"></span>
+    <span class="buttons">
+      <button id="cancel">Cancel</button>
+      <button class="primary" id="start" disabled>Add</button>
+    </span>
+  </footer>
+  <script src="add.js"></script>
+</body>
+</html>

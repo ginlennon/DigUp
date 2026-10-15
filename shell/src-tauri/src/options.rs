@@ -1,6 +1,6 @@
 //! What the shell is told at launch: where the helper, the index and the model are, and, in dev runs, folders and a
-//! hotkey that stand in for the settings'; and what to do (`Command`: `--toggle`, `--pause`…), which a second launch
-//! hands to the running DigUp, so shortcuts, scripts and other apps can control it.
+//! hotkey that stand in for the settings'; and what to do (`Command`: `--toggle`, `--pause`, `--add-folder DIR`…),
+//! which a second launch hands to the running DigUp, so shortcuts, scripts and other apps can control it.
 
 use std::path::PathBuf;
 
@@ -81,6 +81,10 @@ impl Options {
                 "--debug-quit" => options.debug_quit = true,
                 "--debug-show" => options.debug_show = true,
                 "--background" => options.background = true,
+                "--add-folder" => {
+                    let folder = PathBuf::from(value()?);
+                    options.command = Some(Command::AddFolder(std::path::absolute(&folder).unwrap_or(folder)));
+                }
                 _ => match Command::of(&arg) {
                     Some(command) => options.command = Some(command),
                     None => return Err(format!("unknown argument {arg}")),
@@ -97,7 +101,7 @@ impl Options {
 
 /// What a launch asks of DigUp: `digup-shell --toggle` and so on. A launch while DigUp runs hands its arguments to the
 /// running one (single instance), which does it; the GNOME shortcut runs `--toggle`, so the same keys close the panel.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     /// The panel: shown when it's hidden, hidden when it's shown.
     Toggle,
@@ -111,6 +115,9 @@ pub enum Command {
     Quit,
     /// Index Now: a sync (unless indexing is paused).
     IndexNow,
+    /// `--add-folder DIR`: the window that adds a folder on the spot, for this one (adding.rs). A relative path is
+    /// relative to where the launch was started.
+    AddFolder(PathBuf),
 }
 
 impl Command {
@@ -129,15 +136,22 @@ impl Command {
     }
 
     /// The command in a launch's arguments (the last, if there are several), as the running DigUp gets them: the
-    /// program first, then everything it was started with (a dev launcher's --helper and such too).
-    pub fn in_args(args: &[String]) -> Option<Command> {
-        args.iter().skip(1).rev().find_map(|arg| Command::of(arg))
+    /// program first, then everything it was started with (a dev launcher's --helper and such too). `--add-folder`'s
+    /// folder is taken relative to `cwd`, where that launch was started.
+    pub fn in_args(args: &[String], cwd: &str) -> Option<Command> {
+        let args: Vec<&String> = args.iter().skip(1).collect();
+        args.iter().enumerate().rev().find_map(|(at, arg)| match arg.as_str() {
+            "--add-folder" => args.get(at + 1).map(|folder| Command::AddFolder(std::path::Path::new(cwd).join(folder))),
+            // The folder after --add-folder isn't a command, whatever it's called.
+            _ if at > 0 && args[at - 1] == "--add-folder" => None,
+            _ => Command::of(arg),
+        })
     }
 
     /// Worth starting DigUp for when it isn't running. Quitting, hiding, pausing or resuming one that isn't there
     /// isn't: the launch says so and ends (a pause or resume is kept in the settings for its next start).
     pub fn starts_app(&self) -> bool {
-        matches!(self, Command::Toggle | Command::Show | Command::Settings | Command::IndexNow)
+        matches!(self, Command::Toggle | Command::Show | Command::Settings | Command::IndexNow | Command::AddFolder(_))
     }
 }
 
@@ -207,15 +221,29 @@ mod tests {
 
     #[test]
     fn commands_from_a_second_launch() {
-        assert_eq!(Command::in_args(&args(&["digup-shell", "--toggle"])), Some(Command::Toggle));
+        let in_args = |list: &[&str]| Command::in_args(&args(list), "/home/me");
+        assert_eq!(in_args(&["digup-shell", "--toggle"]), Some(Command::Toggle));
         // The dev launcher passes its own arguments first.
-        assert_eq!(Command::in_args(&args(&["digup-shell", "--helper", "/x/digup", "--hotkey", "Control+Alt+Space",
-                                            "--index-now"])), Some(Command::IndexNow));
-        assert_eq!(Command::in_args(&args(&["digup-shell", "--pause", "--resume"])), Some(Command::Resume), "the last");
-        assert_eq!(Command::in_args(&args(&["digup-shell"])), None);
-        assert_eq!(Command::in_args(&args(&["digup-shell", "--background"])), None);
-        assert_eq!(Command::in_args(&args(&["--quit"])), None, "the program's own name isn't an argument");
+        assert_eq!(in_args(&["digup-shell", "--helper", "/x/digup", "--hotkey", "Control+Alt+Space", "--index-now"]),
+                   Some(Command::IndexNow));
+        assert_eq!(in_args(&["digup-shell", "--pause", "--resume"]), Some(Command::Resume), "the last");
+        assert_eq!(in_args(&["digup-shell"]), None);
+        assert_eq!(in_args(&["digup-shell", "--background"]), None);
+        assert_eq!(in_args(&["--quit"]), None, "the program's own name isn't an argument");
         assert!(Command::Settings.starts_app() && Command::Toggle.starts_app() && Command::IndexNow.starts_app());
         assert!(!Command::Quit.starts_app() && !Command::Pause.starts_app() && !Command::Hide.starts_app());
+    }
+
+    #[test]
+    fn a_folder_to_add() {
+        let in_args = |list: &[&str]| Command::in_args(&args(list), "/home/me");
+        assert_eq!(in_args(&["digup-shell", "--add-folder", "/data/photos"]),
+                   Some(Command::AddFolder("/data/photos".into())));
+        assert_eq!(in_args(&["digup-shell", "--add-folder", "git/app"]), Some(Command::AddFolder("/home/me/git/app".into())),
+                   "relative to where it was started");
+        assert_eq!(in_args(&["digup-shell", "--add-folder", "--quit"]), Some(Command::AddFolder("/home/me/--quit".into())),
+                   "a folder with a command's name is a folder");
+        assert_eq!(in_args(&["digup-shell", "--add-folder"]), None, "no folder: nothing to do");
+        assert!(Command::AddFolder("/x".into()).starts_app());
     }
 }

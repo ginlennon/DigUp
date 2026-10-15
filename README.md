@@ -137,7 +137,8 @@ languages, code and scripts.
   is a GNOME custom shortcut that runs the shell again with `--toggle`; the running one shows its panel, or hides it.
   On other desktops, bind `scripts/linux/dev-run-shell.sh --toggle` to a key in their keyboard settings. The same
   way, `--show`, `--hide`, `--pause`, `--resume`, `--index-now`, `--settings` and `--quit` control a running DigUp
-  from scripts (without one running, `--quit`/`--hide` just say so, and `--pause`/`--resume` apply at its next start).
+  from scripts (without one running, `--quit`/`--hide` just say so, and `--pause`/`--resume` apply at its next start);
+  `--add-folder DIR` opens its window for adding that folder on the spot.
 - **The tray** needs an AppIndicator host. Ubuntu's GNOME has one built in; plain GNOME needs the AppIndicator
   extension.
 - **OCR** is tesseract, not Apple's Vision: fine on clean screenshots, weaker on blurry text, and only in the

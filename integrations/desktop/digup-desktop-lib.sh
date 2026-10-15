@@ -1,13 +1,16 @@
 # shellcheck shell=bash
-# Shared by DigUp's GNOME Files (Nautilus) scripts: finding the helper, running it, the results list, opening a
-# result at its page or moment. Sourced, not run.
+# Shared by DigUp's GNOME Files (Nautilus) scripts: finding the helper (and the app), running it, the results list,
+# opening a result at its page or moment. Sourced, not run.
 #
 # Environment:
 #   DIGUP_HELPER                  the digup helper to run (else ~/.local/opt/digup/helper/digup, digup on PATH,
 #                                 this checkout's .build/release/digup, the helper named in digup-desktop.conf)
 #   DIGUP_INDEX                   index folder, passed on as --index (default: digup's own, the user's index)
+#   DIGUP_APP                     the DigUp app (digup-shell) "Add this folder" hands the folder to (else
+#                                 ~/.local/opt/digup/digup-shell, digup-shell on PATH, this checkout's dev launcher,
+#                                 the app named in digup-desktop.conf)
 #   DIGUP_SCRIPT_NONINTERACTIVE=1 no dialogs: print the rows (tab-separated) and the command that would open the
-#                                 first one, and errors on stderr (for tests and terminals)
+#                                 first one (or add the folder), and errors on stderr (for tests and terminals)
 #   DIGUP_SCRIPT_QUERY            the search words when there is no dialog to ask for them
 
 DIGUP_DESKTOP_DIR=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
@@ -86,6 +89,37 @@ digup_find_helper() {
         return
     fi
     digup_fail "DigUp's helper (digup) wasn't found. Install DigUp, put digup on your PATH, or set DIGUP_HELPER."
+}
+
+# Sets DIGUP_APP_BIN to the DigUp app to hand a folder to (digup-shell; a running one takes it over), or fails.
+# shellcheck disable=SC2034  # read by the script that sources this
+digup_find_app() {
+    local candidate repo
+    if [[ -n "${DIGUP_APP:-}" ]]; then
+        [[ -x "$DIGUP_APP" ]] || digup_fail "DIGUP_APP is set to $DIGUP_APP, which isn't a program."
+        DIGUP_APP_BIN=$DIGUP_APP
+        return
+    fi
+    candidate="$HOME/.local/opt/digup/digup-shell"
+    if [[ -x "$candidate" ]]; then
+        DIGUP_APP_BIN=$candidate
+        return
+    fi
+    if candidate=$(command -v digup-shell 2>/dev/null) && [[ -x "$candidate" ]]; then
+        DIGUP_APP_BIN=$candidate
+        return
+    fi
+    # A developer build in the checkout these scripts live in, through its launcher (it finds the helper).
+    repo=$(cd -- "$DIGUP_DESKTOP_DIR/../.." 2>/dev/null && pwd)
+    if [[ -n "$repo" && -x "$repo/shell/src-tauri/target/debug/digup-shell" && -x "$repo/scripts/linux/dev-run-shell.sh" ]]; then
+        DIGUP_APP_BIN="$repo/scripts/linux/dev-run-shell.sh"
+        return
+    fi
+    if candidate=$(digup_config app) && [[ -x "$candidate" ]]; then
+        DIGUP_APP_BIN=$candidate
+        return
+    fi
+    digup_fail "DigUp's app (digup-shell) wasn't found. Install DigUp, put digup-shell on your PATH, or set DIGUP_APP."
 }
 
 # The selected files, one per line in NAUTILUS_SCRIPT_SELECTED_FILE_PATHS, else the script's arguments

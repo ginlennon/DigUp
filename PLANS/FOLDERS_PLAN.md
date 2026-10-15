@@ -1,6 +1,6 @@
 # Folders: choose where to search, add a folder on the spot (plan, 2026-10-15)
 
-**S1 done (2026-10-15, notes under it); S2–S5 PLAN ONLY — not implemented.**
+**S1 and S2 done (2026-10-15, notes under them); S3–S5 PLAN ONLY — not implemented.**
 
 ---
 
@@ -96,6 +96,34 @@ llama.cpp server, OpenRouter, others. Key from an env var, never stored by DigUp
   else.
 ### S2 — Add a folder: shell `--add-folder DIR`, subtree dialog with counts, priority indexing, code-index for repos,
 Files script "DigUp: Add this folder", CLI path; Settings shows it like any folder.
+**Done.** Notes and deviations:
+- Entry points: the popover's "Add a folder…" (the desktop's folder dialog, as setup's), `digup-shell --add-folder
+  DIR` (handed to the running DigUp like `--toggle`; a relative DIR is taken from where it was run; DigUp starts if
+  it isn't running), and the Files script, installed by `integrations/desktop/install.sh` like the other two. The
+  CLI path is `digup-shell --add-folder`; no new `digup` subcommand (the helper doesn't own the settings).
+- The subtree dialog is a small window of its own (add.html), not a view in the panel: the panel steps away when the
+  folder dialog takes the keyboard, and the Files and CLI entries have no panel open. Keys: ↑ ↓, → ← open and close,
+  Space, ↩ adds, Esc cancels.
+- The tree is `digup estimate`'s, one level at a time (→ counts the next level then): only folders with something
+  DigUp reads are listed, so hidden folders, `node_modules`, `venv` and `__pycache__` never show (the crawler skips
+  them anyway). `build`, `dist`, `target`, caches, `.tox` and `.gradle` start unchecked. Times are the first pass's,
+  from the costs indexing measured here.
+- Priority: `index-service --first DIR`. After its first sync every file waiting in DIR, in either index, goes
+  before anything else, past the 50-new-files limit and whatever the power source; once per helper. The shell gives
+  it only to the helper it starts for the add (`Launch.once`: not compared, so it doesn't restart a running helper,
+  and the next launch goes without). Checked on a private index: 6 files of the folder added came first, ahead of a
+  102-file backfill (without it they came at 49–65); a repo's 12 code files came before the main index's backfill.
+- A repo (`.git`) goes into `codeFolders` (its unchecked subfolders into `codeSkipped`); "also as documents" adds it
+  to `folders` too, which in a code project reads only its screenshots, and the window says so.
+- A folder searched already (as documents, or in a code folder) only becomes the scope; the skipped folders in it are
+  listed to take back in (out of `skipped`). A folder that is itself skipped is taken in by dropping the skip; one
+  deeper inside a skipped folder becomes a folder of its own (FolderSelection's rule).
+- Guards: not `/`, the home folder or a folder holding it, nor a system folder (`/usr`, `/etc`, `/var`, `/opt`,
+  `/run` but `/run/media`…); a dev run started with `--roots` refuses too (its folders aren't the settings'). The
+  counts and the time show before anything starts.
+- After adding, the panel opens with the folder's chip alone and says how far its indexing is until something is
+  typed ("Indexing Sent: 40 of 300"); with a query the footer adds "indexing 40 of 300, results so far". A repo opens
+  with `code:` typed in. With indexing paused it's added and waits for Resume (the window says so).
 ### S3 — Tools: `--scope` on MCP and HTTP; `add_folder` behind `--allow-add-folders` via the shell, notification + Undo.
 ### S4 — Docs: user guide cases (choose folders, add a repo, a coding app pinned to a repo), integrations README.
 ### S5 — `digup-ask` with an OpenAI-compatible backend.

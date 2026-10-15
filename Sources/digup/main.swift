@@ -44,8 +44,10 @@ let usage = """
                                               files' SHA-256 and the index
       digup index-service <folder>... [--code-root DIR]... [--code-exclude DIR]... [--backfill] [--prune]
                           [--memory-limit MB] [--time-limit S] [--transcripts gpu|cpu|off] [--transcribe-music]
+                          [--first DIR]
                                               the app's indexing helper (JSON lines; see IndexService); it stops
-                                              on a file whose reading passes the limits (see Watchdog)
+                                              on a file whose reading passes the limits (see Watchdog); --first:
+                                              the files waiting in DIR (a folder just added) go first, once
       digup worker [--text-only]              the model as a process (JSON lines; the app's query encoder)
       digup search-service <folder>... [--code-root DIR]... [--encoder-idle S]
                                               the searcher as a process, index open and encoder warm (JSON lines;
@@ -98,7 +100,7 @@ struct Arguments {
     var flags: Set<String> = []
     static let valued: Set<String> = ["--index", "--limit", "--kind", "-n", "--zgate", "--word-weight", "--new-limit",
                                       "--filter", "--linger", "--shot-tokens", "--code-stretch", "--encoder-idle", "--to",
-                                      "--memory-limit", "--time-limit", "--transcripts"]
+                                      "--memory-limit", "--time-limit", "--transcripts", "--first"]
     static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude", "--in"]
 
     /// `command`: `download-model` takes `--transcripts` as a flag (the transcript files), the others with a mode.
@@ -589,6 +591,7 @@ func indexService(_ args: Arguments) throws -> Int32 {
                                folder: args.indexFolder,
                                model: model,
                                modelReady: { embedderSource() == nil || LlamaModels.complete },
+                               first: args.values["--first"].map(Arguments.folderURL),
                                backfill: args.flags.contains("--backfill"),
                                newFilesLimit: args.values["--new-limit"].flatMap(Int.init) ?? 50,
                                linger: args.values["--linger"].flatMap(Double.init) ?? 60)

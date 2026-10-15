@@ -11,7 +11,9 @@
 // At the start of the filter's row are the folders searched in (PLANS/FOLDERS_PLAN.md): the folder button (Ctrl+O)
 // opens a popover with the folders DigUp searches, two levels deep, and each folder checked there becomes a chip
 // ("in Documents"); the search covers all of them together. `in:Documents` typed at the start of the query makes the
-// same chip. Like the filter, the chips are for one look: they're gone when the panel opens again.
+// same chip. Like the filter, the chips are for one look: they're gone when the panel opens again. The popover's
+// "Add a folder…" adds one on the spot (the shell's add window, adding.rs); once it's added the panel opens searching
+// in it, saying how far its indexing is.
 //
 // The panel has no frame: it's dragged by what isn't for typing or clicking (the grip strip at its top, its icons,
 // the room around the fields, the footer) and resized by its edges (Tauri's border, before the page hears of the
@@ -75,6 +77,7 @@ const state = {
   scopes: [],            // the folders searched in ({path, name, ambiguous}), together; none: all of them
   scopeProblem: null,    // what the panel says when in: names no chosen folder
   picker: null,          // the folder popover while it's open: {folders: {folders, code}, expanded, cursor}
+  added: null,           // a folder just added and searched in: {path, name, indexing, code, done}
   like: null,            // the file whose similar files are showing ({path, name}), or null
   before: "",            // what the field had before them
   codeFolders: 0,        // how many code folders there are (none: code: says where to add them)
@@ -245,8 +248,9 @@ function searchAgain() {
 // MARK: The folder popover
 
 /// The folder button or Ctrl+O: the folders DigUp searches, each with the folders right inside it (the shell lists
-/// them: panel_folders), and the code folders apart (code: searches them). The arrows move, → and ← open and close a
-/// folder, Space checks one, Enter or Esc is done. While it's open the panel is its results' height, to have room.
+/// them: panel_folders), the code folders apart (code: searches them), and "Add a folder…". The arrows move, → and ←
+/// open and close a folder, Space checks one, Enter or Esc is done (Enter on "Add a folder…" picks one). While it's
+/// open the panel is its results' height, to have room.
 async function openPicker() {
   let folders = { folders: [], code: [] };
   try {
@@ -272,7 +276,7 @@ function closePicker(focusQuery = true) {
 }
 
 /// The popover's rows as they show: each folder and, when it's open, the folders inside it; the code folders under
-/// their own title.
+/// their own title; "Add a folder…" last.
 function pickerRows() {
   const rows = [];
   const add = (folders, code) => {
@@ -287,6 +291,7 @@ function pickerRows() {
     rows.push({ title: "Code · searched with code:" });
     add(state.picker.folders.code, true);
   }
+  rows.push({ add: true });
   return rows;
 }
 
@@ -303,12 +308,20 @@ function renderPicker() {
   picker.cursor = Math.max(0, Math.min(picker.cursor, rows.length - 1));
   if (rows[picker.cursor]?.title) picker.cursor += 1;
   $picker.replaceChildren();
-  if (!rows.length) {
-    $picker.append(element("div", "picker-empty", "No folders chosen yet: add them in Settings → Folders."));
-  }
+  if (rows.length === 1) $picker.append(element("div", "picker-empty", "No folders chosen yet."));
   rows.forEach((row, index) => {
     if (row.title) {
       $picker.append(element("div", "picker-title", row.title));
+      return;
+    }
+    if (row.add) {
+      const node = element("div", "picker-row add" + (index === picker.cursor ? " cursor" : ""));
+      node.setAttribute("role", "treeitem");
+      node.append(element("span", "plus", "+"), element("span", "name", "Add a folder…"));
+      node.title = "Index another folder now and search in it";
+      node.onclick = pickToAdd;
+      if (rows.length > 1) $picker.append(element("div", "picker-line"));
+      $picker.append(node);
       return;
     }
     const mark = markOf(row.folder.path);
@@ -377,7 +390,7 @@ function pickerKey(event) {
       break;
     case "ArrowRight":
       // Opens a folder; on an open one, to the first folder inside it.
-      if (row && !row.inside && row.folder.subfolders.length) {
+      if (row?.folder && !row.inside && row.folder.subfolders.length) {
         if (!picker.expanded.has(row.key)) picker.expanded.add(row.key);
         else picker.cursor += 1;
       }
@@ -386,12 +399,19 @@ function pickerKey(event) {
       // Closes a folder; inside one, back to it.
       if (row?.inside) {
         while (picker.cursor > 0 && rows[picker.cursor].inside) picker.cursor -= 1;
-      } else if (row) picker.expanded.delete(row.key);
+      } else if (row?.folder) picker.expanded.delete(row.key);
       break;
     case " ":
-      if (row) toggleChecked(row);
+      if (row?.add) pickToAdd();
+      else if (row) toggleChecked(row);
       break;
     case "Enter":
+      if (row?.add) {
+        event.preventDefault();
+        pickToAdd();
+        return true;
+      }
+    // falls through: Enter on a folder is done
     case "Escape":
     case "Tab":
       event.preventDefault();
@@ -403,6 +423,39 @@ function pickerKey(event) {
   event.preventDefault();
   renderPicker();
   return true;
+}
+
+/// "Add a folder…": the desktop's folder dialog, then the shell's add window for it (the panel steps away meanwhile).
+function pickToAdd() {
+  closePicker(false);
+  invoke("pick_folder_to_add").catch(failed);
+}
+
+/// A folder was just added (or it was searched already): the panel searches in it alone, and says how far its
+/// indexing is until something is typed. A repo's search starts with code:.
+function searchAdded(folder) {
+  state.scopes = [{ path: folder.path, name: folder.name, ambiguous: false }];
+  state.added = { ...folder, done: false };
+  if (state.like) leaveLike(false);
+  renderChips();
+  $query.value = folder.code ? "code: " : "";
+  $query.focus();
+  $query.setSelectionRange($query.value.length, $query.value.length);
+  queryChanged();
+}
+
+/// The message for a folder just added while nothing is searched in it yet.
+function addedMessage() {
+  const { name, indexing, code, done } = state.added;
+  const how = code ? "Describe the code you're after" : "Type what you're looking for";
+  if (!indexing) return message(`Searching in ${name}`, `It's in a folder DigUp searches already. ${how}.`);
+  if (done) return message(`${name} is indexed`, `${how}. It stays among your folders; Settings takes it out.`);
+  if (state.indexing) {
+    const { done: read, total } = state.indexing;
+    return message(`Indexing ${name}: ${read} of ${total}`, `${how}. Results come in as its files are read.`);
+  }
+  return message(`Getting ${name} ready…`, `DigUp is listing its files. ${how}. Until a file is read, it's found by `
+    + "its name.");
 }
 
 /// "/home/me/Documents" → "/home/me", for the popover's grey "where".
@@ -551,8 +604,14 @@ function revealSelected() {
 
 // MARK: Drawing
 
+/// The folder just added is the scope and nothing is searched in it yet: the panel says how its indexing goes.
+function addedShown() {
+  return !!state.added && (state.phase === "empty" || state.phase === "codeHint") && !state.filter
+    && state.scopes.length === 1 && state.scopes[0].path === state.added.path;
+}
+
 function render() {
-  const empty = state.phase === "empty" && !helpShown() && !state.picker;
+  const empty = state.phase === "empty" && !helpShown() && !state.picker && !addedShown();
   // The shell gives the panel the person's height with results, and its fields' without.
   if (empty !== state.fieldsOnly) {
     state.fieldsOnly = empty;
@@ -643,7 +702,9 @@ function renderPreview() {
     const inside = insideText();
     const filterTip = "Its words match whole: Rechnung* finds Rechnungen too, *kaution* finds Mietkautionskonto. "
       + "The ? beside it shows how it's written.";
-    if (state.picker && state.phase === "empty") {
+    if (addedShown()) {
+      $preview.append(addedMessage());
+    } else if (state.picker && state.phase === "empty") {
       $preview.append(message("Choose where to search", "Check the folders to search in: the search covers all of "
         + "them. Space checks one, → shows the folders inside it, Enter is done."));
     } else if (state.isCode && !state.codeFolders) {
@@ -811,7 +872,10 @@ function renderFooter() {
   else if (state.phase === "similarWaiting") summary = "Looking for similar files…";
   else summary = `${strong} ${strong === 1 ? "result" : "results"}` + (weaker ? ` · ${weaker} weaker` : "");
   // Results while indexing are partial: say so where they're counted.
-  if (state.indexing && !state.error) summary += ` · still indexing (${state.indexing.done} of ${state.indexing.total})`;
+  if (state.indexing && !state.error) {
+    summary += ` · indexing ${state.indexing.done} of ${state.indexing.total}, results so far`;
+  }
+  if (addedShown()) summary = state.added.indexing ? `${state.added.name} added` : `Searching in ${state.added.name}`;
   // The popover's own line while it's open: where the search looks, and its keys.
   if (state.picker && !state.error) {
     const count = state.scopes.length;
@@ -1203,6 +1267,7 @@ tauri.event.listen("panel-shown", () => {
   const helped = state.help, scoped = state.scopes.length > 0;
   state.help = false;
   state.scopes = [];
+  state.added = null;
   if (state.picker) closePicker(false);
   renderChips();
   $query.focus();
@@ -1233,12 +1298,17 @@ tauri.event.listen("helper", ({ payload }) => {
     } else if (event.event === "idle" || event.event === "exit") {
       state.indexing = null;
       $activity.hidden = true;
+      if (state.added && event.event === "idle") state.added.done = true;
     }
-    if (state.phase !== "empty") renderFooter();
+    if (addedShown()) render();
+    else if (state.phase !== "empty") renderFooter();
   }
 });
 
 tauri.path.homeDir().then((home) => { state.home = home.replace(/[\\/]$/, ""); }).catch(() => {});
+
+// A folder added on the spot (the shell's add window): {path, name, indexing, code}.
+tauri.event.listen("scope-to", ({ payload }) => searchAdded(payload));
 
 // Debug runs (--debug-query, --debug-filter): type the query and the filter in, and once the meaning results and their
 // pictures are in, report what the panel shows.

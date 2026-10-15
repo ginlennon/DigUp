@@ -25,6 +25,10 @@ import WinSDK
 /// once, and to a new sync once indexing has had about as long as the last sync took (`yieldAt`). When it's done it
 /// keeps a warm worker for `linger` seconds (screenshots come in bursts), then exits.
 ///
+/// `--first DIR`: a folder just added (the panel's "Add a folder…") goes first, once: after the first sync every file
+/// waiting in it is indexed before anything else, however many there are and whatever the power source, in either
+/// index ("first" event: how many). Then the usual order. A helper started later without it has no such folder.
+///
 /// Before the model has downloaded it only syncs (file names are searchable at once), says it's "waiting", and exits.
 /// Folders that aren't there (an unplugged drive) or can't be read are skipped, and what was indexed from them stays.
 /// That's checked before every sync, not once: a drive ejected while this runs must not crawl as "all deleted".
@@ -49,6 +53,8 @@ final class IndexService: @unchecked Sendable {
     /// The last report of folders that aren't there or can't be read, by index (said again only when it changes).
     private var unavailable: [Bool: (missing: [String], unreadable: [String])] = [:]
     private let modelReady: () -> Bool
+    /// `--first`: the folder whose files go first, once.
+    private let first: URL?
     private let newFilesLimit: Int
     private let linger: Double
 
@@ -64,12 +70,13 @@ final class IndexService: @unchecked Sendable {
     private let wake = DispatchSemaphore(value: 0)
 
     init(main: Part, code: Part?, folder: URL, model: SharedEmbedder, modelReady: @escaping () -> Bool,
-         backfill: Bool, newFilesLimit: Int, linger: Double) {
+         first: URL? = nil, backfill: Bool, newFilesLimit: Int, linger: Double) {
         self.main = main
         self.code = code
         self.folder = folder
         self.model = model
         self.modelReady = modelReady
+        self.first = first
         self.backfillAllowed = backfill
         self.newFilesLimit = newFilesLimit
         self.linger = linger
@@ -112,6 +119,7 @@ final class IndexService: @unchecked Sendable {
         Thread.detachNewThread { [self] in readCommands() }
         var newFiles = Set<Int64>(), newCode = Set<Int64>()
         var codeCounted = code == nil
+        var firstCode = Set<Int64>(), firstTaken = first == nil
         while true {
             if lock.withLock({ () -> Bool in defer { syncRequested = false }; return syncRequested }) {
                 sync(main, into: &newFiles)
@@ -124,6 +132,14 @@ final class IndexService: @unchecked Sendable {
                     sync(code, into: &newCode)
                 }
             }
+            // The folder just added (`--first`): all its files waiting, once both indexes have synced.
+            if !firstTaken, let first {
+                firstTaken = true
+                let files = waiting(main, under: first)
+                newFiles.formUnion(files)
+                if let code { firstCode = waiting(code, under: first) }
+                emit(["event": "first", "folder": first.path, "files": files.count, "code_files": firstCode.count])
+            }
             if lock.withLock({ stopRequested }) { break }
             guard modelReady() else {
                 // Nothing to embed with yet; the app starts another helper once the download is done.
@@ -133,6 +149,16 @@ final class IndexService: @unchecked Sendable {
             if !newFiles.isEmpty {
                 guard run(main, only: newFiles) else { break }
                 newFiles = left(main, of: newFiles)
+                continue
+            }
+            // Its code (a repo added) right after, before the main index's backfill. A code sync asked for meanwhile
+            // comes first, or the run would yield to it at once, round after round.
+            if let code, !firstCode.isEmpty {
+                if lock.withLock({ () -> Bool in defer { codeSyncRequested = false }; return codeSyncRequested }) {
+                    sync(code, into: &newCode)
+                }
+                guard run(code, only: firstCode) else { break }
+                firstCode = left(code, of: firstCode)
                 continue
             }
             if (try? main.store.pendingCount()) ?? 0 > 0, lock.withLock({ backfillAllowed }) {
@@ -186,6 +212,13 @@ final class IndexService: @unchecked Sendable {
     private func left(_ part: Part, of files: Set<Int64>) -> Set<Int64> {
         let yielded = lock.withLock { syncRequested || stopRequested || (part.code && codeSyncRequested) }
         return yielded ? Set((try? part.store.pending(limit: nil, only: files).map(\.id)) ?? []) : []
+    }
+
+    /// The files waiting in a part that are inside `folder` (as given, or by its real path, as the crawl has them).
+    private func waiting(_ part: Part, under folder: URL) -> Set<Int64> {
+        let prefixes = Set([folder.path, FolderSelection.realPath(folder.path)]).map { $0.hasSuffix("/") ? $0 : $0 + "/" }
+        let files = (try? part.store.pending(limit: nil)) ?? []
+        return Set(files.filter { file in prefixes.contains { file.path.hasPrefix($0) } }.map(\.id))
     }
 
     /// Scratch folders ($TMPDIR/DigUp-<pid>) of indexing processes that are gone (killed mid-batch).

@@ -1,12 +1,16 @@
 # DigUp in GNOME Files (right-click scripts)
 
-Two entries for the right-click menu of GNOME Files (Nautilus, tested with Files 46), under **Scripts**:
+Three entries for the right-click menu of GNOME Files (Nautilus, tested with Files 46), under **Scripts**:
 
 - **DigUp: Find similar**: on a file, the files most like it by meaning (`digup similar <file> -n 15`). Works on
   anything DigUp reads: a photo finds photos and video frames of the same thing, a PDF finds related documents.
   A file that isn't indexed yet is read on the spot (a moment longer).
 - **DigUp: Search in this folder**: on a folder, or on the empty space inside one, asks what to look for and
   searches that folder and its subfolders by meaning and words (`digup search "<words>" --in <folder> -n 20`).
+- **DigUp: Add this folder**: on a folder, or on the empty space inside one, hands it to the DigUp app
+  (`digup-shell --add-folder <folder>`; DigUp starts if it isn't running). Its window shows what's in the folder and
+  lets you leave subfolders out; then the folder is indexed first and the search panel searches in it. A git repo
+  goes into code search. See the [user guide](../../docs/USER_GUIDE_LINUX.md#add-a-folder-on-the-spot).
 
 The results come up in a list: kind, where (the page of a PDF, `p. 3`, or the moment in a recording, `1:05`),
 name and folder, best first. Double-click one (or select it and press OK) to open it:
@@ -33,7 +37,11 @@ nautilus -q                                 # Files picks up new scripts when it
 Then right-click a file or folder in Files → **Scripts** → **DigUp: …**. The installer doesn't overwrite a script
 of the same name that isn't DigUp's (unless `--force`).
 
-The scripts look for the helper in this order: `$DIGUP_HELPER`; `~/.local/opt/digup/helper/digup` (an installed
+"Add this folder" looks for the app (`digup-shell`) in this order: `$DIGUP_APP`; `~/.local/opt/digup/digup-shell`
+(an installed DigUp); `digup-shell` on your `PATH`; the dev launcher `scripts/linux/dev-run-shell.sh` of the checkout
+the scripts are in, once the shell is built there; and for a `--copy` install, the app the installer found.
+
+The other scripts look for the helper in this order: `$DIGUP_HELPER`; `~/.local/opt/digup/helper/digup` (an installed
 DigUp); `digup` on your `PATH`; the developer build `.build/release/digup` of the checkout the scripts are in (with
 `DIGUP_BACKENDS` set to its `Vendor/llama/lib`); and for a `--copy` install, the helper the installer found, written
 to `digup-desktop.conf` beside the copy (`~/.local/share/digup/desktop-integration`).
@@ -48,6 +56,7 @@ to `digup-desktop.conf` beside the copy (`~/.local/share/digup/desktop-integrati
 ```sh
 DIGUP_SCRIPT_NONINTERACTIVE=1 integrations/desktop/digup-find-similar ~/Pictures/beach.jpg
 DIGUP_SCRIPT_NONINTERACTIVE=1 DIGUP_SCRIPT_QUERY="lease pets clause" integrations/desktop/digup-search-folder ~/Documents
+DIGUP_SCRIPT_NONINTERACTIVE=1 integrations/desktop/digup-add-folder ~/Downloads/from-anna   # prints the command
 ```
 
 Files hands a script the selected files in `NAUTILUS_SCRIPT_SELECTED_FILE_PATHS` and the folder it shows in
@@ -58,4 +67,5 @@ first selected file.
 
 Everything happens on your computer. The scripts run your local `digup` helper, which only reads the index on your
 disk (`~/.local/share/digup/index` unless you chose another) and the model files; nothing is sent anywhere, and the
-scripts don't change the index or your files.
+scripts don't change your files. Only "Add this folder" changes what DigUp indexes, and only once you confirm it in
+DigUp's window.

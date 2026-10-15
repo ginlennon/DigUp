@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# GNOME Files script "DigUp: Add this folder": adds the selected folder (or the one Files is showing) to DigUp on the
+# spot. The running DigUp (started if it isn't) opens its add window for it (`digup-shell --add-folder`): what's in
+# it, which subfolders to leave out, a git repo going into code search. Once added it's indexed first and the search
+# panel searches in it. See README.md.
+set -uo pipefail
+
+# shellcheck source=digup-desktop-lib.sh
+source "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/digup-desktop-lib.sh"
+
+folder=
+digup_selection "$@"
+for item in "${DIGUP_SELECTED[@]}"; do
+    if [[ -d "$item" ]]; then
+        folder=$item
+        break
+    fi
+done
+if [[ -z "$folder" ]]; then
+    folder=$(digup_current_folder) || digup_fail "DigUp adds folders on this computer only."
+fi
+[[ -d "$folder" ]] || digup_fail "There's no folder at $folder."
+folder=${folder%/}
+folder=${folder:-/}
+
+digup_find_app
+if ! digup_interactive; then
+    printf '# adds the folder with:'
+    printf ' %q' "$DIGUP_APP_BIN" --add-folder "$folder"
+    printf '\n'
+    exit 0
+fi
+# The running DigUp takes it over (one instance), so this returns at once; a DigUp that wasn't running keeps going.
+if command -v setsid >/dev/null 2>&1; then
+    setsid -f "$DIGUP_APP_BIN" --add-folder "$folder" >/dev/null 2>&1 </dev/null
+else
+    nohup "$DIGUP_APP_BIN" --add-folder "$folder" >/dev/null 2>&1 </dev/null &
+fi

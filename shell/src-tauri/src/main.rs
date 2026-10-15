@@ -15,6 +15,7 @@ macro_rules! log_error {
     ($($arg:tt)*) => { eprintln!("{} {}", $crate::time_of_day(), format_args!($($arg)*)) };
 }
 
+mod adding;
 mod control;
 mod desktop;
 mod editors;
@@ -95,6 +96,11 @@ struct Shell {
     panel_saves: AtomicU64,
     /// GTK speaks Wayland: the panel can't place itself (panel.rs).
     wayland: bool,
+    /// The folder the add window is for (adding.rs).
+    adding: Mutex<Option<PathBuf>>,
+    /// A folder just added, whose files go first: told to the next index helper that starts (`--first`), then
+    /// forgotten.
+    first: Mutex<Option<String>>,
 }
 
 impl Shell {
@@ -157,6 +163,7 @@ impl Shell {
         Launch {
             program: self.options.helper.clone(),
             args,
+            once: Vec::new(),
             env: helper_env(&self.options, !self.gpu_in_use()),
             log: Some(self.logs.join(log)),
             also_logs: Vec::new(),
@@ -192,7 +199,18 @@ impl Shell {
         args.extend(self.folders());
         let mut launch = self.launch(args, "index.log");
         launch.also_logs.extend(self.options.index_folder().map(|index| index.join("worker.log")));
+        // A folder just added goes first, for a helper that starts now (one running already isn't started over).
+        launch.once.extend(self.first.lock().unwrap().iter().flat_map(|folder| ["--first".to_string(), folder.clone()]));
         launch
+    }
+
+    /// A helper started (`IndexService::run`'s Ok(true)): it took the folder to index first, if there was one.
+    fn index_started(&self, started: bool) {
+        if started {
+            if let Some(folder) = self.first.lock().unwrap().take() {
+                log!("index: {folder} goes first");
+            }
+        }
     }
 
     /// whisper-cli is in this build, where the helper looks for it (transcripts.rs): without it Settings can't turn
@@ -249,6 +267,7 @@ fn search_launch(options: &Options, settings: &Settings, folders: Vec<String>, l
     Launch {
         program: options.helper.clone(),
         args,
+        once: Vec::new(),
         env: helper_env(options, cpu),
         log: Some(logs.join("search.log")),
         also_logs: Vec::new(),
@@ -286,13 +305,18 @@ async fn ask(shell: State<'_, Arc<Shell>>, request: Value) -> Result<Value, Stri
 }
 
 /// What indexing these folders would take, one answer per folder (`digup estimate --json`): files by kind, the first
-/// pass's seconds, the rest of long files, subfolders. For setup.
+/// pass's seconds, the rest of long files, subfolders. For setup and the add window (`code`: for the code index).
 #[tauri::command]
-async fn estimate(shell: State<'_, Arc<Shell>>, folders: Vec<String>) -> Result<Vec<Value>, String> {
+async fn estimate(shell: State<'_, Arc<Shell>>, folders: Vec<String>, code: Option<bool>) -> Result<Vec<Value>, String> {
     let helper = shell.options.helper.clone();
+    // This index's costs, measured by indexing here.
+    let index = shell.index_arguments();
     tauri::async_runtime::spawn_blocking(move || {
         let mut command = std::process::Command::new(&helper);
-        command.arg("estimate").args(&folders).arg("--json");
+        command.arg("estimate").args(&folders).arg("--json").args(index);
+        if code == Some(true) {
+            command.arg("--code");
+        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -655,6 +679,89 @@ fn resolve_folder(shell: State<'_, Arc<Shell>>, name: String) -> Result<scope::F
     scope::resolve(&name, &roots, home.as_deref(), scope::subfolders, Path::is_dir)
 }
 
+// MARK: Adding a folder
+
+/// The add window's folder as DigUp sees it (adding.rs), and whether indexing is paused (it would start on resume).
+#[tauri::command]
+fn add_folder_info(shell: State<'_, Arc<Shell>>) -> Result<Value, String> {
+    let folder = shell.adding.lock().unwrap().clone().ok_or("No folder to add")?;
+    Ok(json!({"look": look_at(&shell, &folder), "paused": shell.is_paused()}))
+}
+
+/// What DigUp makes of a folder to add, with the settings as they are now.
+fn look_at(shell: &Shell, folder: &Path) -> adding::Look {
+    // Its real path, as the settings and the index keep folders.
+    let folder = std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_path_buf());
+    let home = std::env::var_os("HOME").map(|home| std::fs::canonicalize(&home).unwrap_or_else(|_| PathBuf::from(home)));
+    let settings = shell.settings.lock().unwrap().clone();
+    let mut look = adding::look(&folder, &settings, home.as_deref(), Path::is_dir, Path::exists);
+    if !shell.options.roots.is_empty() && look.refused.is_none() {
+        look.kind = adding::Kind::Refused;
+        look.refused = Some("This DigUp searches the folders it was started with (--roots): add folders in a run \
+                             without them.".into());
+    }
+    look
+}
+
+/// The add window's Start: the folder goes into the settings as chosen (adding.rs), its files are indexed first when
+/// there's anything new, and the panel opens searching in it, saying how far indexing is. Off the main thread: an
+/// index helper indexing takes up to two seconds to stop.
+#[tauri::command]
+async fn add_folder(app: AppHandle, shell: State<'_, Arc<Shell>>, choice: adding::Choice) -> Result<(), String> {
+    let folder = shell.adding.lock().unwrap().clone().ok_or("No folder to add")?;
+    let look = look_at(&shell, &folder);
+    if let Some(why) = look.refused {
+        return Err(why);
+    }
+    let mut index = false;
+    shell.change_settings(|settings| index = adding::apply(settings, &look, &choice))?;
+    log!("add: {} ({:?}{})", look.path, look.kind, if index { ", indexed first" } else { "" });
+    if index {
+        *shell.first.lock().unwrap() = Some(look.path.clone());
+    }
+    *shell.adding.lock().unwrap() = None;
+    let applied = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if index {
+            apply_folders(&applied);
+        }
+        settings_changed(&applied);
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    if let Some(window) = app.get_webview_window("add") {
+        let _ = window.close();
+    }
+    show_panel(&app);
+    let _ = app.emit_to("panel", "scope-to", json!({"path": look.path, "name": look.name, "ambiguous": false,
+                                                    "indexing": index, "code": look.code}));
+    Ok(())
+}
+
+/// The add window's Cancel (or Esc): it closes, and nothing changes.
+#[tauri::command]
+fn cancel_add(app: AppHandle, shell: State<'_, Arc<Shell>>) {
+    *shell.adding.lock().unwrap() = None;
+    if let Some(window) = app.get_webview_window("add") {
+        let _ = window.close();
+    }
+}
+
+/// The folder popover's "Add a folder…": the desktop's folder dialog (through the portal, as setup's), then the add
+/// window for the folder picked. The panel steps away first, as the dialog takes the keyboard.
+#[tauri::command]
+async fn pick_folder_to_add(app: AppHandle) -> Result<(), String> {
+    hide_panel(app.clone());
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog().file().set_title("Add a Folder to DigUp").pick_folder(move |folder| {
+        let _ = sender.send(folder);
+    });
+    match receiver.await.ok().flatten().and_then(|folder| folder.into_path().ok()) {
+        Some(folder) => show_add(&app, folder).map_err(|error| error.to_string()),
+        None => Ok(()),   // cancelled
+    }
+}
+
 /// The folder popover's folders (Ctrl+O, scope.rs): the folders searched and, apart, the code folders, each with the
 /// folders right inside it. Off the main thread: it lists folders on the disk.
 #[tauri::command]
@@ -886,7 +993,7 @@ fn main() {
     let context = tauri::generate_context!();
     // `--quit`, `--pause`… with no DigUp running: answered without starting one (control.rs).
     #[cfg(target_os = "linux")]
-    if let Some(command) = options.command.filter(|command| !command.starts_app()) {
+    if let Some(command) = options.command.clone().filter(|command| !command.starts_app()) {
         let identifier = context.config().identifier.clone();
         if !control::is_running(&identifier) {
             let (said, status) = control::when_not_running(command, options.settings_file(&identifier).as_deref());
@@ -897,7 +1004,7 @@ fn main() {
     let app = tauri::Builder::default()
         // A second launch hands over its arguments: `--toggle` and the like do what they say (`act`); without one it
         // shows the panel, unless it's the login's (--background).
-        .plugin(tauri_plugin_single_instance::init(|app, args, _| match Command::in_args(&args) {
+        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| match Command::in_args(&args, &cwd) {
             Some(command) => act(app, command),
             None if !args.iter().any(|arg| arg == "--background") => show_panel(app),
             None => {}
@@ -918,7 +1025,7 @@ fn main() {
             ask, estimate, setup_info, pick_folders, finish_setup, resolve_folder, open_path, open_hit, open_title, reveal,
             hide_panel, panel_results, panel_drag, reset_panel_size, settings_info, save_folders, set_paused, set_gpu,
             set_starts_at_login, set_up_shortcut, turn_off, try_gpu_again, check_digup, set_moment_player, panel_info,
-            panel_folders,
+            panel_folders, add_folder_info, add_folder, cancel_add, pick_folder_to_add,
             save_code_folders, set_code_editor, set_transcripts, set_transcribe_music, debug_query, debug_filter,
             debug_report
         ])
@@ -1000,6 +1107,8 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         editors: editors::Editors::new(),
         panel: Mutex::new(panel),
         panel_saves: AtomicU64::new(0),
+        adding: Mutex::new(None),
+        first: Mutex::new(None),
         wayland: cfg!(target_os = "linux")
             && panel::is_wayland(std::env::var("WAYLAND_DISPLAY").ok().as_deref(),
                                  std::env::var("GDK_BACKEND").ok().as_deref()),
@@ -1044,7 +1153,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         show_panel(&handle);
     }
     // Started with a command (`--settings`, `--show`… when DigUp wasn't running): done once it's up.
-    if let Some(command) = shell.options.command {
+    if let Some(command) = shell.options.command.clone() {
         act(&handle, command);
     }
     Ok(())
@@ -1070,6 +1179,11 @@ fn act(app: &AppHandle, command: Command) {
         }
         Command::Quit => quit(app),
         Command::IndexNow => run_index(app),
+        Command::AddFolder(folder) => {
+            if let Err(error) = show_add(app, folder) {
+                log_error!("digup-shell: can't open the add window: {error}");
+            }
+        }
     }
 }
 
@@ -1137,8 +1251,9 @@ fn run_index(app: &AppHandle) {
     if !shell.is_set_up() || shell.folders().is_empty() || !shell.model_ready() || shell.is_paused() {
         return;
     }
-    if let Err(error) = shell.index.run(&shell.index_launch()) {
-        set_status(app, &format!("Indexing couldn't start: {error}"));
+    match shell.index.run(&shell.index_launch()) {
+        Ok(started) => shell.index_started(started),
+        Err(error) => set_status(app, &format!("Indexing couldn't start: {error}")),
     }
 }
 
@@ -1150,8 +1265,9 @@ fn run_code_index(app: &AppHandle) {
         || shell.is_paused() {
         return;
     }
-    if let Err(error) = shell.index.run_code(&shell.index_launch()) {
-        set_status(app, &format!("Indexing couldn't start: {error}"));
+    match shell.index.run_code(&shell.index_launch()) {
+        Ok(started) => shell.index_started(started),
+        Err(error) => set_status(app, &format!("Indexing couldn't start: {error}")),
     }
 }
 
@@ -1407,6 +1523,30 @@ fn show_setup(app: &AppHandle) -> tauri::Result<()> {
         .maximizable(false)
         .center()
         .visible(!hidden)
+        .build()?;
+    Ok(())
+}
+
+/// The window that adds a folder on the spot (add.html, adding.rs): for this folder, or, already open, for this one
+/// now. Before setup is done, setup comes first.
+fn show_add(app: &AppHandle, folder: PathBuf) -> tauri::Result<()> {
+    let shell = app.state::<Arc<Shell>>();
+    if !shell.is_set_up() {
+        return show_setup(app);
+    }
+    *shell.adding.lock().unwrap() = Some(folder);
+    if let Some(window) = app.get_webview_window("add") {
+        let _ = window.emit("add-folder", ());
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(app, "add", WebviewUrl::App("add.html".into()))
+        .title("Add a Folder to DigUp")
+        .inner_size(580.0, 560.0)
+        .min_inner_size(460.0, 380.0)
+        .maximizable(false)
+        .center()
         .build()?;
     Ok(())
 }

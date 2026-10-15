@@ -20,6 +20,9 @@ type EventSink = Arc<dyn Fn(Value) + Send + Sync>;
 pub struct Launch {
     pub program: PathBuf,
     pub args: Vec<String>,
+    /// Arguments for a process started now only (`--first DIR`, a folder just added): they don't make a running index
+    /// helper start over, and the next launch goes without them.
+    pub once: Vec<String>,
     pub env: Vec<(String, String)>,
     /// Where its standard error goes (llama.cpp and the helper write their warnings there).
     pub log: Option<PathBuf>,
@@ -77,6 +80,7 @@ impl Launch {
         let mut command = Command::new(&self.program);
         command
             .args(&self.args)
+            .args(&self.once)
             .envs(self.env.iter().map(|(key, value)| (key, value)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -321,16 +325,17 @@ impl IndexService {
         IndexService { running: Mutex::new(None), on_event: Arc::new(on_event) }
     }
 
-    pub fn run(&self, launch: &Launch) -> Result<(), String> {
+    /// Ok(true): a new helper started (with the launch's `once` arguments); Ok(false): the running one was asked.
+    pub fn run(&self, launch: &Launch) -> Result<bool, String> {
         self.ask(launch, "sync")
     }
 
     /// As `run`, for the code index: the running helper is asked to "sync code"; a new one syncs it at its start.
-    pub fn run_code(&self, launch: &Launch) -> Result<(), String> {
+    pub fn run_code(&self, launch: &Launch) -> Result<bool, String> {
         self.ask(launch, "sync code")
     }
 
-    fn ask(&self, launch: &Launch, sync: &str) -> Result<(), String> {
+    fn ask(&self, launch: &Launch, sync: &str) -> Result<bool, String> {
         let mut running = self.running.lock().unwrap();
         if let Some(indexing) = running.as_mut() {
             let leaving = indexing.progress.lock().unwrap().leaving;
@@ -341,7 +346,7 @@ impl IndexService {
                 }
                 let stdin = &mut indexing.stdin;
                 if writeln!(stdin, "{sync}").and_then(|_| stdin.flush()).is_ok() {
-                    return Ok(());
+                    return Ok(false);
                 }
                 // It exited just now (the pipe is closed): a new one does the sync.
             }
@@ -397,7 +402,7 @@ impl IndexService {
                             "gpu_error": gpu_error, "again": again}));
         });
         *running = Some(Indexing { process, stdin, args: launch.args.clone(), progress });
-        Ok(())
+        Ok(true)
     }
 
     /// A helper is in the middle of a pass (starting, syncing, reading files), not lingering between passes or gone.
@@ -517,6 +522,7 @@ done
         Launch {
             program: "/bin/sh".into(),
             args: vec![script.display().to_string(), "index-service".into(), "/a".into()],
+            once: Vec::new(),
             env: vec![("FAKE_LOG".into(), folder.join("log").display().to_string()), ("FAKE_MODE".into(), mode.into())],
             log: Some(folder.join("stderr.log")),
             also_logs: Vec::new(),
@@ -557,23 +563,28 @@ done
     #[test]
     fn a_running_helper_is_asked_to_sync_and_new_folders_start_another() {
         let folder = folder("sync");
-        let launch = fake_helper(&folder, "serve");
+        let mut launch = fake_helper(&folder, "serve");
         let (seen, sink) = events();
         let service = IndexService::new(sink);
-        service.run(&launch).unwrap();
+        assert_eq!(service.run(&launch), Ok(true), "started");
         wait_for("its first sync", || seen.lock().unwrap().iter().any(|event| event["event"] == "sync"));
         assert!(service.is_busy(), "no idle yet");
-        service.run(&launch).unwrap();
+        // A folder just added (`once`) doesn't start the running one over.
+        launch.once = vec!["--first".into(), "/a/new".into()];
+        assert_eq!(service.run(&launch), Ok(false), "asked");
+        launch.once.clear();
         wait_for("the sync it was sent", || log(&folder).contains(&"sync".to_string()));
         wait_for("it to linger", || !service.is_busy());
         assert_eq!(log(&folder).iter().filter(|line| line.starts_with("start")).count(), 1, "the same helper");
         let mut other = launch.clone();
         other.args.push("/b".into());
-        service.run(&other).unwrap();
+        other.once = vec!["--first".into(), "/b".into()];
+        assert_eq!(service.run(&other), Ok(true));
         wait_for("the new helper", || log(&folder).iter().filter(|line| line.starts_with("start")).count() == 2);
-        assert_eq!(log(&folder), ["start index-service /a", "sync", "stop", "start index-service /a /b"]);
-        // Code changes ask the running one for its code sync.
-        service.run_code(&other).unwrap();
+        assert_eq!(log(&folder), ["start index-service /a", "sync", "stop", "start index-service /a /b --first /b"]);
+        // Code changes ask the running one for its code sync, the folder added or not.
+        other.once.clear();
+        assert_eq!(service.run_code(&other), Ok(false));
         wait_for("the code sync", || log(&folder).contains(&"sync code".to_string()));
         assert_eq!(log(&folder).iter().filter(|line| line.starts_with("start")).count(), 2, "the same helper");
         service.stop();
