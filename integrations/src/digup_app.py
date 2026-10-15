@@ -87,10 +87,11 @@ class DesktopApp:
 
 
 def session_bus() -> str:
-    """The session bus's address: $DBUS_SESSION_BUS_ADDRESS, else the usual socket in $XDG_RUNTIME_DIR."""
+    """The session bus's address: $DBUS_SESSION_BUS_ADDRESS, else the usual socket in $XDG_RUNTIME_DIR, else in
+    /run/user/<uid> (MCP clients often start a server with a few variables only: HOME, PATH, USER …)."""
     if os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
         return "SESSION"
-    runtime = os.environ.get("XDG_RUNTIME_DIR")
-    if runtime and os.path.exists(os.path.join(runtime, "bus")):
-        return f"unix:path={os.path.join(runtime, 'bus')}"
+    for runtime in (os.environ.get("XDG_RUNTIME_DIR"), f"/run/user/{os.getuid()}"):
+        if runtime and os.path.exists(os.path.join(runtime, "bus")):
+            return f"unix:path={os.path.join(runtime, 'bus')}"
     raise KeyError("DBUS_SESSION_BUS_ADDRESS isn't set")

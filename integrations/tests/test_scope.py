@@ -251,3 +251,16 @@ def test_the_app_over_a_private_session_bus(fake_app, tmp_path):
     assert json.loads(fake_app.read_text()) == {"codeFolders": [str(home / "git" / "repo")]}
     assert app.status()["pending"] == [str(home / "git" / "repo")]
     assert not app.add_folder("/etc", "x", 500)["ok"]
+
+
+def test_the_session_bus_without_its_variables(monkeypatch):
+    # MCP clients often start a server with HOME, PATH, USER … only: the bus is then the usual one in /run/user/<uid>.
+    import digup_app
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    bus = f"/run/user/{digup_app.os.getuid()}/bus"
+    monkeypatch.setattr(digup_app.os.path, "exists", lambda path: path == bus)
+    assert digup_app.session_bus() == f"unix:path={bus}"
+    monkeypatch.setattr(digup_app.os.path, "exists", lambda path: False)
+    with pytest.raises(KeyError):
+        digup_app.session_bus()
