@@ -115,8 +115,13 @@ public struct KeywordFilter: Sendable, Equatable {
     /// "Rechnungen"). A phrase or a code is marked as one, from its first word to its last, where its words follow each
     /// other with nothing but spaces and punctuation between, as keyword search matched them: «RE-2041», «2'380.50».
     public func marks(in text: String) -> [Range<String.Index>] {
+        Self.marks(of: positiveTerms, in: text)
+    }
+
+    /// The same for any terms (`Searcher` marks a main query's words and codes with it).
+    static func marks(of terms: [Term], in text: String) -> [Range<String.Index>] {
         let folded = SearchText.Folded(text)
-        return positiveTerms.flatMap { term -> [Range<String.Index>] in
+        return terms.flatMap { term -> [Range<String.Index>] in
             switch term.kind {
             case .words, .prefix:
                 let found = term.words.enumerated().map { index, word in

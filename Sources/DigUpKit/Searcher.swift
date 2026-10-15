@@ -154,11 +154,13 @@ public final class Searcher {
         }
 
         // Words: FTS5 with Porter stemming over file names, folder names, OCR, page and document text. A name from code
-        // ("quantize_row_q8_0_ref") is matched as one phrase, as it's written.
-        let terms = Self.terms(text)
+        // ("quantize_row_q8_0_ref") is matched as one phrase, as it's written. So is a code ("RE-2041") that's in the
+        // index as written; one that isn't is its parts, as before (`terms`).
         let identifier = isCode ? CodeLookup.identifier(text) : nil
+        let terms = try Self.terms(text, keepingCodes: { try isIndexed("\"\($0)\"") })
         var words: [(file: Int64, segment: Int64, snippet: String?)] = []
         var coverage: [Int64: Double] = [:]   // share of the query's words found anywhere in the file
+        var gateShare = 1.0   // what `coverage` is worth at the gate (`weights`)
         var patterns = identifier.map { [CodeLookup.phrase($0)] } ?? Self.patterns(terms, prefixLast: prefixLast)
         // A word that's in no file as typed matches as the start of longer words, as the last word does while it's
         // being typed: "grok" finds "Grok4" and "Grokipedia" (stemming only covers endings, as in "grokking").
@@ -174,27 +176,38 @@ public final class Searcher {
             var seen = Set<Int64>()
             // In folders, the matches outside them are left out by SQLite, so the best 1,000 are all inside.
             try store.db.query("""
-                SELECT s.file, s.id, snippet(fts, 1, '«', '»', '…', 12), fts.original FROM fts
+                SELECT s.file, s.id, snippet(fts, 1, '«', '»', '…', 12), fts.original, fts.body FROM fts
                 JOIN segments s ON s.id = fts.rowid\(place.map { " JOIN files f ON f.id = s.file AND \($0.sql)" } ?? "")
                 WHERE fts MATCH ? ORDER BY bm25(fts, 3.0, 1.0) LIMIT 1000
                 """, (place?.values ?? []) + [.text(patterns.joined(separator: " OR "))]) { row in
                 let file = row.int(0)
                 guard words.count < 100, allowed(file), filtered?.files.contains(file) ?? true,
                       seen.insert(file).inserted else { return }
-                // Text that normalizing changed is quoted as it's written (with its hamza, harakat, joiners).
-                let snippet = row.text(3).flatMap { SearchText.snippet($0, terms: terms) } ?? row.text(2)
+                // Text that normalizing changed is quoted as it's written (with its hamza, harakat, joiners), and so is
+                // a code, marked as one («RE-2041»).
+                let written = row.text(3) ?? (terms.contains { $0.contains(" ") } ? row.text(4) : nil)
+                let snippet = written.flatMap { SearchText.snippet($0, marks: Self.marks(of: terms, in: $0)) }
+                    ?? row.text(2)
                 words.append((file, row.int(1), snippet))
             }
-            // With a filter, every file it holds for is ranked, also those beyond the best 100 keyword matches.
+            // Each word counts by how rare it is in the index (`weights`): "die", "für", "de", "la" are in many files
+            // and count little, in every language, where a stopword list would collide ("die", "war", "will"). With a
+            // filter, every file it holds for is ranked, also those beyond the best 100 keyword matches.
             if !words.isEmpty || filtered != nil {
-                let within = filtered != nil ? "" : " AND s.file IN (\(words.map { String($0.file) }.joined(separator: ",")))"
-                for pattern in patterns {
+                let within = Set(words.map(\.file))
+                let found = try patterns.map { pattern in
+                    var files = Set<Int64>()
                     try store.db.query("""
-                        SELECT DISTINCT s.file FROM fts JOIN segments s ON s.id = fts.rowid
-                        WHERE fts MATCH ?\(within)
-                        """, [.text(pattern)]) { row in
-                        guard filtered?.files.contains(row.int(0)) ?? true else { return }
-                        coverage[row.int(0), default: 0] += 1 / Double(patterns.count)
+                        SELECT DISTINCT s.file FROM fts JOIN segments s ON s.id = fts.rowid WHERE fts MATCH ?
+                        """, [.text(pattern)]) { files.insert($0.int(0)) }
+                    return files
+                }
+                let weights = Self.weights(found.map(\.count), of: fileKind.count)
+                let total = weights.rank.reduce(0, +)
+                gateShare = total / weights.gate.reduce(0, +)
+                for (files, weight) in zip(found, weights.rank) {
+                    for file in files where filtered?.files.contains(file) ?? within.contains(file) {
+                        coverage[file, default: 0] += weight / total
                     }
                 }
             }
@@ -208,7 +221,7 @@ public final class Searcher {
         let (meaningWeight, wordsWeight) = lookup ? (0.5, wordWeight * 2) : (1, wordWeight)
         let hinted = Self.kindHints(text)
         var candidates = Set(best.filter { $0.value.z >= zGate }.keys)
-        for (file, share) in coverage where share >= 0.5 { candidates.insert(file) }
+        for (file, share) in coverage where share * gateShare >= 0.5 { candidates.insert(file) }
         if let filtered { candidates = filtered.files }   // no gate: the filter says which
         var scored: [Int64: Double] = [:]
         for file in candidates {
@@ -245,8 +258,9 @@ public final class Searcher {
                 // more repos: 560 → 100 ms a search; the others take 10–50 ms). With a filter, only where none of the
                 // stretches has its words: the hit stays on one that has, and opens at the first line with them.
                 let lookUp = rank < 10 && (filtered?.segments[file]?.isEmpty ?? true)
+                let parts = terms.flatMap { $0.split(separator: " ").map(String.init) }   // a code's parts
                 (segmentID, focus) = try codePlace(file: file, segment: segmentID, identifier: lookUp ? identifier : nil,
-                                                   query: text, terms: terms,
+                                                   query: text, terms: parts,
                                                    wordsHere: keyword?.1.segment == segmentID || identifier != nil)
                 if let keywordFilter, filtered?.segments[file]?[segmentID] != nil,
                    let line = try filterLine(segmentID, keywordFilter) {
@@ -644,13 +658,66 @@ public final class Searcher {
     ]
 
     /// The content words of a query, normalized as keyword search keeps its text (`SearchText`). Kind words
-    /// ("screenshot", "video") and stopwords are dropped: they describe what to look for, not what's in it. Words of
-    /// two letters or more count; a Bengali letter with its vowel sign ("মা") is two.
-    public static func terms(_ text: String) -> [String] {
-        var seen = Set<String>()
-        return SearchText.normalized(text).lowercased()
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { $0.unicodeScalars.count >= 2 && !stopwords.contains($0) && seen.insert($0).inserted }
+    /// ("screenshot", "video", "Bildschirmfoto", "capture d'écran") and stopwords are dropped: they describe what to
+    /// look for, not what's in it. Words of two letters or more count; a Bengali letter with its vowel sign ("মা") is
+    /// two.
+    ///
+    /// A code (`codeParts`: "RE-2041", "2380.50") is its parts, unless `keepingCodes` says to keep it whole: then it's
+    /// one term, its parts joined by spaces ("re 2041"), which keyword search matches as a phrase (`search` keeps the
+    /// codes that are in the index as written, so "RE-2041" no longer finds "INV-2041" by its 2041).
+    public static func terms(_ text: String) -> [String] { terms(text, keepingCodes: { _ in false }) }
+
+    /// The same, `keep` saying which codes stay whole.
+    public static func terms(_ text: String, keepingCodes keep: (String) throws -> Bool) rethrows -> [String] {
+        let tokens = SearchText.normalized(text).lowercased().split(whereSeparator: \.isWhitespace).map {
+            $0.components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
+        }
+        let kinds = kindWordsIn(tokens.flatMap { $0 })
+        var seen = Set<String>(), out: [String] = [], position = 0
+        for parts in tokens {
+            let dropped = parts.indices.map { kinds.dropped.contains(position + $0) }
+            position += parts.count
+            if !dropped.contains(true), let code = codeParts(parts), try keep(code) {
+                if seen.insert(code).inserted { out.append(code) }
+                continue
+            }
+            for (part, drop) in zip(parts, dropped) where !drop && part.unicodeScalars.count >= 2
+                && !stopwords.contains(part) && seen.insert(part).inserted {
+                out.append(part)
+            }
+        }
+        return out
+    }
+
+    /// A query word's parts (split where keyword search splits words) as one code, when it is one: two parts or more
+    /// and a digit among them ("re 2041" for RE-2041, "2380 50" for 2'380.50, "of 2026 118"). Words without a digit
+    /// ("e-mail", "l'école") stay words. A code typed with a space ("LX 1074") is two words.
+    static func codeParts(_ parts: [String]) -> String? {
+        guard parts.count >= 2, parts.contains(where: { $0.contains(where: \.isNumber) }) else { return nil }
+        return parts.joined(separator: " ")
+    }
+
+    /// Where `terms` (words, and codes as their parts joined by spaces) are in `text`, as ranges of the text as it's
+    /// written: a code from its first part to its last («RE-2041»).
+    static func marks(of terms: [String], in text: String) -> [Range<String.Index>] {
+        KeywordFilter.marks(of: terms.map { KeywordFilter.Term(.words, $0.components(separatedBy: " ")) }, in: text)
+    }
+
+    /// How much each of a query's words counts in `search`'s coverage, from the number of files that have it
+    /// (`files`) among the index's `total`: the rarer, the more. BM25's inverse document frequency, which stays above
+    /// 0, so a query of only common words still ranks by them.
+    ///
+    /// A word in no file counts two ways. For the ranking (`rank`) as much as the found words on average: it tells no
+    /// file from another, and a file's share of the query stays what it was when every word counted the same ("black
+    /// and white striped animal", of which only "animal" is in a name). At the gate (`gate`, where a file gets in by its
+    /// words alone) as a word in one file, as rare as words get: "photo d'un perroquet" with no "perroquet" in the
+    /// index doesn't let in every file with "un".
+    static func weights(_ files: [Int], of total: Int) -> (rank: [Double], gate: [Double]) {
+        let total = Double(max(total, files.max() ?? 0, 1))
+        func rarity(_ count: Int) -> Double { log(1 + (total - Double(count) + 0.5) / (Double(count) + 0.5)) }
+        let found = files.filter { $0 > 0 }.map(rarity)
+        let average = found.isEmpty ? 1 : found.reduce(0, +) / Double(found.count)
+        return (files.map { $0 > 0 ? rarity($0) : average }, files.map { rarity(max($0, 1)) })
     }
 
     /// FTS5 patterns for the query's words: quoted, and as prefixes for the last word while it's being typed and for
@@ -689,14 +756,88 @@ public final class Searcher {
         "مقطع": .video, "صوت": .audio, "تسجيل": .audio, "اغنية": .audio,
     ]
 
-    /// Kinds the query asks for ("…in a video", "screenshot of…", "ভিডিওতে"): a soft boost, not a filter. Bengali
-    /// attaches case endings, so a Bengali kind word also counts at the start of a longer word.
+    /// Kind words of German, French, Spanish, Italian and Portuguese, without their accents (`plain`: "vidéo" and
+    /// "grabación" are found typed either way), whole words only ("Bild" is not in "Bildung"). Dropped from a query's
+    /// words as the English ones are, except `keptKindWords`.
+    static let europeanKindWords: [String: FileKind] = [
+        // de
+        "foto": .image, "fotos": .image, "bild": .image, "bilder": .image, "fotografie": .image,
+        "fotografien": .image, "bildschirmfoto": .screenshot, "bildschirmfotos": .screenshot,
+        "bildschirmaufnahme": .video, "bildschirmaufnahmen": .video, "film": .video, "filme": .video,
+        "aufnahme": .audio, "aufnahmen": .audio, "tonaufnahme": .audio, "tonaufnahmen": .audio,
+        "sprachaufnahme": .audio, "sprachaufnahmen": .audio, "audioaufnahme": .audio, "sprachnachricht": .audio,
+        "sprachnachrichten": .audio, "sprachmemo": .audio, "sprachmemos": .audio,
+        // fr (photo, image, vidéo, audio as in English)
+        "photographie": .image, "enregistrement": .audio, "enregistrements": .audio,
+        // es, it, pt
+        "fotografia": .image, "fotografias": .image, "imagen": .image, "imagenes": .image, "immagine": .image,
+        "immagini": .image, "imagem": .image, "imagens": .image, "schermata": .screenshot, "schermate": .screenshot,
+        "grabacion": .audio, "grabaciones": .audio, "registrazione": .audio, "registrazioni": .audio,
+        "gravacao": .audio, "gravacoes": .audio,
+    ]
+
+    /// Kind words that are everyday words too ("Aufnahme" is also an admission, "enregistrement" and "registrazione" a
+    /// registration): a hint, and still words of the query.
+    static let keptKindWords: Set<String> = [
+        "aufnahme", "aufnahmen", "film", "filme", "enregistrement", "enregistrements", "registrazione", "registrazioni",
+    ]
+
+    /// Kind words of more than one word, without accents. All their words are dropped from the query's words.
+    static let kindPhrases: [(words: [String], kind: FileKind)] = [
+        (["capture", "d", "ecran"], .screenshot), (["captures", "d", "ecran"], .screenshot),
+        (["copie", "d", "ecran"], .screenshot), (["captura", "de", "pantalla"], .screenshot),
+        (["capturas", "de", "pantalla"], .screenshot), (["captura", "de", "tela"], .screenshot),
+        (["capturas", "de", "tela"], .screenshot),
+        (["message", "vocal"], .audio), (["messages", "vocaux"], .audio), (["memo", "vocal"], .audio),
+        (["mensaje", "de", "voz"], .audio), (["mensajes", "de", "voz"], .audio), (["nota", "de", "voz"], .audio),
+        (["notas", "de", "voz"], .audio), (["mensagem", "de", "voz"], .audio), (["mensagens", "de", "voz"], .audio),
+        (["messaggio", "vocale"], .audio), (["messaggi", "vocali"], .audio), (["nota", "vocale"], .audio),
+        (["note", "vocali"], .audio), (["memo", "vocale"], .audio),
+    ]
+
+    /// A word as kind words are compared: without the accents of Latin letters (U+0300–U+036F once decomposed).
+    /// Bengali and Arabic words stay as they are.
+    static func plain(_ word: String) -> String {
+        guard !word.allSatisfy(\.isASCII) else { return word }
+        let scalars = word.decomposedStringWithCanonicalMapping.unicodeScalars
+            .filter { !(0x300...0x36F).contains($0.value) }
+        return String(String.UnicodeScalarView(scalars)).precomposedStringWithCanonicalMapping
+    }
+
+    /// The kind words in a query's words (normalized and lowercased, split as keyword search splits them): the kinds,
+    /// and the positions of the words that say only that (`terms` drops them).
+    static func kindWordsIn(_ words: [String]) -> (kinds: Set<FileKind>, dropped: Set<Int>) {
+        var kinds = Set<FileKind>(), dropped = Set<Int>()
+        let plainWords = words.map(plain)
+        var index = 0
+        while index < words.count {
+            if let phrase = kindPhrases.first(where: { plainWords[index...].starts(with: $0.words) }) {
+                kinds.insert(phrase.kind)
+                dropped.formUnion(index..<index + phrase.words.count)
+                index += phrase.words.count
+                continue
+            }
+            let word = words[index]
+            if let kind = kindWords[word] {
+                kinds.insert(kind)
+            } else if let kind = europeanKindWords[plainWords[index]] ?? kindWords[plainWords[index]] {   // "vidéo"
+                kinds.insert(kind)
+                if !keptKindWords.contains(plainWords[index]) { dropped.insert(index) }
+            } else if let kind = kindWords.first(where: { key, _ in
+                SearchText.inflects(key) && key.unicodeScalars.count >= 3 && word.hasPrefix(key)
+            })?.value {
+                kinds.insert(kind)
+            }
+            index += 1
+        }
+        return (kinds, dropped)
+    }
+
+    /// Kinds the query asks for ("…in a video", "screenshot of…", "Bildschirmfoto", "capture d'écran", "ভিডিওতে"): a
+    /// soft boost, not a filter. Bengali attaches case endings, so a Bengali kind word also counts at the start of a
+    /// longer word.
     static func kindHints(_ text: String) -> Set<FileKind> {
-        Set(SearchText.normalized(text).lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .compactMap { word in
-                kindWords[word] ?? kindWords.first { key, _ in
-                    SearchText.inflects(key) && key.unicodeScalars.count >= 3 && word.hasPrefix(key)
-                }?.value
-            })
+        kindWordsIn(SearchText.normalized(text).lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }).kinds
     }
 }
