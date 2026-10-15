@@ -1,6 +1,6 @@
 # Folders: choose where to search, add a folder on the spot (plan, 2026-10-15)
 
-**S1 and S2 done (2026-10-15, notes under them); S3–S5 PLAN ONLY — not implemented.**
+**S1, S2 and S3 done (2026-10-15, notes under them); S4–S5 PLAN ONLY — not implemented.**
 
 ---
 
@@ -125,5 +125,43 @@ Files script "DigUp: Add this folder", CLI path; Settings shows it like any fold
   typed ("Indexing Sent: 40 of 300"); with a query the footer adds "indexing 40 of 300, results so far". A repo opens
   with `code:` typed in. With indexing paused it's added and waits for Resume (the window says so).
 ### S3 — Tools: `--scope` on MCP and HTTP; `add_folder` behind `--allow-add-folders` via the shell, notification + Undo.
+**Done.** Notes and deviations:
+- `--scope DIR` (repeatable, or `$DIGUP_SCOPE`) on both servers, relative to where they start; matched by the path
+  given and by its real path (the settings keep an added folder's real one). A caller's `folders` narrow it; one
+  wholly outside is refused (403 over HTTP), not silently emptied. A scope that's partly indexed (folders inside it
+  are) searches those. `read_segment` can't tell a segment's file, so a pinned server reads only segments of its own
+  results inside the scope ("search first" otherwise). `similar` and `/preview` refuse a file outside.
+- A scope in neither index: "~/git/foo isn't indexed; start the server with --allow-add-folders or add it in DigUp"
+  (MCP: a tool error; HTTP 409). A code-only scope: `search_files` points to `search_code`, and the other way round.
+  The servers read the app's settings again every 10 s while part of the scope isn't indexed, and right after an add,
+  and tell their helper the new folders (`folders` op).
+- The request path: a D-Bus name of the shell's own, `com.abdurrahim.DigUp.Tools` (`AddFolder(folder, tool,
+  max_files)` and `Status()`, JSON answers), beside the single-instance one. The single-instance hand-over is
+  one-way (the second launch exits without an answer), and a tool must hear why an add was refused. The integrations
+  call it with jeepney (pure Python, a new dependency, Linux only); `digup-shell --add-folder DIR --from-tool NAME
+  --yes [--max-files N]` is the same request from a script, and never starts DigUp.
+- Guards (tools.rs, on top of adding.rs's): inside the home folder only (so drives aren't, unlike the add window),
+  not the home folder, no hidden folder or one in it, nothing in a folder skipped in Settings (a tool mustn't undo a
+  skip). The cap (20 000, `--max-files`) counts files with the crawler's never-read folders and the left-out ones
+  aside, stops past the cap, and gives up after 10 s (too big). `build`, `dist`, `target`, `cache`, `caches` found
+  are skipped. A folder searched already only says so. A pinned server adds only inside its scope.
+- Notification: freedesktop Notify over the same zbus (Tauri's notification plugin has no buttons on Linux), with
+  Undo; clicking it opens the panel searching in the folder. Undo takes back exactly what the add changed (`Change`),
+  keeping later changes; the last code folder taken out turns code search off and deletes its index, as Settings
+  does; the rows of a document folder go with the next sync's prune. No notification service: the add still happens,
+  and the answer says Settings takes it out again.
+- Partial: the shell keeps how indexing goes and the folders added that no pass has been through since
+  (`Progress`); a pinned server (or one that added something) asks `Status` at most every 2 s, flags results whose
+  folders are pending, and reloads its helper's index every 3 s meanwhile (and once after), so new files show.
+  Over HTTP: `"partial": true`, `indexing: {folders, state, done, total}`; MCP: a "(Partial: …)" line first.
+- `--allow-add-folders` refuses `--host` (both servers). `POST /folders` takes `application/json` only and no
+  `Origin` but `--cors`'s, so a web page can't send it (it's the one request that changes something).
+- Checked for real against a dev DigUp on private session buses (its own HOME and XDG dirs, a headless GNOME Shell
+  46 as the display, a stand-in notification service to press Undo): `--scope .` in an unindexed repo added it on
+  the first call (16 files, `build` left out, the notification named "claude-code"), results came after ~2 s,
+  read_segment refused a segment of elsewhere; Undo emptied the code folders and deleted the code index; the guards
+  (cap, hidden, home, `/`, `/usr/share`, missing, searched already, no `--yes`, app not running) all answered as
+  meant; `digup-http --scope ~/Sent` showed `partial` with 8, 16, 24 of 35 while it indexed. GNOME Shell's own
+  notification service took the notification (it has `actions`); its Undo button wasn't pressed by hand.
 ### S4 — Docs: user guide cases (choose folders, add a repo, a coding app pinned to a repo), integrations README.
 ### S5 — `digup-ask` with an OpenAI-compatible backend.

@@ -40,11 +40,12 @@ types). Code search needs the code folders: `--code-root DIR` or `$DIGUP_CODE_RO
 simply finds nothing. `DIGUP_GPU=0` keeps the query encoder on the CPU (fine for queries).
 
 Other flags: `--exclude DIR`, `--exclude-ext EXT`, `--encoder-idle S` (the encoder exits after S idle seconds, 300 by
-default), `--timeout S`, `--no-settings`.
+default), `--timeout S`, `--no-settings`; `--scope DIR`, `--allow-add-folders` and `--max-files N`
+([below](#pinned-to-a-folder-and-adding-folders)).
 
 ## MCP server
 
-Tools (all read-only):
+Tools (read-only, but for `add_folder`):
 
 | Tool | What it does |
 |---|---|
@@ -52,7 +53,8 @@ Tools (all read-only):
 | `read_segment(segment_id, code=false, max_chars=8000)` | The indexed text of a hit: the document's chunk, the PDF page's text, a screenshot's text, a code stretch. |
 | `search_code(query, filter?, limit=10)` | The code index (what a DigUp search starting with `code:` does). |
 | `find_similar(path, limit=10, kinds?, folders?)` | Files like a given file; needs a helper with the `similar` op, says so otherwise. |
-| `index_status(doctor=false)` | Encoder state, vectors, index, folders (and `digup doctor --json` when the helper has it). |
+| `index_status(doctor=false)` | Encoder state, vectors, index, folders (and `digup doctor --json` when the helper has it); with `--scope`, whether the scope is indexed. |
+| `add_folder(path)` | Only with `--allow-add-folders`: the DigUp app adds the folder ([below](#pinned-to-a-folder-and-adding-folders)). Not read-only. |
 
 `filter` is the panel's keyword filter: exact words the file must have, `Rechnung* AND (Uster OR Winterthur) NOT
 Mahnung`, `"Bahnhofstrasse 12"`, `*kaution*` (inside a word), `RE-2041`. Only those files come back, ranked by
@@ -126,6 +128,57 @@ claude mcp add --scope user digup -- uv run --project ~/DigUp-Linux/integrations
 **Over HTTP** (for clients that only take a URL): `digup-mcp --http --port 8765` serves streamable HTTP at
 `http://127.0.0.1:8765/mcp`.
 
+## Pinned to a folder, and adding folders
+
+**`--scope DIR`** (repeatable; or `$DIGUP_SCOPE`, `:`-separated) pins either server to DIR: absolute, `~/…`, or
+relative to where the server was started. Every search, `/context` and similar-files request stays inside it. A
+caller's `folders` can narrow it, never widen it (a folder wholly outside is refused). Results outside never come
+back; `read_segment` reads only segments of this server's own results inside the scope (a segment number says nothing
+of its file, so one from elsewhere is refused: search first), and `find_similar` and `/preview` refuse a file outside.
+`index_status` (`GET /status`) says whether the scope is indexed: fully, partly (being indexed, with how far, or only
+some folders in it), or not at all. A scope DigUp doesn't index gets a clear answer ("~/git/foo isn't indexed; start
+the server with --allow-add-folders or add it in DigUp"). A scope that is a code folder only is searched with
+`search_code` (`code: true` over HTTP); `search_files` there says so.
+
+A coding app pinned to the repo it's open in (Claude Code starts MCP servers in the project's folder, and
+`uv run --project` keeps that folder):
+
+```sh
+cd ~/git/my-app
+claude mcp add digup -- uv run --project ~/DigUp-Linux/integrations digup-mcp --scope .
+# and let it add the repo when DigUp doesn't index it yet:
+claude mcp add digup -- uv run --project ~/DigUp-Linux/integrations digup-mcp --scope . --allow-add-folders
+```
+
+**`--allow-add-folders`** (off unless given) adds the `add_folder(path)` tool and `POST /folders {"path": …}`, and
+with `--scope` an unindexed scope is added on its first use. DigUp's desktop app owns the settings, so the server asks
+the running app over the session bus (`com.abdurrahim.DigUp.Tools`, `src/digup_app.py`; the app's side is
+`shell/src-tauri/src/tools.rs`). The app checks, and adds only:
+
+- a folder inside your home folder: not the home folder itself, not a hidden folder or one in it, not one you left
+  out in Settings, nor anything the add window refuses (the whole computer, system folders);
+- with at most `--max-files N` files (default 20000), counted before anything starts (hidden folders,
+  `node_modules`, `venv` and the like aren't counted); a bigger one is refused, with a pointer to DigUp's own add
+  window, which shows the counts and lets you leave subfolders out;
+- `build`, `dist`, `target` and caches inside it are left out, as the add window starts them; a git repo goes into
+  the code index.
+
+The app shows a notification, "claude-code added ~/git/my-app to DigUp", with **Undo**, which takes it out again (its
+rows leave the index with the next sync, as when it's taken out in Settings). The tool returns at once, saying how to
+follow along: while the folder is indexed, searches return the results so far, flagged (`Partial: …` for MCP,
+`"partial": true` with `indexing: {done, total}` over HTTP), and `index_status` says how far it is. Without the app
+running there's no one to ask: the tool says so and adds nothing. The same request from a script:
+`digup-shell --add-folder DIR --from-tool NAME --yes [--max-files N]`.
+
+**Why it's safe enough.** This lets a model widen what DigUp indexes, and everything it indexes the model can then
+read. So: it's off unless the person starting the server says `--allow-add-folders`; a pinned server only adds inside
+its scope; the app, not the tool, applies the rules (home folder only, no hidden or skipped folders, the cap); each add
+is visible (the notification names the tool and the folder) and undone with one click. Nothing new listens on the
+network: the request goes over the session bus, which only your own programs reach (a sandboxed Flatpak or a strictly
+confined Snap can't call a name it wasn't given), and any program of yours could already change DigUp's settings file. Over HTTP, `POST /folders` is
+the one request that changes something, so it takes a JSON body only and no web page from another origin than
+`--cors`'s (a page can't send it), keeps the token rule, and `--allow-add-folders` doesn't go with `--host`.
+
 ## HTTP API
 
 ```sh
@@ -142,6 +195,10 @@ uv run --project integrations digup-http [--port 8484] [--token SECRET] [--root 
 | `POST /context` `{query, filter?, limit=5, max_chars=6000, kinds?, folders?, code?}` | `{context, sources, other_matches}`: the top hits' texts, each as `[n] path (where)` then the text |
 | `GET /preview?path=…&kind=pdf\|video\|image&loc=…&pixels=1024` | a JPEG of a PDF page, a video frame (at `loc` seconds) or a picture; only files in the searched folders |
 | `GET /openapi.json` | the OpenAPI 3.1 spec (no token needed) |
+| `POST /folders` `{path}` | only with `--allow-add-folders`: the DigUp app adds the folder ([above](#pinned-to-a-folder-and-adding-folders)); 403 with why when it doesn't, 503 when the app isn't running |
+
+With `--scope`, a search outside the scope is 403 and a scope that isn't indexed 409; hits while the scope is still
+being indexed come with `"partial": true`.
 
 Security: binds `127.0.0.1` unless `--host` (then it warns, and the localhost-only `Host` check is off); with
 `--token` or `$DIGUP_API_TOKEN` every other endpoint needs `Authorization: Bearer <token>`; CORS is off unless
@@ -208,7 +265,9 @@ uv run --project integrations pytest -q integrations/tests      # unit tests aga
 
 The end-to-end test runs both servers against a real helper and a **copy** of an index of the DigUp testbed; see
 `tests/test_e2e_real.py` for the environment it needs. Files: `src/digup_client.py` (the helper process and its
-JSON-lines protocol), `src/digup_tools.py` (what both servers do), `src/digup_mcp.py`, `src/digup_http.py`.
+JSON-lines protocol), `src/digup_tools.py` (what both servers do, the scope), `src/digup_app.py` (the desktop app
+over the session bus), `src/digup_mcp.py`, `src/digup_http.py`. The tests never touch your session bus: they point
+at one that isn't there, or start their own `dbus-daemon` with a stand-in for the app (`tests/fake_app.py`).
 
 The helper's protocol is documented in `Sources/digup/SearchService.swift`. The integrations send `folders` to
 `search` and `similar` when given and also filter by folder themselves, so an older helper that ignores the field

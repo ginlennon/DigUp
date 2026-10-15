@@ -92,7 +92,8 @@ there before pointing DigUp at your own folders.
 10. **Your coding assistant asks DigUp.** The MCP server in [`integrations/`](../integrations/README.md) lets Claude
     Code, Cursor, VS Code or Zed search your files: "find the design doc that mentions the rate limiter", "which
     screenshot shows the staging error?", then read the matching passage (`read_segment`). For Claude Code:
-    `claude mcp add --scope user digup -- uv run --project <checkout>/integrations digup-mcp`.
+    `claude mcp add --scope user digup -- uv run --project <checkout>/integrations digup-mcp`. Pinned to one repo:
+    [below](#a-coding-app-pinned-to-a-repo).
 11. **Your own files as a RAG source.** `uv run --project integrations digup-http` starts a local API on
     `127.0.0.1:8484`; `POST /context {"query": "…", "limit": 5}` returns the best passages with their file and page,
     ready for a local model's prompt. Open WebUI and other tools can import `/openapi.json` as a tool server.
@@ -181,6 +182,32 @@ footer says "indexing 40 of 300, results so far"). Until a file is read, it's fo
   folders in it are skipped, the window lists them to take back in.
 - DigUp won't add the whole computer, your whole home folder (choose the folders in it you keep things in) or a
   system folder (`/usr`, `/etc`, `/var`…). Drives under `/media`, `/mnt` and `/run/media` are fine.
+
+## A coding app pinned to a repo
+
+A coding assistant working in one repo can have DigUp search that repo only, and, if you let it, add the repo when
+DigUp doesn't index it yet. In the repo's folder (Claude Code starts the server there):
+
+```sh
+cd ~/git/my-app
+claude mcp add digup -- uv run --project ~/DigUp-Linux/integrations digup-mcp --scope . --allow-add-folders
+```
+
+- **`--scope .`** pins it: every search is inside `~/git/my-app`, and nothing from elsewhere comes back, even when
+  the assistant asks for other folders. Leave out `--allow-add-folders` and a repo DigUp doesn't index gets a clear
+  "isn't indexed" instead (add it yourself, as above).
+- **`--allow-add-folders`** lets it add the repo on its first search (and other folders inside the scope with
+  `add_folder`). DigUp itself checks and adds: only folders inside your home folder, not hidden ones or ones you left
+  out in Settings, and at most 20 000 files (`--max-files` changes that; a bigger folder is for the add window
+  above). A repo goes into code search, `build`, `dist` and `target` left out.
+- You see it happen: a notification says *"claude-code added ~/git/my-app to DigUp"*, and its **Undo** takes it out
+  again (or Settings → Code later). DigUp has to be running for this; if it isn't, the assistant is told so and
+  nothing is added.
+- While the repo is indexed (its files go first), the assistant gets what's read so far, marked as partial, and
+  `index_status` says how far it is. A small repo takes seconds.
+
+The HTTP API takes the same flags: `digup-http --scope ~/git/my-app` for a local chat program about one repo, with
+`POST /folders` when `--allow-add-folders` is given. More in the [integrations README](../integrations/README.md).
 
 ## Filter by exact words
 
