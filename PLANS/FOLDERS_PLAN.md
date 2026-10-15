@@ -1,6 +1,6 @@
 # Folders: choose where to search, add a folder on the spot (plan, 2026-10-15)
 
-**Stage S1 in progress; S2–S5 PLAN ONLY — not implemented.**
+**S1 done (2026-10-15, notes under it); S2–S5 PLAN ONLY — not implemented.**
 
 ---
 
@@ -78,6 +78,22 @@ llama.cpp server, OpenRouter, others. Key from an env var, never stored by DigUp
 # Part B — Stages
 
 ### S1 — Panel: grip strip + folder button and popover (indexed folders only), several chips, Ctrl+O.
+**Done.** As sketched, with these choices:
+- The grip strip is 10 px with a small centred bar; the field went from 56 to 52 px, so the panel with nothing
+  searched is 94 px (was 88; panel.rs has a test that the CSS heights add up to it).
+- The popover lies inside the panel window (a window can't draw outside itself): while it's open the panel takes its
+  results height, and with nothing searched the preview says how the popover works.
+- Two levels: the folders searched and the folders right inside them, without skipped and hidden ones. A folder
+  inside a checked one shows as covered and can't be checked on its own; checking a folder drops the chips inside it.
+- Code folders are listed apart, under "Code · searched with code:": search-service applies `folders` to code
+  search too, and `in:` already took code folders.
+- Folder chips sit in the filter's row (the "Like …" chip of Ctrl+L stays before the field). `in:` adds a chip to
+  the others instead of replacing the one there was. Backspace at the start of the field or the filter takes the last
+  one away.
+- The chips go when the panel opens again, as the filter does. (The single `in:` chip used to stay with the last
+  query; with several folders chosen by hand, a stale scope was the bigger surprise.)
+- Keys: arrows, → ← to open and close, Space checks, Enter/Esc/Tab are done; Esc closes the popover before anything
+  else.
 ### S2 — Add a folder: shell `--add-folder DIR`, subtree dialog with counts, priority indexing, code-index for repos,
 Files script "DigUp: Add this folder", CLI path; Settings shows it like any folder.
 ### S3 — Tools: `--scope` on MCP and HTTP; `add_folder` behind `--allow-add-folders` via the shell, notification + Undo.

@@ -83,6 +83,38 @@ fn found(mut candidates: Vec<PathBuf>) -> Folder {
     Folder { path: path.display().to_string(), name, ambiguous }
 }
 
+/// A folder in the panel's folder popover (Ctrl+O): a folder DigUp searches, with the folders right inside it.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Choice {
+    pub path: String,
+    pub name: String,
+    /// The folders right inside it, by name, without those that are skipped (empty for one of them).
+    pub subfolders: Vec<Choice>,
+}
+
+/// The popover's two levels: each of `roots` with the folders right inside it (`subfolders` looks at the disk), less
+/// the skipped ones, both sorted by name without regard to case.
+pub fn choices(roots: &[String], skipped: &[String], subfolders: impl Fn(&Path) -> Vec<String>) -> Vec<Choice> {
+    let by_name = |a: &Choice, b: &Choice| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then(a.path.cmp(&b.path));
+    let mut list: Vec<Choice> = roots.iter().map(|root| {
+        let root = PathBuf::from(root.trim_end_matches('/'));
+        let mut inside: Vec<Choice> = subfolders(&root).into_iter()
+            .map(|name| root.join(&name))
+            .filter(|folder| !skipped.iter().any(|skip| folder.starts_with(skip.trim_end_matches('/'))))
+            .map(|folder| choice(&folder, Vec::new()))
+            .collect();
+        inside.sort_by(by_name);
+        choice(&root, inside)
+    }).collect();
+    list.sort_by(by_name);
+    list
+}
+
+fn choice(folder: &Path, subfolders: Vec<Choice>) -> Choice {
+    let name = folder.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| "/".into());
+    Choice { path: folder.display().to_string(), name, subfolders }
+}
+
 /// The folders right inside `root` that a person would name: not hidden ones.
 pub fn subfolders(root: &Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(root) else { return Vec::new() };
@@ -151,6 +183,24 @@ mod tests {
         // A chosen folder's name wins over a subfolder of the same name.
         let roots = ["/home/me/Pictures", "/home/me"];
         assert_eq!(resolved("Pictures", &roots).map(|folder| folder.ambiguous), Ok(false));
+    }
+
+    #[test]
+    fn the_popovers_two_levels() {
+        let subfolders = |root: &Path| -> Vec<String> {
+            DISK.iter().map(Path::new).filter(|path| path.parent() == Some(root))
+                .map(|path| path.file_name().unwrap().to_string_lossy().into_owned()).collect()
+        };
+        let list = choices(&["/home/me/Pictures/".into(), "/home/me/Documents".into()],
+                           &["/home/me/Pictures/2026".into()], subfolders);
+        let names: Vec<(&str, Vec<&str>)> = list.iter()
+            .map(|folder| (folder.name.as_str(), folder.subfolders.iter().map(|inside| inside.name.as_str()).collect()))
+            .collect();
+        assert_eq!(names, [("Documents", vec!["Big Folder", "Trips"]), ("Pictures", vec!["Trips"])],
+                   "sorted by name; a skipped folder isn't offered");
+        assert_eq!(list[1].path, "/home/me/Pictures");
+        assert_eq!(list[0].subfolders[1].path, "/home/me/Documents/Trips");
+        assert!(list[0].subfolders[0].subfolders.is_empty(), "two levels only");
     }
 
     #[test]

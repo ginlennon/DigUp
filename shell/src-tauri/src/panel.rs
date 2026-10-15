@@ -1,6 +1,7 @@
-//! The search panel's size and place. With nothing searched it's its two fields high; with results it's the height
-//! the person gave it (480 until they resize it), and as wide as they made it. Undecorated, it has no frame of its
-//! own: it's dragged by its icons, the room around its fields and its footer (panel.js), and resized by its edges —
+//! The search panel's size and place. With nothing searched it's its grip strip and two fields high; with results
+//! it's the height the person gave it (480 until they resize it), and as wide as they made it. Undecorated, it has no
+//! frame of its own: it's dragged by the grip strip at its top, its icons, the room around its fields and its footer
+//! (panel.js), and resized by its edges —
 //! Tauri gives an undecorated, resizable window a 5 px border all round (on Linux a handler on the web view) that
 //! starts the desktop's resize, with the resize cursors, and keeps the press from the page. What the person sets is saved in the
 //! settings (`panelWidth`, `panelHeight`).
@@ -18,8 +19,9 @@
 
 use std::time::{Duration, Instant};
 
-/// The panel's height with nothing searched: the field and the keyword filter under it (panel.js has it too).
-pub const FIELD_HEIGHT: f64 = 88.0;
+/// The panel's height with nothing searched: the grip strip (10), the field (52) and the keyword filter under it (32),
+/// as panel.css has them.
+pub const FIELD_HEIGHT: f64 = 94.0;
 pub const DEFAULT_WIDTH: f64 = 780.0;
 /// The height with results.
 pub const DEFAULT_HEIGHT: f64 = 480.0;
@@ -194,6 +196,19 @@ mod tests {
         assert_eq!((width(100.0), results_height(90.0)), (MIN_WIDTH, MIN_RESULTS_HEIGHT));
         assert_eq!((width(1e9), results_height(1e9)), (MAX_SIDE, MAX_SIDE));
         assert_eq!((width(f64::NAN), results_height(0.0)), (DEFAULT_WIDTH, DEFAULT_HEIGHT), "nonsense: the defaults");
+    }
+
+    #[test]
+    fn the_fields_height_is_panel_css() {
+        let css = include_str!("../../ui/panel.css");
+        let height = |rule: &str| -> f64 {
+            let block = css.split(&format!("\n{rule} {{\n")).nth(1).and_then(|rest| rest.split('}').next())
+                .unwrap_or_else(|| panic!("no {rule} in panel.css"));
+            let line = block.lines().find_map(|line| line.trim().strip_prefix("height: "))
+                .unwrap_or_else(|| panic!("{rule} has no height"));
+            line.trim_end_matches(';').trim_end_matches("px").parse().unwrap()
+        };
+        assert_eq!(height(".grip") + height(".field") + height(".filter-field"), FIELD_HEIGHT);
     }
 
     #[test]

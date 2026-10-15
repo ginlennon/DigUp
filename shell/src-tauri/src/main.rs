@@ -655,6 +655,22 @@ fn resolve_folder(shell: State<'_, Arc<Shell>>, name: String) -> Result<scope::F
     scope::resolve(&name, &roots, home.as_deref(), scope::subfolders, Path::is_dir)
 }
 
+/// The folder popover's folders (Ctrl+O, scope.rs): the folders searched and, apart, the code folders, each with the
+/// folders right inside it. Off the main thread: it lists folders on the disk.
+#[tauri::command]
+async fn panel_folders(shell: State<'_, Arc<Shell>>) -> Result<Value, String> {
+    let shell = shell.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let settings = shell.settings.lock().unwrap().clone();
+        json!({
+            "folders": scope::choices(&shell.folders(), &settings.skipped, scope::subfolders),
+            "code": scope::choices(&settings.code_folders, &settings.code_skipped, scope::subfolders),
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
 /// What the panel needs to know of the settings: whether there are code folders (for `code:`'s hint).
 #[tauri::command]
 fn panel_info(shell: State<'_, Arc<Shell>>) -> Value {
@@ -902,6 +918,7 @@ fn main() {
             ask, estimate, setup_info, pick_folders, finish_setup, resolve_folder, open_path, open_hit, open_title, reveal,
             hide_panel, panel_results, panel_drag, reset_panel_size, settings_info, save_folders, set_paused, set_gpu,
             set_starts_at_login, set_up_shortcut, turn_off, try_gpu_again, check_digup, set_moment_player, panel_info,
+            panel_folders,
             save_code_folders, set_code_editor, set_transcripts, set_transcribe_music, debug_query, debug_filter,
             debug_report
         ])

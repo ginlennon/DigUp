@@ -8,9 +8,14 @@
 // *kaution*. It says which files appear, and the field above ranks them; alone it's a keyword search. Tab or Ctrl+F
 // goes to it, Esc clears it first, and it's gone when the panel opens again.
 //
-// The panel has no frame: it's dragged by what isn't for typing or clicking (its icons, the room around the fields,
-// the footer) and resized by its edges (Tauri's border, before the page hears of the press). The shell keeps the
-// person's size (panel.rs).
+// At the start of the filter's row are the folders searched in (PLANS/FOLDERS_PLAN.md): the folder button (Ctrl+O)
+// opens a popover with the folders DigUp searches, two levels deep, and each folder checked there becomes a chip
+// ("in Documents"); the search covers all of them together. `in:Documents` typed at the start of the query makes the
+// same chip. Like the filter, the chips are for one look: they're gone when the panel opens again.
+//
+// The panel has no frame: it's dragged by what isn't for typing or clicking (the grip strip at its top, its icons,
+// the room around the fields, the footer) and resized by its edges (Tauri's border, before the page hears of the
+// press). The shell keeps the person's size (panel.rs).
 "use strict";
 
 const tauri = window.__TAURI__;
@@ -35,7 +40,7 @@ const KIND_TITLE = { screenshot: "Screenshot", image: "Image", pdf: "PDF", doc: 
 const $ = (id) => document.getElementById(id);
 const $query = $("query"), $body = $("body"), $list = $("list"), $preview = $("preview");
 const $footer = $("footer"), $summary = $("summary"), $keys = $("keys"), $activity = $("activity");
-const $chips = $("chips");
+const $chips = $("chips"), $folderChips = $("folder-chips"), $folderButton = $("folders"), $picker = $("folder-picker");
 const $filter = $("filter"), $filterField = $filter.parentElement, $filterNote = $("filter-note");
 
 /// How the filter is written, for its "?" (and while it's empty and has the keyboard): KeywordFilter.swift.
@@ -51,8 +56,8 @@ const FILTER_SYNTAX = [
   ["RE-2041   2'380.50", "a code or a number as written"],
 ];
 
-/// A query that starts with in:<folder> and a space searches inside that folder: the folder becomes a chip before the
-/// field and the rest is the query (the shell finds the folder: scope.rs). `in:` comes first and `code:` after it
+/// A query that starts with in:<folder> and a space searches inside that folder too: the folder becomes a chip in the
+/// filter's row, with the folders chosen there, and the rest is the query (the shell finds the folder: scope.rs). `in:` comes first and `code:` after it
 /// ("in:billing code: retry"), since `code:` is always the start of what's searched.
 const SCOPE = /^\s*in:(?:"([^"]*)"|([^"\s]\S*))\s/i;
 const SCOPE_TYPING = /^\s*in:(?:"[^"]*"?|\S*)$/i;   // the folder is still being typed
@@ -67,8 +72,9 @@ const state = {
   filter: "",            // the filter the results are for ("": none)
   filterNote: null,      // how the helper read a filter it couldn't read as written ("unclosed quote: …")
   help: false,           // the filter's syntax is showing (its "?")
-  scope: null,           // the folder searched in ({path, name, ambiguous}), or null: all of them
+  scopes: [],            // the folders searched in ({path, name, ambiguous}), together; none: all of them
   scopeProblem: null,    // what the panel says when in: names no chosen folder
+  picker: null,          // the folder popover while it's open: {folders: {folders, code}, expanded, cursor}
   like: null,            // the file whose similar files are showing ({path, name}), or null
   before: "",            // what the field had before them
   codeFolders: 0,        // how many code folders there are (none: code: says where to add them)
@@ -110,7 +116,7 @@ function queryChanged(fromFilter = false) {
   const filter = $filter.value.trim();
   const code = /^code:/i.test(typed);
   const text = code ? typed.slice(5).trim() : typed;
-  const folders = state.scope ? [state.scope.path] : undefined;
+  const folders = scopeFolders();
   const search = { op: "search", q: text, code, limit: 40, folders, ...(filter ? { filter } : {}) };
   state.isCode = code;
   if (!filter && (!typed || (code && !text))) {
@@ -188,19 +194,220 @@ async function takeScope(match, generation) {
   }
   // Typing went on meanwhile: the in: is still at the start (an edit there starts another lookup).
   if (!$query.value.startsWith(match[0])) return;
-  state.scope = folder;
+  addScope(folder);
   $query.value = $query.value.slice(match[0].length);
   $query.setSelectionRange($query.value.length, $query.value.length);
   renderChips();
+  if (state.picker) renderPicker();
   queryChanged();
 }
 
-function removeScope() {
-  state.scope = null;
+/// The folders searched in, for search-service (none: all of them).
+function scopeFolders() {
+  return state.scopes.length ? state.scopes.map((folder) => folder.path) : undefined;
+}
+
+/// What the messages say of the chips: " in Documents", " in Documents and Trips", " in 3 folders".
+function insideText() {
+  const names = state.scopes.map((folder) => folder.name);
+  if (names.length > 2) return ` in ${names.length} folders`;
+  return names.length ? ` in ${names.join(" and ")}` : "";
+}
+
+/// `path` is inside `folder` (not the folder itself).
+function isInside(path, folder) {
+  const base = folder.replace(/[\\/]$/, "");
+  return path.startsWith(base + "/") || (isWindows && path.startsWith(base + "\\"));
+}
+
+/// A folder chosen (in the popover or with in:) is searched with the others; the chips of folders inside it go, as
+/// it covers them. One inside a chosen folder is searched already: false, nothing changes.
+function addScope(folder) {
+  if (state.scopes.some((chosen) => chosen.path === folder.path || isInside(folder.path, chosen.path))) return false;
+  state.scopes = state.scopes.filter((chosen) => !isInside(chosen.path, folder.path)).concat(folder);
+  return true;
+}
+
+function removeScope(folder) {
+  state.scopes = state.scopes.filter((chosen) => chosen !== folder);
   renderChips();
+  if (state.picker) renderPicker();
+  else $query.focus();
+  searchAgain();
+}
+
+/// The chips changed: what's showing is searched again in the folders now chosen.
+function searchAgain() {
   if (state.like) findSimilar();
   else queryChanged();
-  $query.focus();
+}
+
+// MARK: The folder popover
+
+/// The folder button or Ctrl+O: the folders DigUp searches, each with the folders right inside it (the shell lists
+/// them: panel_folders), and the code folders apart (code: searches them). The arrows move, → and ← open and close a
+/// folder, Space checks one, Enter or Esc is done. While it's open the panel is its results' height, to have room.
+async function openPicker() {
+  let folders = { folders: [], code: [] };
+  try {
+    folders = await invoke("panel_folders");
+  } catch (error) {
+    failed(error);
+  }
+  state.picker = { folders, expanded: new Set(), cursor: 0 };
+  state.help = false;
+  $folderButton.classList.add("open");
+  renderPicker();
+  render();
+  $picker.focus();
+}
+
+function closePicker(focusQuery = true) {
+  if (!state.picker) return;
+  state.picker = null;
+  $picker.hidden = true;
+  $folderButton.classList.remove("open");
+  render();
+  if (focusQuery) $query.focus();
+}
+
+/// The popover's rows as they show: each folder and, when it's open, the folders inside it; the code folders under
+/// their own title.
+function pickerRows() {
+  const rows = [];
+  const add = (folders, code) => {
+    for (const folder of folders) {
+      const key = `${code}|${folder.path}`;
+      rows.push({ folder, key, inside: false });
+      if (state.picker.expanded.has(key)) for (const inside of folder.subfolders) rows.push({ folder: inside, inside: true });
+    }
+  };
+  add(state.picker.folders.folders, false);
+  if (state.picker.folders.code.length) {
+    rows.push({ title: "Code · searched with code:" });
+    add(state.picker.folders.code, true);
+  }
+  return rows;
+}
+
+/// A folder's checkbox: "checked" (it's a chip), "covered" (a folder it's in is), or "".
+function markOf(path) {
+  if (state.scopes.some((chosen) => chosen.path === path)) return "checked";
+  return state.scopes.some((chosen) => isInside(path, chosen.path)) ? "covered" : "";
+}
+
+function renderPicker() {
+  const picker = state.picker;
+  if (!picker) return;
+  const rows = pickerRows();
+  picker.cursor = Math.max(0, Math.min(picker.cursor, rows.length - 1));
+  if (rows[picker.cursor]?.title) picker.cursor += 1;
+  $picker.replaceChildren();
+  if (!rows.length) {
+    $picker.append(element("div", "picker-empty", "No folders chosen yet: add them in Settings → Folders."));
+  }
+  rows.forEach((row, index) => {
+    if (row.title) {
+      $picker.append(element("div", "picker-title", row.title));
+      return;
+    }
+    const mark = markOf(row.folder.path);
+    const open = !row.inside && picker.expanded.has(row.key);
+    const node = element("div", "picker-row" + (row.inside ? " inside" : "") + (mark ? ` ${mark}` : "")
+      + (open ? " expanded" : "") + (index === picker.cursor ? " cursor" : ""));
+    node.setAttribute("role", "treeitem");
+    node.setAttribute("aria-level", row.inside ? "2" : "1");
+    node.setAttribute("aria-checked", mark ? "true" : "false");
+    const opener = element("span", "open");
+    if (!row.inside && row.folder.subfolders.length) {
+      node.setAttribute("aria-expanded", open ? "true" : "false");
+      opener.innerHTML = ICONS.chevron;
+      opener.onclick = (event) => {
+        event.stopPropagation();
+        picker.cursor = index;
+        toggleOpen(row);
+      };
+    }
+    node.append(opener, element("span", "box", mark ? "✓" : ""), element("span", "name", row.folder.name));
+    if (!row.inside) node.append(element("span", "where", tilde(parentOf(row.folder.path))));
+    node.title = tilde(row.folder.path) + (mark === "covered" ? " (searched with the folder it's in)" : "");
+    node.onclick = () => {
+      picker.cursor = index;
+      toggleChecked(row);
+    };
+    $picker.append(node);
+  });
+  $picker.hidden = false;
+  $picker.querySelector(".cursor")?.scrollIntoView({ block: "nearest" });
+}
+
+function toggleOpen(row) {
+  const expanded = state.picker.expanded;
+  if (expanded.has(row.key)) expanded.delete(row.key);
+  else expanded.add(row.key);
+  renderPicker();
+}
+
+/// Checks a folder (it becomes a chip) or unchecks it. One inside a checked folder is searched already: nothing to do.
+function toggleChecked(row) {
+  const { path, name } = row.folder;
+  if (markOf(path) === "checked") state.scopes = state.scopes.filter((chosen) => chosen.path !== path);
+  else if (!addScope({ path, name, ambiguous: false })) return;
+  renderChips();
+  renderPicker();
+  searchAgain();
+}
+
+/// The popover's keys; false for those it leaves to the panel.
+function pickerKey(event) {
+  const picker = state.picker, rows = pickerRows();
+  const row = rows[picker.cursor];
+  switch (event.key) {
+    case "ArrowDown":
+    case "ArrowUp": {
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      let next = picker.cursor + step;
+      while (rows[next]?.title) next += step;
+      if (rows[next]) picker.cursor = next;
+      break;
+    }
+    case "Home":
+    case "End":
+      picker.cursor = event.key === "Home" ? 0 : rows.length - 1;
+      break;
+    case "ArrowRight":
+      // Opens a folder; on an open one, to the first folder inside it.
+      if (row && !row.inside && row.folder.subfolders.length) {
+        if (!picker.expanded.has(row.key)) picker.expanded.add(row.key);
+        else picker.cursor += 1;
+      }
+      break;
+    case "ArrowLeft":
+      // Closes a folder; inside one, back to it.
+      if (row?.inside) {
+        while (picker.cursor > 0 && rows[picker.cursor].inside) picker.cursor -= 1;
+      } else if (row) picker.expanded.delete(row.key);
+      break;
+    case " ":
+      if (row) toggleChecked(row);
+      break;
+    case "Enter":
+    case "Escape":
+    case "Tab":
+      event.preventDefault();
+      closePicker();
+      return true;
+    default:
+      return false;
+  }
+  event.preventDefault();
+  renderPicker();
+  return true;
+}
+
+/// "/home/me/Documents" → "/home/me", for the popover's grey "where".
+function parentOf(path) {
+  return path.slice(0, Math.max(1, path.search(/[\\/][^\\/]*$/)));
 }
 
 // MARK: More like this
@@ -226,7 +433,7 @@ function findSimilar(paused = false) {
   state.error = null;
   state.isCode = false;
   if (!paused) show({ hits: [], strong: 0 }, "", "similarWaiting");
-  const folders = state.scope ? [state.scope.path] : undefined;
+  const folders = scopeFolders();
   const filter = $filter.value.trim();
   state.timer = setTimeout(() => {
     ask({ op: "similar", path: state.like.path, limit: 40, folders, ...(filter ? { filter } : {}) })
@@ -345,7 +552,7 @@ function revealSelected() {
 // MARK: Drawing
 
 function render() {
-  const empty = state.phase === "empty" && !helpShown();
+  const empty = state.phase === "empty" && !helpShown() && !state.picker;
   // The shell gives the panel the person's height with results, and its fields' without.
   if (empty !== state.fieldsOnly) {
     state.fieldsOnly = empty;
@@ -433,10 +640,13 @@ function renderPreview() {
     return;
   }
   if (!state.strong.length && !state.weaker.length) {
-    const inside = state.scope ? ` in ${state.scope.name}` : "";
+    const inside = insideText();
     const filterTip = "Its words match whole: Rechnung* finds Rechnungen too, *kaution* finds Mietkautionskonto. "
       + "The ? beside it shows how it's written.";
-    if (state.isCode && !state.codeFolders) {
+    if (state.picker && state.phase === "empty") {
+      $preview.append(message("Choose where to search", "Check the folders to search in: the search covers all of "
+        + "them. Space checks one, → shows the folders inside it, Enter is done."));
+    } else if (state.isCode && !state.codeFolders) {
       $preview.append(message("No code folders yet", "Add the folders you keep code in under Settings → Code search; "
         + "then say what the code does, or type a name that's in it."));
     } else if (state.phase === "codeHint") {
@@ -602,7 +812,16 @@ function renderFooter() {
   else summary = `${strong} ${strong === 1 ? "result" : "results"}` + (weaker ? ` · ${weaker} weaker` : "");
   // Results while indexing are partial: say so where they're counted.
   if (state.indexing && !state.error) summary += ` · still indexing (${state.indexing.done} of ${state.indexing.total})`;
+  // The popover's own line while it's open: where the search looks, and its keys.
+  if (state.picker && !state.error) {
+    const count = state.scopes.length;
+    summary = count ? `Searching in ${count} ${count === 1 ? "folder" : "folders"}` : "Searching all your folders";
+  }
   $summary.textContent = summary;
+  if (state.picker) {
+    $keys.textContent = "Space Check   → Open   ↩ Done";
+    return;
+  }
   const hit = selectedHit();
   if (helpShown()) {
     $keys.textContent = `${document.activeElement === $filter ? "Tab Search field" : "Tab Filter"}   Esc `
@@ -613,18 +832,19 @@ function renderFooter() {
     + (hit && !state.isCode ? `   ${MOD}L More like this` : "");
 }
 
-/// The chips before the field: the folder searched in, and the file whose similar files are showing; removed with their
-/// × or (the last one) with Backspace at the field's start.
+/// The chips: the folders searched in, in the filter's row, and before the field the file whose similar files are
+/// showing. Each goes with its ×, or the last one with Backspace at the start of its field.
 function renderChips() {
-  const chips = [];
-  if (state.scope) {
-    // Another folder has the same name: the path says which one this is.
-    const name = state.scope.ambiguous ? tilde(state.scope.path) : state.scope.name;
-    chips.push(chip(`in ${name}`, tilde(state.scope.path), removeScope));
-  }
-  if (state.like) chips.push(chip(`Like ${state.like.name}`, tilde(state.like.path), () => leaveLike(true)));
-  $chips.replaceChildren(...chips);
-  $chips.hidden = !chips.length;
+  // Another folder has the same name (another chip's, or one in:'s lookup passed over): the path says which one.
+  const shown = (folder) => folder.ambiguous || state.scopes.some((other) => other !== folder && other.name === folder.name)
+    ? tilde(folder.path) : folder.name;
+  const folders = state.scopes.map((folder) => chip(`in ${shown(folder)}`, tilde(folder.path), () => removeScope(folder)));
+  $folderChips.replaceChildren(...folders);
+  $folderChips.hidden = !folders.length;
+  $folderButton.classList.toggle("active", folders.length > 0);
+  const like = state.like ? [chip(`Like ${state.like.name}`, tilde(state.like.path), () => leaveLike(true))] : [];
+  $chips.replaceChildren(...like);
+  $chips.hidden = !like.length;
 }
 
 function chip(text, title, remove) {
@@ -863,9 +1083,20 @@ $help.onclick = () => {
   render();
 };
 
+$folderButton.onmousedown = (event) => event.preventDefault();   // the popover takes the keyboard, not the button
+$folderButton.onclick = () => (state.picker ? closePicker() : openPicker());
+
 document.addEventListener("keydown", (event) => {
   if (event.isComposing) return; // an input method is composing: its keys
   const modifier = isMac ? event.metaKey : event.ctrlKey;
+  // Ctrl+O: the folder popover, open or closed.
+  if (modifier && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "o") {
+    event.preventDefault();
+    if (state.picker) closePicker();
+    else openPicker();
+    return;
+  }
+  if (state.picker && pickerKey(event)) return;
   if (modifier && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "l") {
     event.preventDefault();
     moreLike(selectedHit());
@@ -887,9 +1118,10 @@ document.addEventListener("keydown", (event) => {
       break;
     case "Escape":
       event.preventDefault();
-      // The filter's syntax goes, then the filter; similar files go back to the search before them; else the panel
-      // steps away.
-      if (state.help) {
+      // The folder popover goes first (pickerKey, when it has the keyboard), then the filter's syntax, then the
+      // filter; similar files go back to the search before them; else the panel steps away.
+      if (state.picker) closePicker();
+      else if (state.help) {
         state.help = false;
         render();
       } else if ($filter.value) clearFilter();
@@ -908,17 +1140,21 @@ document.addEventListener("keydown", (event) => {
       else if (state.selection === WEAKER) toggleWeaker();
       else openSelected();
       break;
-    case "Backspace":
-      // At the field's very start (nothing selected): the chip before it goes, the last one first.
-      if (event.target !== $query || $query.selectionStart !== 0 || $query.selectionEnd !== 0) break;
-      if (state.like) {
+    case "Backspace": {
+      // At a field's very start (nothing selected): a chip goes, the last one first. Before the query that's the
+      // similar files', then a folder's; before the filter, a folder's.
+      const field = event.target;
+      if ((field !== $query && field !== $filter) || field.selectionStart !== 0 || field.selectionEnd !== 0) break;
+      if (field === $query && state.like) {
         event.preventDefault();
         leaveLike(true);
-      } else if (state.scope) {
+      } else if (state.scopes.length) {
         event.preventDefault();
-        removeScope();
+        removeScope(state.scopes[state.scopes.length - 1]);
+        field.focus();
       }
       break;
+    }
   }
 });
 
@@ -928,12 +1164,14 @@ document.addEventListener("keydown", (event) => {
 // moved a few pixels with the button down, so a click there is still a click. The shell hears of it first
 // (`panel_drag`): GNOME takes the keyboard away while it moves a window, which mustn't hide the panel as a click
 // elsewhere does. Resizing needs nothing here: the edges are Tauri's, and the shell hears of them from GTK.
-const NOT_FOR_DRAGGING = "input, button, a, select, textarea, video, audio, .chip, .list, .preview";
+const NOT_FOR_DRAGGING = "input, button, a, select, textarea, video, audio, .chip, .list, .preview, .folder-picker";
 const DRAG_AFTER = 4;   // px moved with the button down
 const panelWindow = tauri.window.getCurrentWindow();
 let pressed = null;     // where the button went down on a place the panel is dragged by
 
 document.addEventListener("mousedown", (event) => {
+  // A press outside the folder popover puts it away (one on its button toggles it).
+  if (state.picker && !event.target.closest(".folder-picker, .folder-button")) closePicker(false);
   pressed = event.button === 0 && !event.target.closest(NOT_FOR_DRAGGING) ? { x: event.screenX, y: event.screenY }
                                                                          : null;
 });
@@ -960,15 +1198,20 @@ loadInfo();
 tauri.event.listen("panel-shown", () => {
   loadInfo();
   openTitles.clear();   // a default app or the code editor may have changed since
-  // Like Spotlight: the last query, selected. The filter was for that look only: it's gone, and the results with it.
-  const helped = state.help;
+  // Like Spotlight: the last query, selected. The filter and the folder chips were for that look only: they're gone,
+  // and their results with them.
+  const helped = state.help, scoped = state.scopes.length > 0;
   state.help = false;
+  state.scopes = [];
+  if (state.picker) closePicker(false);
+  renderChips();
   $query.focus();
   $query.select();
   if ($filter.value) {
     $filter.value = "";
     filterTyped();
-  } else if (helped) render();
+  } else if (scoped) searchAgain();
+  else if (helped) render();
   ask({ op: "prewarm" }).catch(() => {});
 });
 
@@ -1024,7 +1267,7 @@ function report() {
         query: $query.value,
         filter: $filter.value,
         filter_note: $filterNote.hidden ? null : $filterNote.textContent,
-        scope: state.scope && state.scope.path,
+        scopes: state.scopes.map((folder) => folder.path),
         like: state.like && state.like.path,
         phase: state.phase,
         size: `${innerWidth}x${innerHeight}`,

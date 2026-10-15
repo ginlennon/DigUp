@@ -15,13 +15,14 @@ This guide is for the Linux port (tested on Ubuntu 24.04 with GNOME). Setup is i
 | ↩ | opens the result: PDFs at the page with your word found, videos and recordings at the moment, the rest in its default app |
 | Ctrl+↩ | shows the file in Files, selected |
 | Tab, Ctrl+F | goes to the filter under the search field ([exact words](#filter-by-exact-words)); Tab goes back |
-| Esc | clears the filter if it has something, else closes the panel |
+| Ctrl+O | chooses the folders to search in ([folders](#search-in-some-folders)) |
+| Esc | closes the folder list, clears the filter if it has something, else closes the panel |
 
 The tray icon shows what DigUp is doing ("Indexing 120 of 482", "Transcribing 3 of 12" when transcripts are on,
 "Up to date · 482 files") and has Pause/Resume, Index Now, Settings… and Quit.
 
-**Moving and resizing the panel.** Drag it by its magnifier or funnel icon, the space around the fields or the
-footer; drag its edges to make it wider or, with results showing, taller. It keeps that size (Settings → Search
+**Moving and resizing the panel.** Drag it by the grip strip along its top (the small bar), its magnifier or funnel
+icon, the space around the fields or the footer; drag its edges to make it wider or, with results showing, taller. It keeps that size (Settings → Search
 panel → Reset Size goes back), but on Wayland GNOME decides where a window opens, so it may put the panel back in
 the middle the next time it opens.
 
@@ -119,11 +120,8 @@ there before pointing DigUp at your own folders.
 ### Keeping it out of your way
 
 15. **Only some folders.** Settings → Folders: add or remove folders, skip subfolders (an old sync conflict, a
-    downloads dump), or leave out file types (`heic, txt`). Search follows at once. To search *inside* one folder,
-    start the query with `in:` and the folder: *"in:Documents invoice"*, *"in:~/Pictures/2026 beach"*,
-    *"in:\"Big Folder\" notes"*. A chosen folder's name works, and so does the name of a folder right inside one
-    (*"in:Trips"*); the folder becomes a chip before the query, and Backspace at the start (or its ×) removes it.
-    With code: `in:billing-service code: retry`. From the terminal:
+    downloads dump), or leave out file types (`heic, txt`). Search follows at once. To search *inside* some folders
+    for a moment, choose them in the panel ([below](#search-in-some-folders)). From the terminal:
     `digup search "beach sunset" --in ~/Documents/Trips` (repeat `--in` for several).
 16. **Pause it.** Presenting, gaming, on a train? Tray → Pause Indexing. Search keeps working; new files wait until
     you resume. It stays paused across restarts.
@@ -138,6 +136,26 @@ there before pointing DigUp at your own folders.
     shortcut: `digup-shell --quit`, `--pause`, `--resume`, `--index-now`, `--settings`, `--show`, `--hide`,
     `--toggle` (without DigUp running, `--quit` just says so and `--pause`/`--resume` apply at its next start). To
     remove its data: `rm -rf ~/.local/share/digup ~/.config/com.abdurrahim.DigUp`.
+
+## Search in some folders
+
+The folder button at the start of the filter's row (or **Ctrl+O**) lists the folders DigUp searches; ▸ (or →) shows
+the folders right inside one. Check one or several: each becomes a chip in the filter's row (*in Documents*,
+*in Trips*), and the search covers all of them together, as `digup search --in ~/Documents --in ~/Trips` does.
+
+| Key (folder list) | What it does |
+|---|---|
+| ↓ ↑ | moves through the folders |
+| → ← | shows or hides the folders inside one (on a folder inside, ← goes back to it) |
+| Space | checks or unchecks the folder (one inside a checked folder is searched already) |
+| ↩, Esc, Tab | done: back to the search field |
+
+You can also type the folder at the start of the query: *"in:Documents invoice"*, *"in:~/Pictures/2026 beach"*,
+*"in:\"Big Folder\" notes"*. A chosen folder's name works, and so does the name of a folder right inside one
+(*"in:Trips"*); it makes the same chip. With code: `in:billing-service code: retry`. A chip goes with its ×, or the
+last one with Backspace at the start of the search field or the filter. Like the filter, the chips are for one
+look: they're gone when the panel opens again. Your code folders are listed apart: they're searched by queries that
+start with `code:`.
 
 ## Filter by exact words
 
