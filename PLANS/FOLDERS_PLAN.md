@@ -1,6 +1,6 @@
 # Folders: choose where to search, add a folder on the spot (plan, 2026-10-15)
 
-**S1, S2 and S3 done (2026-10-15, notes under them); S4–S5 PLAN ONLY — not implemented.**
+**All stages done (2026-10-15, notes under them).**
 
 ---
 
@@ -164,4 +164,36 @@ Files script "DigUp: Add this folder", CLI path; Settings shows it like any fold
   meant; `digup-http --scope ~/Sent` showed `partial` with 8, 16, 24 of 35 while it indexed. GNOME Shell's own
   notification service took the notification (it has `actions`); its Undo button wasn't pressed by hand.
 ### S4 — Docs: user guide cases (choose folders, add a repo, a coding app pinned to a repo), integrations README.
+**Done**, with S1–S3: the user guide's "Search in some folders", "Add a folder on the spot" (a repo among its
+cases) and "A coding app pinned to a repo"; the integrations README's "Pinned to a folder, and adding folders".
 ### S5 — `digup-ask` with an OpenAI-compatible backend.
+**Done** (`integrations/src/digup_ask.py`, entry point `digup-ask`). Notes and deviations:
+- `digup-ask [FOLDER] [question…]`: the first word is the folder when it is one, else the current folder. It uses
+  the DigUp class in-process with `Scope.of([folder])`, so everything `--scope` does holds. A folder in neither index
+  is added on y/N (`--yes`), through the app as `add_folder` does (the tool is named "digup-ask" in the
+  notification); adding stays off for the model. Then it waits while the folder is read (`--wait`, 120 s).
+- No new dependency: urllib and server-sent events by hand (about 150 lines) instead of `openai` or `httpx`. The
+  protocol part used is small (chat completions, tool calls, streamed deltas), and the integrations stay one set of
+  dependencies, no extra.
+- Tools for the model: `search_files` and `find_similar` when the folder is in the file index, `search_code` when
+  it's in the code index, and `read_match(n)`. Every match shown gets a number for the chat ([1], [2] …, the same
+  file and place keeps it), so the model cites [n] and reads a match by its number: no segment ids or code flags
+  for it to get wrong, and nothing it wasn't shown. Paths are relative to the folder. A call outside it ("../x",
+  an absolute path) is refused by the scope, and the model is told why.
+- Sources: the matches the answer cites; an answer citing none lists what was read for it ("none cited"), so a
+  "found nothing" answer doesn't look sourced. `/sources` adds the other matches with their scores.
+- The cap: after `--max-rounds` (8) rounds the last request has `tool_choice: "none"`. Without tools (`--no-tools`,
+  or a first request answered 4xx/5xx with "tool" in the error: llama.cpp without `--jinja` says "tools param
+  requires --jinja flag"), the top 6 matches of the file and code index go into the prompt; the history keeps only
+  questions and answers. The conversation sent is kept under 16 000 characters (old tool results cut, then the
+  oldest questions dropped), for an 8k-context local model.
+- The key: `$DIGUP_ASK_API_KEY` or `$OPENAI_API_KEY`, sent as a bearer header and taken out of any error text
+  shown (an endpoint may echo it). A non-local endpoint is named at the start: the passages go there.
+- Checked with a local llama.cpp server (`--jinja`, `-c 8192`, a Gemma MoE instruct GGUF with 4B active, Vulkan
+  on a laptop's integrated GPU) against a private index of testbed copies (a German folder with a lease PDF, a
+  recipe, a doctor's appointment, voice memos; a small billing repo in the code index). Tool calling worked: it searched (in
+  German for a French question), read the match, answered in the question's language (German, English, French) with
+  [1] citations, said "nothing found" for a question the folder can't answer (in English at first, despite the
+  German question: the language rule moved to the end of the system prompt, and then it answered in German), and
+  a search for `../billing-service` was refused. About 100 tokens/s reading, 20 tokens/s writing; 25–45 s per answer
+  with tools, mostly thinking; 19 s with `--no-tools`.

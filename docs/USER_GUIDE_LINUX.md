@@ -96,7 +96,8 @@ there before pointing DigUp at your own folders.
     [below](#a-coding-app-pinned-to-a-repo).
 11. **Your own files as a RAG source.** `uv run --project integrations digup-http` starts a local API on
     `127.0.0.1:8484`; `POST /context {"query": "…", "limit": 5}` returns the best passages with their file and page,
-    ready for a local model's prompt. Open WebUI and other tools can import `/openapi.json` as a tool server.
+    ready for a local model's prompt. Open WebUI and other tools can import `/openapi.json` as a tool server. Or
+    ask a folder in the terminal, with a model of your choice: [`digup-ask`](#ask-a-folder-questions).
 
 ### Scripts and the terminal
 
@@ -208,6 +209,35 @@ claude mcp add digup -- uv run --project ~/DigUp-Linux/integrations digup-mcp --
 
 The HTTP API takes the same flags: `digup-http --scope ~/git/my-app` for a local chat program about one repo, with
 `POST /folders` when `--allow-add-folders` is given. More in the [integrations README](../integrations/README.md).
+
+## Ask a folder questions
+
+`digup-ask` is a small chat in the terminal: you ask, a language model searches the folder with DigUp, reads what it
+found, and answers with the files it took it from. It works with a model on your own computer (a llama.cpp server)
+or any service that speaks the OpenAI chat API.
+
+```sh
+cd ~/DigUp-Linux
+uv run --project integrations digup-ask ~/Documents/Wohnung "Wie hoch ist die Kaution?"
+uv run --project integrations digup-ask ~/git/my-app       # no question: a chat about the folder
+```
+
+- **One folder only.** The model searches and reads only inside the folder you name (or the one you're in), like a
+  coding app pinned with `--scope`. A folder DigUp doesn't search yet is added if you say yes (DigUp has to be
+  running; you get its notification with Undo), and digup-ask waits while it's read.
+- **Answers with sources.** After each answer comes a short list of the files with the page, the moment or the
+  lines: *"[1] Unterlagen Wohnung.pdf · page 2"*. In the chat, `/sources` also lists the other matches DigUp found,
+  `/clear` starts over, ↑ brings back earlier questions and Ctrl+D ends it.
+- **In your language.** Ask in German, English, French … and it answers in that language, whatever language the
+  files are in. If nothing in the folder answers the question, it should say so rather than guess (a small model
+  sometimes still does: check the source).
+- **Which model.** By default a llama.cpp server on this computer, at `http://127.0.0.1:8080/v1`: start one with a
+  model that can call tools (`llama-server -m <model>.gguf --jinja -c 8192`, e.g. a Gemma or Qwen instruct GGUF).
+  Another one: `--base-url` and `--model` (or `DIGUP_ASK_BASE_URL` and `DIGUP_ASK_MODEL`), its key in
+  `DIGUP_ASK_API_KEY`. A model or server without tool calling still works: DigUp's best matches go into the
+  question instead (`--no-tools` does that from the start).
+- **What leaves the computer.** With a local model, nothing. With a hosted service, the passages DigUp finds, their
+  file names and your questions go to it: use it for folders you'd be fine sending there.
 
 ## Filter by exact words
 

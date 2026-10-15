@@ -26,7 +26,7 @@ passes here on both the CPU and the Vulkan GPU, so an index means the same thing
 | A filter of exact words under the search field (`Rechnung* AND (Uster OR Winterthur) NOT Mahnung`, `*kaution*`, `"phrases"`; `--filter`, HTTP and MCP `filter`) | ✅ new |
 | Code search in the app (`code:`, opens your editor at the line), Files right-click scripts | ✅ |
 | Control from outside (`digup-shell --toggle/--pause/--resume/--quit …`), turn off, GPU→CPU fallback, helper restarts | ✅ new |
-| MCP server (Claude Code, Cursor, VS Code, Zed) and a localhost HTTP API for RAG apps | ✅ [`integrations/`](integrations/README.md) |
+| MCP server (Claude Code, Cursor, VS Code, Zed), a localhost HTTP API for RAG apps, `digup-ask` (ask a folder questions, with any OpenAI-compatible model) | ✅ [`integrations/`](integrations/README.md) |
 | Install without the checkout: `scripts/linux/install-user.sh` (~/.local/opt/digup + app menu) | ✅ |
 | Packages (.deb / AppImage), updates | ⏳ not yet |
 | RAW photos, legacy .doc, SVG | ⏳ not yet |

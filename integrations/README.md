@@ -1,15 +1,18 @@
-# DigUp integrations: MCP server and local HTTP API
+# DigUp integrations: MCP server, local HTTP API, digup-ask
 
 DigUp's search for other programs. DigUp indexes your own files on your computer (documents, PDFs page by page,
 photos, screenshots with their text, audio, video, and code folders) with EmbeddingGemma 2 on llama.cpp. These two
-servers let other apps search that index:
+servers let other apps search that index, and a small chat program uses it:
 
 - **`digup-mcp`**: an [MCP](https://modelcontextprotocol.io) server for coding agents and chat apps (Claude Code,
   Cursor, VS Code Copilot, Zed…). They can search your files by meaning and read the passage that matched.
 - **`digup-http`**: a small JSON API on `127.0.0.1` for RAG apps, scripts and tool servers (Open WebUI…), with an
   OpenAPI 3.1 spec and a `/context` endpoint that returns ready-made, cited passages for a prompt.
+- **`digup-ask`**: ask one folder questions in the terminal. A chat model you choose (a local llama.cpp server, or
+  any OpenAI-compatible service) searches the folder with DigUp and answers, citing the files
+  ([below](#digup-ask-ask-a-folder-questions)).
 
-Both run DigUp's helper (`digup search-service`) and keep it open, so a search takes tens of milliseconds once the
+All three run DigUp's helper (`digup search-service`) and keep it open, so a search takes tens of milliseconds once the
 encoder is warm (the first one starts it: about a second). They only read the index; the desktop app can run at the
 same time.
 
@@ -257,6 +260,85 @@ one), then *Verify*. The tools appear as `search_files`, `read_segment`, `get_co
   `--cors http://localhost:3000` (your Open WebUI origin).
 - Open WebUI can also use the MCP server over HTTP (`digup-mcp --http`, URL `http://127.0.0.1:8765/mcp`).
 
+## digup-ask: ask a folder questions
+
+```sh
+uv run --project integrations digup-ask ~/Documents/Wohnung "Wie hoch ist die Mietkaution?"
+uv run --project integrations digup-ask ~/git/my-app            # no question: a chat about the folder
+cd ~/git/my-app && uv run --project ~/DigUp-Linux/integrations digup-ask "how is a failed call retried?"
+```
+
+The first word is the folder when it is one; otherwise it's the current folder, and every word is the question.
+DigUp is pinned to the folder as `--scope` pins the servers ([above](#pinned-to-a-folder-and-adding-folders)): the
+model searches and reads nothing outside it. A folder DigUp doesn't index yet is added when you say yes (`--yes`:
+without asking), by the running desktop app with its notification and Undo, as `add_folder` does; then digup-ask
+waits while it's read (up to `--wait` seconds, 120 by default; Ctrl+C asks right away, with what's read so far).
+
+One question as arguments: one answer, and it exits. No question: a chat, with line editing and the questions of
+earlier chats (↑; kept in `~/.local/state/digup/ask_history`, the answers never), `/sources` (the files of the last
+answer, and the other matches DigUp found), `/clear` (start over), Ctrl+C to stop an answer, Ctrl+D to end. The
+answer streams as it's written, the searches the model makes show dimmed (`-q` hides them), and the files it came
+from follow, with the page, time or lines:
+
+```
+$ digup-ask ~/Documents/Wohnung "Wie hoch ist die Mietkaution, und auf wann kann ich kündigen?"
+  search_files "Mietkaution Kündigung"
+  read_match [1] Unterlagen Wohnung.pdf · page 2
+Die Mietkaution beträgt drei Monatsmieten [1]. Die Kündigungsfrist beträgt drei Monate, wobei auf Ende März, Juni
+oder September gekündigt werden kann [1].
+
+Sources:
+  [1] Unterlagen Wohnung.pdf · page 2
+```
+
+**The model** is any OpenAI-compatible chat-completions endpoint:
+
+| | |
+|---|---|
+| `--base-url URL`, `$DIGUP_ASK_BASE_URL` | the API, ending in `/v1` (default `http://127.0.0.1:8080/v1`, a local llama.cpp server) |
+| `--model NAME`, `$DIGUP_ASK_MODEL` | the model (default: the endpoint's only one, as a llama.cpp server has) |
+| `$DIGUP_ASK_API_KEY`, else `$OPENAI_API_KEY` | the key, sent as a bearer token; never a flag, never shown, never written anywhere (a local server needs none) |
+
+It gets DigUp's search as tools (`search_files` and `find_similar` for documents, PDFs, pictures, recordings;
+`search_code` for a code folder; `read_match` to read a match's text) and calls them as it needs, at most
+`--max-rounds` rounds per question (8); then it's asked to answer with what it has. It's told to answer only from
+what the tools return, to say when nothing relevant was found, to cite the matches as [n], and to answer in the
+language of the question. An answer that cites nothing lists what was read for it instead ("Read for this answer
+(none cited)"). With `--no-tools`, or an endpoint that doesn't take tools (tried once per chat), DigUp's top matches
+for the question go into the prompt instead: one search, then the answer, which is quicker but can't search again
+with other words. Long chats are kept to about 16 000 characters: the older search results are shortened first,
+then the oldest questions go.
+
+Other flags: `--no-stream`, `--temperature T`, `--request-timeout S`, `--max-files N` (for adding, 20000), `--stats`
+(after each answer: requests, searches, the first token's time, tokens per second), and the helper flags above
+(`--index`, `--root`, `--code-root`, …). Only the standard library talks to the endpoint, so digup-ask needs nothing
+beyond what the servers need.
+
+A local llama.cpp server with a model that calls tools (an instruct GGUF of Gemma, Qwen or the like; `--jinja`
+turns tool calling on):
+
+```sh
+llama-server -m <model>.gguf --jinja -ngl 99 -c 8192 --port 8080
+uv run --project integrations digup-ask ~/Documents/Wohnung
+```
+
+8192 tokens of context are enough. On a laptop's integrated GPU, a mixture-of-experts model with 4B active
+parameters wrote about 20 tokens/s and read the prompt at about 100 tokens/s: an answer with one search and one
+match read took 25–45 s, most of it the model thinking before each step (`thinking…`); `--no-tools` took about
+20 s.
+
+A hosted OpenAI-compatible service (OpenRouter, a company gateway, OpenAI itself):
+
+```sh
+export DIGUP_ASK_BASE_URL=https://<the service>/v1 DIGUP_ASK_MODEL=<a model with tool calling>
+export DIGUP_ASK_API_KEY=…            # better from your password manager than typed into the shell's history
+uv run --project integrations digup-ask ~/git/my-app "how are invoices numbered?"
+```
+
+**Privacy.** With a local server nothing leaves your computer. With a hosted one, the passages DigUp finds in the
+folder, their file names and your questions go to that service (digup-ask says so when it starts). Point it only at
+folders you'd send there.
+
 ## Development
 
 ```sh
@@ -266,7 +348,8 @@ uv run --project integrations pytest -q integrations/tests      # unit tests aga
 The end-to-end test runs both servers against a real helper and a **copy** of an index of the DigUp testbed; see
 `tests/test_e2e_real.py` for the environment it needs. Files: `src/digup_client.py` (the helper process and its
 JSON-lines protocol), `src/digup_tools.py` (what both servers do, the scope), `src/digup_app.py` (the desktop app
-over the session bus), `src/digup_mcp.py`, `src/digup_http.py`. The tests never touch your session bus: they point
+over the session bus), `src/digup_mcp.py`, `src/digup_http.py`, `src/digup_ask.py` (only the standard library talks
+to the model: urllib and server-sent events; its tests use a fake OpenAI-compatible server, `tests/fake_openai.py`). The tests never touch your session bus: they point
 at one that isn't there, or start their own `dbus-daemon` with a stand-in for the app (`tests/fake_app.py`).
 
 The helper's protocol is documented in `Sources/digup/SearchService.swift`. The integrations send `folders` to
