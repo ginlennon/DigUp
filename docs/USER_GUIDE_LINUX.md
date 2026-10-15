@@ -29,6 +29,11 @@ the middle the next time it opens.
 "the bit where they talk about the storm". Type exact things exactly: an invoice number, an error code, a name.
 DigUp does both at once: the meaning of your words, and the words themselves (in file names, document text, and
 the text inside screenshots and scans). Results that are clearly weaker are folded under "N weaker matches".
+Rare words count more than common ones ("die", "für", "the", "la"), in any language. A code is matched as written:
+*"RE-2041"* finds RE-2041 (or "RE 2041" in a transcript), not INV-2041. Say what kind of file you mean in English,
+German, French, Spanish, Italian or Portuguese and those come first: *"Fotos vom Strand"*, *"Bildschirmfoto
+Zahlung abgelehnt"*, *"capture d'écran paiement refusé"*, *"Sprachnachricht wegen der Rechnung"*, *"grabación de
+la llamada por la factura"*.
 
 ## 20 ways to use it
 

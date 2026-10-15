@@ -182,3 +182,80 @@ At most 18 ms on top of the search (target < 50 ms). Two things made that: suffi
 on bytes of text folded by hand (Foundation's case- and accent-blind search took 37 ms for `*tion*`'s candidates,
 folding the whole text with Foundation 161 ms), and the snippet's marks fold a segment's text once for all terms, ASCII
 as it is (`SearchText.Folded`: a hit list of 20 took 200 ms before).
+
+## Keyword filter F4 — the main field's words: rare words, codes, kind words (2026-10-15)
+
+[KEYWORD_FILTER_PLAN.md](../../PLANS/KEYWORD_FILTER_PLAN.md) A6.2–A6.4, each measured alone, then together. Same
+index as F2 (the testbed with transcripts), same build otherwise, Vulkan on the 860M.
+- **Rare words count more** (A6.2): the share of the query's words a file has (coverage: the gate at 0.5 and the
+  bonus) weighs each word by BM25's IDF over the index's files instead of 1. A word in no file counts as an average
+  word for the ranking and as a word in one file at the gate (`Searcher.weights`).
+- **Codes kept together** (A6.3): a query word of two parts or more with a digit (`RE-2041`, `2'380.50`, `189,90`,
+  `OF-2026-118`) is one FTS phrase of its parts when the index has it so; otherwise its parts, as before ("FA-1187"
+  still finds the transcript's "FAM 1187"). A code typed with a space ("LX 1074") stays two words.
+- **Kind words in de/fr/es/it/pt** (A6.4): "Foto", "Bild", "Bildschirmfoto", "Sprachnachricht", "Tonaufnahme",
+  "capture d'écran", "message vocal", "captura de pantalla", "grabación", "schermata", "registrazione", "gravação" …
+  (accents optional, whole words, phrases as phrases) give the kind's boost and are not searched for as words.
+  "Aufnahme", "Film", "enregistrement" and "registrazione" are everyday words too (an admission, a registration):
+  they give the boost and stay words.
+
+`european.json` gains 41 queries written for these fixes (so they favour them; the 101 before are the fair test):
+13 `stopwords` (de 8, en/fr/es/it/pt 1 each: "die Kaution für die Wohnung in Uster"), 11 `code-twin` (codes and
+amounts with a twin that shares a part: "2026-117" beside 2026-0815 and every "2026" in a file name, "189,90" beside
+"129,90" and "64,90", "Rechnung RE-2041"), 17 `kind-word` (de 7, fr 4, es 2, it 2, pt 1, en 1), three of them on the
+everyday sense ("Aufnahme in die Schule" → the school enrolment PDF, "enregistrement au cours de piano",
+"registrazione al corso di yoga").
+
+R@1 / R@5 / MRR:
+
+| | european, the 101 before | `stopwords` (13) | `code-twin` (11) | `kind-word` (17) | synthetic (37) | multilingual (48) | code (41) |
+|---|---|---|---|---|---|---|---|
+| before F4 | 0.891 / 0.950 / 0.913 | 1.00 / 1.00 / 1.00 | 0.818 / 1.00 / 0.879 | 0.588 / 0.941 / 0.765 | 0.973 / 1.00 / 0.986 | 0.938 / 0.979 / 0.955 | 1.00 / 1.00 / 1.00 |
+| rare words alone | 0.891 / **0.941** / 0.911 | same | same | same | same | same | same |
+| codes alone | same as before | same | **1.00 / 1.00 / 1.00** | same | same | same | same |
+| kind words alone | same as before | same | same | **0.941 / 0.941 / 0.941** | same | same | same |
+| **all three (kept)** | 0.891 / 0.941 / 0.911 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 0.941 / 0.941 / 0.941 | 0.973 / 1.00 / 0.986 | 0.938 / 0.979 / 0.955 | 1.00 / 1.00 / 1.00 |
+
+european, all 142: 0.859 / 0.958 / 0.900 before, **0.915 / 0.951 / 0.930** with the three. The 25 filter queries stay
+25 of 25 exact in every row.
+
+What the ranks don't show is what rare words are for: files that come in by common words alone. Counted as the
+results in each query's top 10 that aren't expected and are there by their words only (no meaning match, z < 2),
+over the queries without a filter (`digup search -n 10`):
+
+| | european, 76 before | the 41 new | synthetic (37) | multilingual (48) |
+|---|---|---|---|---|
+| before F4 | 33 of 377 listed | 47 of 256 | 8 of 169 | 3 of 285 |
+| rare words alone | **1** of 343 | **3** of 212 | 4 of 164 | 0 of 282 |
+| codes alone | 31 of 375 | 24 of 233 | 6 of 167 | 3 of 285 |
+| kind words alone | 33 of 377 | 58 of 266 | 8 of 169 | 3 of 285 |
+| all three | 2 of 344 | 6 of 215 | 2 of 162 | 0 of 282 |
+
+Examples: "Offerten für die Sanierung des Bootsstegs" no longer lists `Arzttermin.odt` and two other memos («für»
+«die» «des»), "Bahnhofstraße 12" no longer lists four files with a 12, "RE-2041" no longer lists the screenshot with
+`INV-2041` (and "INV-2041" no longer the two calls), "CHF 2'380.50" no longer word-matches the sailing log's page with
+a 50. Kind words alone let more in (the query has fewer words left, so its common ones weigh more: "Foto vom Zebra" is
+"vom zebra"); with rare words that's 6.
+
+Decisions (rule: better european R@1 or MRR, or a named failure fixed, and no eval down more than 0.01 in R@1 or MRR):
+- **Rare words: kept.** R@1 and MRR of the old queries unchanged (MRR −0.002), R@5 −0.009: "EXP-6083" (said "XP6083"
+  in the transcript) was #5 only because "exp" became "exp*" and matched "expediente"; with "exp*" in three files and
+  "6083*" in one, the call no longer passes. Fixes the named failure: word-only intruders 33 → 1 on the old european
+  queries.
+- **Codes: kept.** Fixes RE-2041 ↔ INV-2041 and the twins ("2026-117", "129,90" #3 → #1); nothing else moved.
+- **Kind words: kept.** 6 of the 7 kind-word queries that weren't first are first ("Sprachnachricht wegen einer
+  unbezahlten Rechnung", "grabación de una llamada por una factura pendiente", "registrazione della telefonata …" no
+  longer lose to the invoice PDFs; "Foto vom Zebra" and "Bild von einem Pinguin" find the photo before the video);
+  the three everyday-sense queries stay first. The miss left is English: "recording of the board meeting" (the
+  German meeting has none of those words and no meaning match; "recording" as a kind word was tried and changed
+  nothing).
+
+Limits seen: rarity is the index's, so on a small index or one where a language is rare, its common words are rare
+too ("vom" and "von" are in 2 and 4 of the testbed's 111 files and still let a file in). A vague query whose only word
+matches were common words now says "no good matches" ("grabación de la llamada": before, five files with «de» «la»,
+the Spanish call among them). Where a hit points is unchanged: a meaning match still points at its own segment
+("Offerten für die Sanierung des Bootsstegs" at 2:05, not 1:15).
+
+Speed (`digup search -n 20`, best of three; 8 queries, German, French, codes, kind words): testbed 2–5 ms before and
+after; a copy of the dev laptop's real index (4,059 segments) 6–22 ms before, 6–13 ms after (fewer files pass the
+gate, so fewer hits are built).

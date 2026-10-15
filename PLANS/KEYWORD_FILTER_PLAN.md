@@ -1,8 +1,8 @@
 # PLAN — A keyword filter beside the search field (AND, OR, NOT, wildcards, phrases)
 
-**Status (2026-10-14): F1 (normalization + `fts_tri`, schema 6), F2 (the filter in the engine, CLI, search
-service, evals), F3 (panel, HTTP, MCP) and F5's user guide, README and integrations docs built; F3 waits for the
-user to try it; F4 not yet.** Starts after transcripts Stage 2
+**Status (2026-10-15): F1 (normalization + `fts_tri`, schema 6), F2 (the filter in the engine, CLI, search
+service, evals), F3 (panel, HTTP, MCP), F4 (the main field's rare words, codes, kind words: all three kept) and F5
+built; F3 waits for the user to try it.** Starts after transcripts Stage 2
 (PLANS/TRANSCRIPTS_PLAN.md) is merged, since both touch the keyword index. Input: the German keyword weaknesses
 measured in `docs/linux-port/EVAL_RESULTS.md` ("European languages — baseline").
 
@@ -197,9 +197,34 @@ Second field (Tab / Ctrl+F, Esc order, a parse hint), the hit's page/moment as t
   transcribed temp index needs Settings' transcripts on.
 
 ### F4 — Main-field fixes A6.2–A6.4, one at a time, measured.
+- **Done (2026-10-15), all three kept.** Decided on the way:
+  - *Rare words* (A6.2): coverage (gate 0.5 and bonus) weighs each query word by BM25's IDF over the index's files
+    (`Searcher.weights`), no stopword lists added (the English, Bengali and Arabic ones stay). A word in no file counts
+    as an average word for the bonus (else "black and white striped animal", where only "animal" is in a name, lost
+    the zebra photo's #1) and as a word in one file at the gate (else "photo d'un perroquet" without "perroquet" let in
+    every file with "un"). A query of only common words still ranks by them.
+  - *Codes* (A6.3): a query word of two parts or more with a digit is one FTS phrase of its parts ("re 2041") when the
+    index has that phrase, else its parts as before ("FA-1187" still finds the transcript's "FAM 1187"); then it's a
+    lookup (`isLookup`). Marked as one in the snippet («RE 2041», `KeywordFilter.marks(of:in:)`). `Searcher.terms(_:)`
+    without `keepingCodes` still gives the parts (the Mac app's highlights). Out of scope: a code typed with a space
+    ("LX 1074").
+  - *Kind words* (A6.4): de/fr/es/it/pt words and phrases ("capture d'écran", "nota de voz") compared without accents,
+    whole words; dropped from the query's words as the English ones are, except "Aufnahme", "Film", "enregistrement",
+    "registrazione" (everyday words too: a hint, and still words). "recording"/"voicemail" for English changed nothing
+    and were left out. Bengali and Arabic unchanged.
+- **Check:** 41 new european queries (`stopwords`, `code-twin`, `kind-word`; written for the fixes, so the 101 before
+  are the fair test). The 101 before: R@1 0.891 and MRR 0.913 → 0.911 (R@5 0.950 → 0.941: "EXP-6083" was #5 by
+  "exp*" matching "expediente"); european all 142: 0.859 / 0.958 / 0.900 → 0.915 / 0.951 / 0.930; synthetic,
+  multilingual, code identical; 25 of 25 filter queries exact. Word-only intruders in the top 10 (no meaning match,
+  not expected): 33 → 2 on the old european queries. Search speed unchanged on the testbed, a bit faster on the real
+  index's copy. Numbers in `docs/linux-port/EVAL_RESULTS.md`.
+- Open: rarity is the index's, so a language that's rare in an index keeps its common words rare; a vague query whose
+  only word matches were common words now says "no good matches"; a meaning match still points at its own segment
+  ("Offerten für die Sanierung des Bootsstegs" at 2:05).
 
 ### F5 — Docs: user guide cases ("Rechnung* NOT Mahnung", "*kaution*", a phrase), README, EVAL_RESULTS.
 - **User guide, README, integrations README done (2026-10-14)** with F3: docs/USER_GUIDE_LINUX.md "Filter by exact
   words" (five cases checked on `synthetic/lang/eu`: `*kaution*`, `Versichertenkarte*`, `Rechnung* NOT Brunner` (the
   testbed has no "Mahnung"), `"Bahnhofstrasse 12"` with and without "Mietvertrag", `ZK-4471`), the key table (Tab,
-  Ctrl+F, Esc); README's Linux table; integrations/README.md. EVAL_RESULTS waits for F4.
+  Ctrl+F, Esc); README's Linux table; integrations/README.md. EVAL_RESULTS with F4 (2026-10-15); the user guide's
+  "How to ask" says rare words count more, codes match as written, and kind words work in de/fr/es/it/pt.
