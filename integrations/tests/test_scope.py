@@ -264,3 +264,30 @@ def test_the_session_bus_without_its_variables(monkeypatch):
     monkeypatch.setattr(digup_app.os.path, "exists", lambda path: False)
     with pytest.raises(KeyError):
         digup_app.session_bus()
+
+
+def test_a_folder_added_whose_settings_come_late(fake_helper, tmp_path):
+    # The app's answer can come before its settings are read here: a search right after mustn't call the folder
+    # not indexed (it did for ~10 s once, on a real desktop).
+    import threading
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"folders": ["/data/docs"]}))
+
+    class LateApp(FakeApp):
+        def add_folder(self, folder, tool, max_files):
+            self.asked.append((folder, tool, max_files))
+            self.pending.append(folder)
+            later = json.dumps({"folders": ["/data/docs", folder]})
+            threading.Timer(0.6, settings.write_text, [later]).start()
+            return {"ok": True, "added": True, "path": folder, "message": f"{tool} added {folder} to DigUp"}
+
+    app = LateApp()
+    load = lambda: HelperConfig.load(settings=str(settings))   # noqa: E731
+    d = DigUp(config=load(), scope=Scope.of(["/data/notes"]), app=app, allow_add=True, reload_config=load,
+              tool="claude-code")
+    try:
+        assert [hit["path"] for hit in d.search("zebra").hits] == ["/data/notes/todo.md"]
+        assert [hit["path"] for hit in d.search("zebra").hits] == ["/data/notes/todo.md"], "and right after"
+        assert len(app.asked) == 1
+    finally:
+        d.close()

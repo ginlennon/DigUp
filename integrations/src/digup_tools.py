@@ -64,6 +64,7 @@ class NotIndexed(DigUpError):
 
 # How many files a folder a tool adds may have, unless --max-files says otherwise (the shell's tools::MAX_FILES).
 MAX_FILES = 20_000
+FIRST_FILES_WAIT = 8.0   # seconds a search waits for the first files of a folder added for it
 
 
 # MARK: Arguments
@@ -320,6 +321,7 @@ class DigUp:
         self._config_read = time.monotonic()
         self._reloaded = 0.0
         self._was_partial = False
+        self._just_added = False                    # a folder was added for this search: wait for its first files
 
     def close(self) -> None:
         self.client.close()
@@ -405,7 +407,9 @@ class DigUp:
         missing = [f for f in self.scope.folders if not self._covered(f, False) and not self._covered(f, True)]
         if not missing:
             return
-        if self.refresh(every=10.0):
+        # The settings are a small file, read again at most every second while part of the scope isn't covered:
+        # a folder added a moment ago (here or in DigUp) mustn't be "not indexed" for long.
+        if self.refresh(every=1.0):
             missing = [f for f in missing if not self._covered(f, False) and not self._covered(f, True)]
         if not self.allow_add:
             return
@@ -422,6 +426,13 @@ class DigUp:
                 continue
             with self._lock:
                 self._tried[folder] = float("inf")
+                self._just_added = True
+            # The app saved its settings before it answered; should they not be read yet, a few more looks.
+            for _ in range(8):
+                if self._covered(folder, False) or self._covered(folder, True):
+                    break
+                time.sleep(0.25)
+                self.refresh(force=True)
             self._say(f"{answer.get('message') or 'Added ' + shown(folder)} {answer.get('follow', '')}".strip())
 
     def _say(self, note: str) -> None:
@@ -580,6 +591,20 @@ class DigUp:
         partial = self._partial(folders)   # first: it reloads the index while new files come in
         reply = self.client.request("search", **fields)
         hits, strong = self._kept(reply, kinds, folders, limit)
+        with self._lock:
+            just_added, self._just_added = self._just_added, False
+        # A folder added for this very search: its first files take a few seconds, so look again a little while
+        # rather than answer "no matches" from an index that hasn't read it yet.
+        waited = time.monotonic()
+        while just_added and partial and not hits and time.monotonic() - waited < FIRST_FILES_WAIT:
+            time.sleep(1.0)
+            try:
+                self.client.request("reload")
+            except DigUpError:
+                pass
+            partial = self._partial(folders)
+            reply = self.client.request("search", **fields)
+            hits, strong = self._kept(reply, kinds, folders, limit)
         self._remember(hits, code)
         return Results(query=text, code=code, hits=hits, strong=strong, meaning=bool(reply.get("meaning")),
                        warning=reply.get("warning"), ms=reply.get("ms"), filter=keywords,
