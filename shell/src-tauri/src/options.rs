@@ -99,7 +99,8 @@ impl Options {
                 "--yes" => options.yes = true,
                 "--max-files" => {
                     let text = value()?;
-                    options.max_files = Some(text.parse().map_err(|_| format!("--max-files takes a number, not {text}"))?);
+                    let number = text.parse().map_err(|_| format!("--max-files takes a number, not {text}"))?;
+                    options.max_files = Some(number);
                 }
                 "--add-folder" => {
                     let folder = PathBuf::from(value()?);
@@ -288,7 +289,8 @@ mod tests {
                    Ok(Some(Ok(("/home/me/git/app".into(), "claude-code".into(), crate::tools::MAX_FILES)))));
         assert_eq!(request(&["--from-tool", "x", "--yes", "--max-files", "500", "--add-folder", "/data"]),
                    Ok(Some(Ok(("/data".into(), "x".into(), 500)))));
-        assert!(request(&["--add-folder", "/data", "--from-tool", "x"]).unwrap().unwrap().unwrap_err().contains("--yes"));
+        let unasked = request(&["--add-folder", "/data", "--from-tool", "x"]).unwrap().unwrap();
+        assert!(unasked.unwrap_err().contains("--yes"));
         assert!(request(&["--from-tool", "x", "--yes"]).unwrap().unwrap().unwrap_err().contains("--add-folder"));
         assert!(request(&["--max-files", "lots"]).unwrap_err().contains("takes a number"));
     }

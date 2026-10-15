@@ -791,10 +791,15 @@ fn tool_add(app: &AppHandle, folder: String, tool: String, max_files: u32) -> Va
     }
     let shown = tools::shown(&path, home.as_deref());
     if look.kind == adding::Kind::Inside {
-        let within = tools::shown(Path::new(look.within.as_deref().unwrap_or_default()), home.as_deref());
+        let within = look.within.clone().unwrap_or_default();
         let how = if look.code { "code search" } else { "search" };
-        return json!({"ok": true, "added": false, "path": look.path, "code": look.code,
-                      "message": format!("{shown} is searched already (it's in {within}, for {how}).")});
+        let message = if within == look.path {
+            format!("{shown} is one of DigUp's folders already (for {how}).")
+        } else {
+            let within = tools::shown(Path::new(&within), home.as_deref());
+            format!("{shown} is searched already (it's in {within}, for {how}).")
+        };
+        return json!({"ok": true, "added": false, "path": look.path, "code": look.code, "message": message});
     }
     let cap = if max_files == 0 { tools::MAX_FILES } else { max_files };
     let counted = tools::count(&path, cap as u64, Instant::now() + tools::COUNT_TIME);
@@ -837,7 +842,8 @@ fn tool_add(app: &AppHandle, folder: String, tool: String, max_files: u32) -> Va
         }
         _ => {}
     };
-    if let Err(error) = shell.notifier.show(&format!("{tool} added {shown} to DigUp"), &body, &[("undo", "Undo")], then) {
+    let summary = format!("{tool} added {shown} to DigUp");
+    if let Err(error) = shell.notifier.show(&summary, &body, &[("undo", "Undo")], then) {
         log_error!("digup-shell: {error}");
         message.push_str(" (DigUp couldn't show a notification: Settings → Folders takes it out again.)");
     }

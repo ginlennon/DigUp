@@ -55,8 +55,8 @@ pub fn shown(path: &Path, home: Option<&Path>) -> String {
 
 /// Why a tool may not add `folder` (absolute, its links resolved), on top of the add window's reasons (adding.rs).
 pub fn refused(folder: &Path, home: Option<&Path>, settings: &Settings) -> Option<String> {
-    let shown = folder.display();
     let Some(home) = home else { return Some("DigUp can't tell where your home folder is.".into()) };
+    let shown = shown(folder, Some(home));
     let Ok(inside) = folder.strip_prefix(home) else {
         return Some(format!("{shown} isn't in your home folder: tools may only add folders inside it."));
     };
@@ -68,7 +68,9 @@ pub fn refused(folder: &Path, home: Option<&Path>, settings: &Settings) -> Optio
     }
     for skip in settings.skipped.iter().chain(&settings.code_skipped) {
         if folder.starts_with(skip) {
-            return Some(format!("{shown} is left out in DigUp's settings ({skip}): take it in there if you want it \
+            let skip = self::shown(Path::new(skip), Some(home));
+            let what = if skip == shown { String::new() } else { format!(" ({skip})") };
+            return Some(format!("{shown} is left out in DigUp's settings{what}: take it in there if you want it \
                                  searched."));
         }
     }
@@ -161,7 +163,8 @@ impl Change {
         drop(&mut settings.skipped, &self.skipped);
         drop(&mut settings.code_folders, &self.code_folders);
         drop(&mut settings.code_skipped, &self.code_skipped);
-        for (list, back) in [(&mut settings.skipped, &self.unskipped), (&mut settings.code_skipped, &self.code_unskipped)] {
+        let restored = [(&mut settings.skipped, &self.unskipped), (&mut settings.code_skipped, &self.code_unskipped)];
+        for (list, back) in restored {
             for item in back {
                 if !list.contains(item) {
                     list.push(item.clone());
@@ -191,6 +194,8 @@ impl Progress {
     pub fn added(&mut self, folder: &str, now: Instant) {
         self.pending.retain(|(path, _)| path != folder);
         self.pending.push((folder.to_string(), now));
+        // The last pass's counts aren't this one's.
+        (self.state, self.done, self.total) = ("syncing", 0, 0);
     }
 
     /// It was taken out again (Undo).
@@ -204,7 +209,10 @@ impl Progress {
         match event["event"].as_str().unwrap_or_default() {
             "sync" => {
                 self.synced = Some(now);
-                if self.state.is_empty() || self.state == "idle" {
+                // What the sync queued is what this pass reads.
+                if count("pending") > 0 {
+                    (self.state, self.done, self.total) = ("indexing", 0, count("pending"));
+                } else if self.state.is_empty() || self.state == "idle" {
                     self.state = "syncing";
                 }
             }
@@ -413,10 +421,17 @@ mod tests {
                    (Some("indexing"), Some(40), Some(300)));
         assert_eq!(progress.json(true)["state"], "paused");
         progress.added("/home/me/Sent", later(4));   // during the pass: waits for the next
+        let state = |progress: &Progress| {
+            let status = progress.json(false);
+            (status["state"].as_str().unwrap_or_default().to_string(), status["total"].as_u64().unwrap_or_default())
+        };
+        assert_eq!(state(&progress), ("syncing".to_string(), 0), "the last pass's counts aren't the next one's");
         progress.event(&json!({"event": "idle"}), later(5));
         assert_eq!(progress.json(false)["pending"], json!(["/home/me/Sent"]));
         assert_eq!(progress.json(false)["state"], "idle");
         progress.removed("/home/me/Sent");
         assert_eq!(progress.json(false)["pending"], json!([]));
+        progress.event(&json!({"event": "sync", "pending": 35}), later(6));
+        assert_eq!(state(&progress), ("indexing".to_string(), 35), "what the sync queued");
     }
 }

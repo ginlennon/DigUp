@@ -285,8 +285,11 @@ def scope_lines(status: dict[str, Any]) -> list[str]:
         if app.get("running") is False:
             lines.append("DigUp app: not running (so indexing isn't under way, and folders can't be added)")
         else:
-            lines.append(f"DigUp app: indexing {app.get('state')}"
-                         + (f", {app.get('done')} of {app.get('total')}" if app.get("state") == "indexing" else ""))
+            counts = f" {app.get('done')} of {app.get('total')}" if app.get("total") else ""
+            doing = {"idle": "up to date", "indexing": f"indexing{counts}", "transcribing": f"transcribing{counts}",
+                     "syncing": "looking for changes", "paused": "indexing is paused",
+                     "waiting": "waiting for its model to download"}.get(str(app.get("state")), "starting")
+            lines.append(f"DigUp app: running, {doing}")
     if status.get("allow_add_folders"):
         lines.append(f"Adding folders: allowed (add_folder; at most {status.get('max_files')} files, inside the home "
                      "folder)")

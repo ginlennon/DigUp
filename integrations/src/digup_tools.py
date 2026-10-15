@@ -527,8 +527,8 @@ class DigUp:
                 row["indexed"] = "fully"
             elif "partly" in (files, code):
                 row["indexed"] = "partly"
-                inner = [r for r in self.config.roots + self.config.code_roots if r != folder and is_inside(r, [folder])]
-                row["inside"] = inner
+                roots = self.config.roots + self.config.code_roots
+                row["inside"] = [root for root in roots if root != folder and is_inside(root, [folder])]
             else:
                 row["indexed"] = "no"
             rows.append(row)
@@ -620,7 +620,8 @@ class DigUp:
         if not isinstance(path, str) or not path.strip():
             raise BadRequest("path is empty")
         if self.scope is not None and not self.scope.contains(absolute(path)):
-            raise Forbidden(f"{shown(absolute(path))} is outside the folders this server searches ({self.scope.text()})")
+            raise Forbidden(f"{shown(absolute(path))} is outside the folders this server searches "
+                            f"({self.scope.text()})")
         kinds, limit = kinds_of(kinds), limit_of(limit)
         folders, notes = self._effective(folders, False)
         fields: dict[str, Any] = {"path": absolute(path), "limit": min(max(limit * 5, 50), 400) if folders else limit}
@@ -676,6 +677,7 @@ class DigUp:
         return image
 
     def status(self) -> dict[str, Any]:
+        self._ensure_scope()   # first: a scope added now is in the folders listed
         reply = self.client.request("status")
         try:
             helper = str(find_helper(self.config.helper))
