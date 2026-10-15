@@ -43,10 +43,21 @@ pub struct Options {
     /// Started at login (the autostart entry): just the tray. A second launch with it (DigUp is running already)
     /// doesn't show the panel either.
     pub background: bool,
+    /// `--add-folder DIR --from-tool NAME --yes`: added by the running DigUp without its window, as a tool asks
+    /// (tools.rs): the tool's name, and that it was meant (`--yes`).
+    pub from_tool: Option<String>,
+    pub yes: bool,
+    /// With `--from-tool`: at most this many files (default tools::MAX_FILES).
+    pub max_files: Option<u32>,
 }
 
 impl Options {
     pub fn from_args() -> Result<Options, String> {
+        Options::parse(std::env::args().skip(1))
+    }
+
+    /// The options in these arguments (the program's name left out).
+    pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Options, String> {
         let mut options = Options {
             helper: default_helper(),
             index: None,
@@ -62,8 +73,11 @@ impl Options {
             debug_quit: false,
             debug_show: false,
             background: false,
+            from_tool: None,
+            yes: false,
+            max_files: None,
         };
-        let mut args = std::env::args().skip(1);
+        let mut args = args.into_iter();
         while let Some(arg) = args.next() {
             let mut value = || args.next().ok_or_else(|| format!("{arg} needs a value"));
             match arg.as_str() {
@@ -81,6 +95,12 @@ impl Options {
                 "--debug-quit" => options.debug_quit = true,
                 "--debug-show" => options.debug_show = true,
                 "--background" => options.background = true,
+                "--from-tool" => options.from_tool = Some(value()?),
+                "--yes" => options.yes = true,
+                "--max-files" => {
+                    let text = value()?;
+                    options.max_files = Some(text.parse().map_err(|_| format!("--max-files takes a number, not {text}"))?);
+                }
                 "--add-folder" => {
                     let folder = PathBuf::from(value()?);
                     options.command = Some(Command::AddFolder(std::path::absolute(&folder).unwrap_or(folder)));
@@ -156,6 +176,19 @@ impl Command {
 }
 
 impl Options {
+    /// `--add-folder DIR --from-tool NAME --yes [--max-files N]`: the folder, the tool and the cap, for the running
+    /// DigUp to add without asking (tools.rs). None without `--from-tool`; an error when the rest is missing.
+    pub fn tool_request(&self) -> Option<Result<(PathBuf, String, u32), String>> {
+        let tool = self.from_tool.clone()?;
+        let Some(Command::AddFolder(folder)) = self.command.clone() else {
+            return Some(Err("--from-tool goes with --add-folder DIR".into()));
+        };
+        if !self.yes {
+            return Some(Err("--from-tool adds the folder without asking: say --yes".into()));
+        }
+        Some(Ok((folder, tool, self.max_files.unwrap_or(crate::tools::MAX_FILES))))
+    }
+
     /// The index folder the helpers use: the one given, else the helper's default (which the watcher must pass over).
     pub fn index_folder(&self) -> Option<PathBuf> {
         if self.index.is_some() {
@@ -245,5 +278,18 @@ mod tests {
                    "a folder with a command's name is a folder");
         assert_eq!(in_args(&["digup-shell", "--add-folder"]), None, "no folder: nothing to do");
         assert!(Command::AddFolder("/x".into()).starts_app());
+    }
+
+    #[test]
+    fn a_folder_a_tool_adds() {
+        let request = |list: &[&str]| Options::parse(args(list)).map(|options| options.tool_request());
+        assert_eq!(request(&["--add-folder", "/home/me/git/app"]), Ok(None), "the add window's, not a tool's");
+        assert_eq!(request(&["--add-folder", "/home/me/git/app", "--from-tool", "claude-code", "--yes"]),
+                   Ok(Some(Ok(("/home/me/git/app".into(), "claude-code".into(), crate::tools::MAX_FILES)))));
+        assert_eq!(request(&["--from-tool", "x", "--yes", "--max-files", "500", "--add-folder", "/data"]),
+                   Ok(Some(Ok(("/data".into(), "x".into(), 500)))));
+        assert!(request(&["--add-folder", "/data", "--from-tool", "x"]).unwrap().unwrap().unwrap_err().contains("--yes"));
+        assert!(request(&["--from-tool", "x", "--yes"]).unwrap().unwrap().unwrap_err().contains("--add-folder"));
+        assert!(request(&["--max-files", "lots"]).unwrap_err().contains("takes a number"));
     }
 }

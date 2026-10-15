@@ -23,11 +23,14 @@ mod fallback;
 #[cfg(target_os = "linux")]
 mod gtk_log;
 mod helper;
+#[cfg(target_os = "linux")]
+mod notify;
 mod opener;
 mod options;
 mod panel;
 mod scope;
 mod settings;
+mod tools;
 mod transcripts;
 mod watcher;
 
@@ -101,6 +104,14 @@ struct Shell {
     /// A folder just added, whose files go first: told to the next index helper that starts (`--first`), then
     /// forgotten.
     first: Mutex<Option<String>>,
+    /// How indexing goes, and the folders added that it hasn't been through yet, for tools (tools.rs).
+    progress: Mutex<tools::Progress>,
+    /// Tools' requests on the session bus ("<identifier>.Tools"), while DigUp runs.
+    #[cfg(target_os = "linux")]
+    tools_bus: Mutex<Option<zbus::blocking::Connection>>,
+    /// Notifications with buttons (a tool's add, with Undo).
+    #[cfg(target_os = "linux")]
+    notifier: notify::Notifier,
 }
 
 impl Shell {
@@ -718,6 +729,7 @@ async fn add_folder(app: AppHandle, shell: State<'_, Arc<Shell>>, choice: adding
     log!("add: {} ({:?}{})", look.path, look.kind, if index { ", indexed first" } else { "" });
     if index {
         *shell.first.lock().unwrap() = Some(look.path.clone());
+        shell.progress.lock().unwrap().added(&look.path, Instant::now());
     }
     *shell.adding.lock().unwrap() = None;
     let applied = app.clone();
@@ -745,6 +757,143 @@ fn cancel_add(app: AppHandle, shell: State<'_, Arc<Shell>>) {
     if let Some(window) = app.get_webview_window("add") {
         let _ = window.close();
     }
+}
+
+// MARK: Tools adding folders (Linux: the session bus)
+
+/// A tool's request to add a folder (tools.rs, over the session bus): the add window's rules and the tools' own, the
+/// file count before anything starts, then added as the add window adds it, with what it starts unchecked left out,
+/// indexed first, and said in a notification with Undo. Blocks while it counts and while the index helper stops.
+#[cfg(target_os = "linux")]
+fn tool_add(app: &AppHandle, folder: String, tool: String, max_files: u32) -> Value {
+    let shell = app.state::<Arc<Shell>>().inner().clone();
+    let tool = tools::tool_name(&tool);
+    let refuse = |message: String| {
+        log!("tool add: {tool} asked for {folder}: refused ({message})");
+        json!({"ok": false, "message": message})
+    };
+    let asked = PathBuf::from(&folder);
+    if !asked.is_absolute() {
+        return refuse(format!("{folder} isn't an absolute path."));
+    }
+    if !shell.is_set_up() {
+        return refuse("DigUp isn't set up yet: open it and choose your folders first.".into());
+    }
+    let look = look_at(&shell, &asked);
+    if let Some(why) = look.refused.clone() {
+        return refuse(why);
+    }
+    let path = PathBuf::from(&look.path);
+    let home = std::env::var_os("HOME").map(|home| std::fs::canonicalize(&home).unwrap_or_else(|_| PathBuf::from(home)));
+    let settings = shell.settings.lock().unwrap().clone();
+    if let Some(why) = tools::refused(&path, home.as_deref(), &settings) {
+        return refuse(why);
+    }
+    let shown = tools::shown(&path, home.as_deref());
+    if look.kind == adding::Kind::Inside {
+        let within = tools::shown(Path::new(look.within.as_deref().unwrap_or_default()), home.as_deref());
+        let how = if look.code { "code search" } else { "search" };
+        return json!({"ok": true, "added": false, "path": look.path, "code": look.code,
+                      "message": format!("{shown} is searched already (it's in {within}, for {how}).")});
+    }
+    let cap = if max_files == 0 { tools::MAX_FILES } else { max_files };
+    let counted = tools::count(&path, cap as u64, Instant::now() + tools::COUNT_TIME);
+    if counted.over {
+        let how_many = if counted.slow { "too many files to count quickly".to_string() }
+                       else { format!("more than {cap} files") };
+        return refuse(format!("{shown} has {how_many}: that's for DigUp's own Add a Folder, which shows the counts and \
+                               lets you leave subfolders out (digup-shell --add-folder {}).", look.path));
+    }
+    let choice = adding::Choice { skipped: counted.left_out.clone(), documents: false, take_in: Vec::new() };
+    let mut change = tools::Change::default();
+    let saved = shell.change_settings(|settings| {
+        let before = settings.clone();
+        adding::apply(settings, &look, &choice);
+        change = tools::Change::between(&before, settings);
+    });
+    if let Err(error) = saved {
+        return refuse(error);
+    }
+    log!("tool add: {tool} added {} ({:?}, {} files, {} left out)", look.path, look.kind, counted.files,
+         counted.left_out.len());
+    *shell.first.lock().unwrap() = Some(look.path.clone());
+    shell.progress.lock().unwrap().added(&look.path, Instant::now());
+    apply_folders(app);
+    settings_changed(app);
+    let what = if look.code { "code search" } else { "search" };
+    let mut message = format!("{tool} added {shown} to DigUp ({what}, {} files); its files are indexed first.",
+                              counted.files);
+    // Undo takes it out again; a click on the notification opens the panel searching in it.
+    let body = format!("{} files, indexed now{}. Undo takes it out again.", counted.files,
+                       if look.code { " for code search" } else { "" });
+    let (undoing, path) = (app.clone(), look.path.clone());
+    let opened = json!({"path": look.path, "name": look.name, "ambiguous": false, "indexing": true, "code": look.code});
+    let shown_again = shown.clone();
+    let then = move |key: String| match key.as_str() {
+        "undo" => tool_undo(&undoing, &path, &shown_again, change),
+        "default" => {
+            show_panel(&undoing);
+            let _ = undoing.emit_to("panel", "scope-to", opened);
+        }
+        _ => {}
+    };
+    if let Err(error) = shell.notifier.show(&format!("{tool} added {shown} to DigUp"), &body, &[("undo", "Undo")], then) {
+        log_error!("digup-shell: {error}");
+        message.push_str(" (DigUp couldn't show a notification: Settings → Folders takes it out again.)");
+    }
+    let indexing = if shell.is_paused() { "paused" } else { "started" };
+    json!({"ok": true, "added": true, "path": look.path, "code": look.code, "files": counted.files,
+           "skipped": counted.left_out, "indexing": indexing, "message": message})
+}
+
+/// The notification's Undo: the settings as they were before the tool's add (what's changed since stays), and
+/// searching, watching and indexing follow; rows of its files leave the index with the next sync (as when it's taken
+/// out in Settings). The last code folder taken out turns code search off, as in Settings.
+#[cfg(target_os = "linux")]
+fn tool_undo(app: &AppHandle, path: &str, shown: &str, change: tools::Change) {
+    let shell = app.state::<Arc<Shell>>().inner().clone();
+    let mut turned_off = false;
+    let mut undone = false;
+    let saved = shell.change_settings(|settings| {
+        let had_code = !settings.code_folders.is_empty();
+        undone = change.undo(settings);
+        turned_off = had_code && settings.code_folders.is_empty();
+    });
+    if let Err(error) = saved {
+        return set_status(app, &error);
+    }
+    log!("tool add: undone for {path}");
+    shell.progress.lock().unwrap().removed(path);
+    let mut first = shell.first.lock().unwrap();
+    if first.as_deref() == Some(path) {
+        *first = None;
+    }
+    drop(first);
+    if !undone {
+        return;
+    }
+    let app = app.clone();
+    let shown = shown.to_string();
+    std::thread::spawn(move || {
+        if turned_off {
+            turn_off_code_search(&app);
+        }
+        apply_folders(&app);
+        settings_changed(&app);
+        let shell = app.state::<Arc<Shell>>();
+        let _ = shell.notifier.show(&format!("{shown} is out of DigUp again"), "", &[], |_| {});
+    });
+}
+
+/// For tools (tools.rs's `Status`): whether indexing is paused or under way, how far, and the folders just added
+/// that it hasn't been through yet.
+#[cfg(target_os = "linux")]
+fn tool_status(app: &AppHandle) -> Value {
+    let shell = app.state::<Arc<Shell>>();
+    let mut status = shell.progress.lock().unwrap().json(shell.is_paused());
+    status["ok"] = json!(true);
+    status["setUp"] = json!(shell.is_set_up());
+    status
 }
 
 /// The folder popover's "Add a folder…": the desktop's folder dialog (through the portal, as setup's), then the add
@@ -991,6 +1140,26 @@ fn main() {
         }
     };
     let context = tauri::generate_context!();
+    // `--add-folder DIR --from-tool NAME --yes`: asks the running DigUp as a tool does, and says its answer; never
+    // starts one (tools.rs).
+    if let Some(request) = options.tool_request() {
+        let (said, status) = match request {
+            #[cfg(target_os = "linux")]
+            Ok((folder, tool, max_files)) => {
+                let answer = tools::ask_running(&context.config().identifier, &folder, &tool, max_files);
+                (answer["message"].as_str().unwrap_or("DigUp gave no answer").to_string(),
+                 if answer["ok"] == true { 0 } else { 1 })
+            }
+            #[cfg(not(target_os = "linux"))]
+            Ok(_) => ("tools add folders over the session bus, on Linux only".to_string(), 1),
+            Err(error) => {
+                eprintln!("digup-shell: {error}");
+                std::process::exit(2);
+            }
+        };
+        println!("{said}");
+        std::process::exit(status);
+    }
     // `--quit`, `--pause`… with no DigUp running: answered without starting one (control.rs).
     #[cfg(target_os = "linux")]
     if let Some(command) = options.command.clone().filter(|command| !command.starts_app()) {
@@ -1109,11 +1278,29 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         panel_saves: AtomicU64::new(0),
         adding: Mutex::new(None),
         first: Mutex::new(None),
+        progress: Mutex::new(tools::Progress::default()),
+        #[cfg(target_os = "linux")]
+        tools_bus: Mutex::new(None),
+        #[cfg(target_os = "linux")]
+        notifier: notify::Notifier::default(),
         wayland: cfg!(target_os = "linux")
             && panel::is_wayland(std::env::var("WAYLAND_DISPLAY").ok().as_deref(),
                                  std::env::var("GDK_BACKEND").ok().as_deref()),
     });
     app.manage(shell.clone());
+    // Tools may ask to add a folder (an MCP server or the HTTP API with --allow-add-folders: tools.rs).
+    #[cfg(target_os = "linux")]
+    {
+        let (adding, asking) = (handle.clone(), handle.clone());
+        let bus = tools::ToolsBus {
+            add: Arc::new(move |folder, tool, max_files| tool_add(&adding, folder, tool, max_files)),
+            status: Arc::new(move || tool_status(&asking)),
+        };
+        match tools::serve(&app.config().identifier, bus) {
+            Ok(connection) => *shell.tools_bus.lock().unwrap() = Some(connection),
+            Err(error) => log_error!("digup-shell: tools can't reach this DigUp: {error}"),
+        }
+    }
     // Now with all it's started with.
     shell.search.set_launch(shell.search_launch());
 
@@ -1712,6 +1899,7 @@ fn index_event(app: &AppHandle, event: Value) {
     if cfg!(debug_assertions) {
         log!("index: {event}");
     }
+    app.state::<Arc<Shell>>().progress.lock().unwrap().event(&event, Instant::now());
     let count = |key: &str| event[key].as_u64().unwrap_or(0);
     // Paused: a stopping helper's last lines don't take the tray's "Paused" away.
     let paused = app.state::<Arc<Shell>>().is_paused();
@@ -1940,7 +2128,7 @@ mod tests {
         let options = Options {
             helper: "digup".into(), index: None, models: None, roots: Vec::new(), hotkey: None, settings: None,
             command: None, offered: None, debug_setup: false, debug_query: None, debug_filter: None, debug_quit: false,
-            debug_show: false, background: false,
+            debug_show: false, background: false, from_tool: None, yes: false, max_files: None,
         };
         assert!(helper_env(&options, false).is_empty());
         assert_eq!(helper_env(&options, true), [("DIGUP_GPU".to_string(), "0".to_string())]);
